@@ -456,17 +456,17 @@ class MockBroker:
 | A4 | Dry-run mutation bugs usually happen when dry-run is implemented inside the broker. | Common Pitfalls | Planner might allow mock state mutation in dry-run. |
 | A5 | Import-boundary regressions usually happen when core code reaches into future adapter modules. | Common Pitfalls | Planner might place Phase 2 code in modules that import future dependencies. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should `MockBroker` track cash/position mutation beyond recording placed orders?**
+1. **RESOLVED: Should `MockBroker` track cash/position mutation beyond recording placed orders?**
    - What we know: Phase 2 needs a MockBroker paper account and end-to-end parse -> risk -> execute -> log chain. [VERIFIED: .planning/ROADMAP.md]
    - What's unclear: The exact depth of paper-account accounting is not locked. [VERIFIED: .planning/phases/02-mock-execution-core/02-CONTEXT.md]
-   - Recommendation: Implement minimal deterministic in-memory accounting for BUY/SELL quantities/cash plus order recording, and keep complex fill/idempotency modeling deferred to Phase 5. [ASSUMED]
+   - Resolution: Implement minimal deterministic in-memory accounting for BUY/SELL quantities/cash plus order recording. Keep complex fill/idempotency modeling deferred to Phase 5. [RESOLVED: reflected in .planning/phases/02-mock-execution-core/02-03-PLAN.md]
 
-2. **Where should daily-loss state live in Phase 2?**
+2. **RESOLVED: Where should daily-loss state live in Phase 2?**
    - What we know: The kill switch must block new BUYs for the rest of the day after threshold breach. [VERIFIED: .planning/phases/02-mock-execution-core/02-CONTEXT.md]
    - What's unclear: No durable audit/store is in Phase 2 scope. [VERIFIED: .planning/ROADMAP.md]
-   - Recommendation: Represent daily-loss state as explicit cycle input to pure execution/risk functions and mock broker fixtures; defer durable persistence. [ASSUMED]
+   - Resolution: Represent daily-loss state as explicit cycle input to pure execution/risk functions and mock broker fixtures. Defer durable persistence to later operations/audit work. [RESOLVED: reflected in .planning/phases/02-mock-execution-core/02-02-PLAN.md]
 
 ## Environment Availability
 
