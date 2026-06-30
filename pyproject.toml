@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-trading-bot"
+version = "0.1.0"
+description = "Safety-first Korean-market stock trading bot foundation."
+readme = ".planning/PROJECT.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pydantic-settings==2.11.0",
+    "pydantic==2.13.4",
+    "pytest==8.4.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["trading_bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
