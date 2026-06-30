@@ -66,7 +66,19 @@ Plans:
   4. Any malformed or schema-invalid signal maps to HOLD (no trade), full stop — never a repaired-into-a-trade partial object
   5. Dry-run mode logs the would-be decision and order while making zero order calls and zero external state mutation
 
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — Fail-safe signal parser and parser tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md — Risk engine, execution rules, and configuration defaults
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-03-PLAN.md — MockBroker, dry-run audit chain, and end-to-end mock-safe tests
 
 ### Phase 3: Data Pipeline
 
