@@ -95,7 +95,10 @@ def test_ports_are_synchronous_semantic_protocols() -> None:
 
 
 def test_ports_import_domain_types_without_concrete_adapters() -> None:
-    loaded_modules = set(sys.modules)
+    before_import = set(sys.modules)
+    __import__("trading_bot.ports")
+
+    loaded_modules = set(sys.modules) - before_import
     for prefix in FORBIDDEN_MODULE_PREFIXES:
         assert prefix not in loaded_modules
 

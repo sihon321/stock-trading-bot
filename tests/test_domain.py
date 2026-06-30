@@ -84,9 +84,10 @@ def test_data_context_is_lightweight_ticker_context() -> None:
 
 
 def test_domain_import_has_no_settings_or_adapter_side_effects() -> None:
+    before_import = set(sys.modules)
     importlib.import_module("trading_bot.domain")
 
-    loaded_modules = set(sys.modules)
+    loaded_modules = set(sys.modules) - before_import
     for prefix in FORBIDDEN_MODULE_PREFIXES:
         assert prefix not in loaded_modules
 
