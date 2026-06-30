@@ -20,7 +20,9 @@ acts on it through KIS — without placing an order the rules don't justify.
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] CFG-01: typed gitignored settings load KIS and LLM secrets without leaking them to logs - validated in Phase 1 Foundation
+- [x] CFG-02: trading mode atomically selects mock or real KIS credentials, endpoint, and TR_ID - validated in Phase 1 Foundation
+- [x] CFG-03: exactly one active LLM provider is selected per run - validated in Phase 1 Foundation
 
 ### Active
 
@@ -98,4 +100,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-30 after initialization*
+*Last updated: 2026-06-30 after Phase 1 completion*
