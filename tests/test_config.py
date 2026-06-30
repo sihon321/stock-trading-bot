@@ -162,10 +162,8 @@ def test_selected_llm_provider_missing_key_fails_without_inactive_secret_require
     set_base_env(monkeypatch, LLM_PROVIDER="openai")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    settings = Settings()
-
-    with pytest.raises(ValueError) as exc_info:
-        _ = settings.active_llm_api_key
+    with pytest.raises(ValidationError) as exc_info:
+        Settings()
 
     diagnostic = str(exc_info.value)
     assert "OPENAI_API_KEY" in diagnostic
