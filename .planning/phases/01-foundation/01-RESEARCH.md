@@ -364,17 +364,15 @@ class Settings(BaseSettings):
 | A3 | Provider-specific secret fields should be optional at raw settings level and required only for the active provider. | Common Pitfalls | Exact Pydantic validator design may differ, but behavior requirement stands. |
 | A4 | Port warning signs such as vendor imports indicate over-coupling. | Common Pitfalls | Planner may allow constants if later phases demand them; Phase 1 should not. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact environment variable names**
    - What we know: Decisions allow planner discretion on names. [VERIFIED: .planning/phases/01-foundation/01-CONTEXT.md]
-   - What's unclear: Whether the operator prefers `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY`, and exact KIS naming. [ASSUMED]
-   - Recommendation: Use conventional names in `.env.example` and keep aliases only if needed. [ASSUMED]
+   - Resolution: Phase 1 uses the exact names planned in `01-01-PLAN.md` and `.env.example`: `TRADING_MODE`, `CONFIRM_REAL_TRADING`, `LLM_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIS_MOCK__DOMAIN`, `KIS_MOCK__APP_KEY`, `KIS_MOCK__APP_SECRET`, `KIS_MOCK__TR_ID_PROFILE`, `KIS_MOCK__LABEL`, `KIS_REAL__DOMAIN`, `KIS_REAL__APP_KEY`, `KIS_REAL__APP_SECRET`, `KIS_REAL__TR_ID_PROFILE`, `KIS_REAL__LABEL`, and `DRY_RUN`. No alias names are planned for Phase 1. [VERIFIED: .planning/phases/01-foundation/01-01-PLAN.md]
 
 2. **Exact KIS domain/TR_ID values**
    - What we know: Phase 1 must bind domain and TR_ID policy atomically. [VERIFIED: .planning/REQUIREMENTS.md]
-   - What's unclear: The exact production/mock KIS domains and TR_IDs are Phase 5 API-specific details. [VERIFIED: .planning/ROADMAP.md]
-   - Recommendation: Store configured values as opaque strings/profile names in Phase 1 and verify actual KIS values in the real broker phase. [ASSUMED]
+   - Resolution: Explicitly deferred to Phase 5. Phase 1 stores `KIS_MOCK__DOMAIN`, `KIS_REAL__DOMAIN`, `KIS_MOCK__TR_ID_PROFILE`, and `KIS_REAL__TR_ID_PROFILE` as opaque configured strings/profile names only; it does not validate production/mock KIS domain constants or concrete TR_ID values. Phase 5 must verify the actual KIS API domains and TR_ID mapping when implementing the real broker adapter. [VERIFIED: .planning/ROADMAP.md]
 
 ## Environment Availability
 
