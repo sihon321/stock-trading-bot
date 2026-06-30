@@ -9,9 +9,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Configuration & Safety Foundation
 
-- [ ] **CFG-01**: Operator can configure all secrets (KIS appkey/secret, LLM API keys) via a gitignored `.env`, loaded through typed settings; secrets never appear in logs
-- [ ] **CFG-02**: Operator selects trading mode (`mock` / `real`) in config; the mock/real switch binds KIS domain, appkey, appsecret, and TR_ID atomically so a partial swap can never trade real money by accident
-- [ ] **CFG-03**: Operator selects the active LLM provider (`claude` / `openai`) in config; exactly one is active per run
+- [x] **CFG-01**: Operator can configure all secrets (KIS appkey/secret, LLM API keys) via a gitignored `.env`, loaded through typed settings; secrets never appear in logs
+- [x] **CFG-02**: Operator selects trading mode (`mock` / `real`) in config; the mock/real switch binds KIS domain, appkey, appsecret, and TR_ID atomically so a partial swap can never trade real money by accident
+- [x] **CFG-03**: Operator selects the active LLM provider (`claude` / `openai`) in config; exactly one is active per run
 - [ ] **CFG-04**: System defaults to `mock` mode; switching to `real` requires an explicit, deliberate config change
 
 ### Data Pipeline
@@ -86,9 +86,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CFG-01 | TBD | Pending |
-| CFG-02 | TBD | Pending |
-| CFG-03 | TBD | Pending |
+| CFG-01 | TBD | Complete |
+| CFG-02 | TBD | Complete |
+| CFG-03 | TBD | Complete |
 | CFG-04 | TBD | Pending |
 | DATA-01 | TBD | Pending |
 | DATA-02 | TBD | Pending |
@@ -111,6 +111,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-03 | TBD | Pending |
 
 **Coverage:**
+
 - v1 requirements: 23 total
 - Mapped to phases: 0 (filled during roadmap creation)
 - Unmapped: 23 ⚠️

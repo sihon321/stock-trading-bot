@@ -42,11 +42,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Operator can select the active LLM provider (`claude` / `openai`) in config, and exactly one is resolved per run
   4. Domain models (Decision, Order, Position) and the three port Protocols (Broker, LLMProvider, DataSource) exist and import cleanly with no concrete adapters yet
 
-**Plans**: 3 plans
+**Plans**: 1/3 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Package skeleton, env template, and SUS dependency verification checkpoint
+- [x] 01-01-PLAN.md — Package skeleton, env template, and SUS dependency verification checkpoint
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -119,7 +119,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 1/3 | In Progress|  |
 | 2. Mock Execution Core | 0/TBD | Not started | - |
 | 3. Data Pipeline | 0/TBD | Not started | - |
 | 4. LLM Agent | 0/TBD | Not started | - |
