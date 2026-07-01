@@ -6,14 +6,14 @@ current_phase: 02
 current_phase_name: mock-execution-core
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-07-01T00:21:23.123Z"
+last_updated: "2026-07-01T00:31:29.328Z"
 last_activity: 2026-07-01
 last_activity_desc: Phase 02 execution started
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 20
 paused_at: null
 ---
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 02 (mock-execution-core) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-07-01 — Phase 02 execution started
 
@@ -81,6 +81,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 02 Plan 01]: parse_signal is the single strict raw-JSON to LLMSignal boundary; SignalParseError (a ValueError) fails closed to HOLD/no-trade and never repairs partial input.
 - [Phase ?]: [Phase 02 Plan 01]: Parser validates confidence range 0.0..1.0 only (bool rejected); BUY/SELL execution thresholds deferred to Plan 02-02.
 - [Phase ?]: [Phase 02 Plan 01]: ParsedSignal exposes ignored extra-field names as sorted non-sensitive diagnostics that cannot mutate the canonical LLMSignal.
+- [Phase ?]: D-05: BUY/SELL confidence thresholds are independent Settings fields defaulting 0.8; execution gate uses >=.
+- [Phase ?]: D-06: BUY sizing = floor(min(cash*buy_cash_fraction, max_position_value)/price); zero/non-positive price yields no order.
+- [Phase ?]: D-07/RISK-02: Risk SELL overrides conflicting same-ticker LLM action; CycleAuditEvent records override reason. Broker.place_order deferred to 02-03.
 
 ### Pending Todos
 
@@ -98,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-01T00:20:48.740Z
+Last session: 2026-07-01T00:31:03.861Z
 Stopped at: Phase 2 context gathered
 Resume file: .planning/phases/02-mock-execution-core/02-CONTEXT.md

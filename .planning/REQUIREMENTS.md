@@ -31,16 +31,16 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Trade Execution
 
 - [x] **EXEC-01**: System parses the validated signal and issues a BUY only when `decision == "BUY"` AND `confidence >= 0.8`
-- [ ] **EXEC-02**: BUY position sizing is a configurable % of available capital, bounded by a max-position cap
-- [ ] **EXEC-03**: System issues a SELL on `decision == "SELL"` (with confidence threshold) for tickers currently held
+- [x] **EXEC-02**: BUY position sizing is a configurable % of available capital, bounded by a max-position cap
+- [x] **EXEC-03**: System issues a SELL on `decision == "SELL"` (with confidence threshold) for tickers currently held
 - [ ] **EXEC-04**: All orders route through the KIS API against the configured account (mock first); order placement is idempotent — the system reconciles against broker truth before resubmitting and never blind-retries an order POST
 - [ ] **EXEC-05**: Dry-run mode logs the would-be decision and order without placing it
 
 ### Risk Net (LLM-independent)
 
-- [ ] **RISK-01**: A rules-based stop-loss / take-profit net evaluates held positions independent of the LLM and can SELL on its own
-- [ ] **RISK-02**: When the risk net and an LLM signal conflict on the same ticker in a cycle, the risk net takes precedence (LLM signal is suppressed)
-- [ ] **RISK-03**: A daily-loss kill switch halts all new trading for the rest of the day once a configured daily loss threshold is breached
+- [x] **RISK-01**: A rules-based stop-loss / take-profit net evaluates held positions independent of the LLM and can SELL on its own
+- [x] **RISK-02**: When the risk net and an LLM signal conflict on the same ticker in a cycle, the risk net takes precedence (LLM signal is suppressed)
+- [x] **RISK-03**: A daily-loss kill switch halts all new trading for the rest of the day once a configured daily loss threshold is breached
 
 ### Operations & Observability
 
@@ -99,13 +99,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LLM-02 | Phase 4 | Pending |
 | LLM-03 | Phase 4 | Pending |
 | EXEC-01 | Phase 2 | Complete |
-| EXEC-02 | Phase 2 | Pending |
-| EXEC-03 | Phase 2 | Pending |
+| EXEC-02 | Phase 2 | Complete |
+| EXEC-03 | Phase 2 | Complete |
 | EXEC-04 | Phase 5 | Pending |
 | EXEC-05 | Phase 2 | Pending |
-| RISK-01 | Phase 2 | Pending |
-| RISK-02 | Phase 2 | Pending |
-| RISK-03 | Phase 2 | Pending |
+| RISK-01 | Phase 2 | Complete |
+| RISK-02 | Phase 2 | Complete |
+| RISK-03 | Phase 2 | Complete |
 | OPS-01 | Phase 5 | Pending |
 | OPS-02 | Phase 5 | Pending |
 | OPS-03 | Phase 5 | Pending |
