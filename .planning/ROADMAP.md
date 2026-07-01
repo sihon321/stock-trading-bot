@@ -23,7 +23,7 @@ so no phase rewrites an earlier one.
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Typed config/secrets, atomic mock/real TradingMode guard, domain models, and the ports skeleton (completed 2026-06-30)
-- [ ] **Phase 2: Mock Execution Core** - Rules risk engine, fail-safe signal parser, dry-run executor, and MockBroker — testable with zero external deps and zero financial risk
+- [x] **Phase 2: Mock Execution Core** - Rules risk engine, fail-safe signal parser, dry-run executor, and MockBroker — testable with zero external deps and zero financial risk (completed 2026-07-01)
 - [ ] **Phase 3: Data Pipeline** - pykrx OHLCV + indicators + daily screener, fail-soft Naver news, and KIS real-time price behind a shared token manager
 - [ ] **Phase 4: LLM Agent** - Switchable Claude/OpenAI provider behind the port, strict-JSON structured output, and context builder wired to the fail-safe parser
 - [ ] **Phase 5: Real-Money Readiness & Operations** - Manual CLI trigger, per-cycle audit log, Telegram notifications, idempotent real KISBroker, and the gated real-money promotion
@@ -66,7 +66,7 @@ Plans:
   4. Any malformed or schema-invalid signal maps to HOLD (no trade), full stop — never a repaired-into-a-trade partial object
   5. Dry-run mode logs the would-be decision and order while making zero order calls and zero external state mutation
 
-**Plans**: 2/3 plans executed
+**Plans**: 3/3 plans complete
 Plans:
 **Wave 1**
 
@@ -78,7 +78,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md — MockBroker, dry-run audit chain, and end-to-end mock-safe tests
+- [x] 02-03-PLAN.md — MockBroker, dry-run audit chain, and end-to-end mock-safe tests
 
 ### Phase 3: Data Pipeline
 
@@ -132,7 +132,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
-| 2. Mock Execution Core | 2/3 | In Progress|  |
+| 2. Mock Execution Core | 3/3 | Complete   | 2026-07-01 |
 | 3. Data Pipeline | 0/TBD | Not started | - |
 | 4. LLM Agent | 0/TBD | Not started | - |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |

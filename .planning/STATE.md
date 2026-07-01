@@ -4,17 +4,17 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 02
 current_phase_name: mock-execution-core
-status: executing
+status: verifying
 stopped_at: Phase 2 context gathered
-last_updated: "2026-07-01T00:31:29.328Z"
+last_updated: "2026-07-01T00:39:39.240Z"
 last_activity: 2026-07-01
 last_activity_desc: Phase 02 execution started
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 20
+  completed_plans: 6
+  percent: 40
 paused_at: null
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 Phase: 02 (mock-execution-core) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-01 — Phase 02 execution started
 
 Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap phases
@@ -58,6 +58,7 @@ Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap
 
 | Phase 01-foundation P03 | 2min | 2 tasks | 4 files |
 | Phase 02 P01 | 4 | 2 tasks | 2 files |
+| Phase 02 P03 | 4min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Recent decisions affecting current work:
 - [Phase ?]: D-05: BUY/SELL confidence thresholds are independent Settings fields defaulting 0.8; execution gate uses >=.
 - [Phase ?]: D-06: BUY sizing = floor(min(cash*buy_cash_fraction, max_position_value)/price); zero/non-positive price yields no order.
 - [Phase ?]: D-07/RISK-02: Risk SELL overrides conflicting same-ticker LLM action; CycleAuditEvent records override reason. Broker.place_order deferred to 02-03.
+- [Phase ?]: Dry-run gate lives in execution._finalize_cycle before Broker.place_order; dry_run defaults True (EXEC-05).
+- [Phase ?]: MockBroker is a pure in-memory Broker: deterministic MOCK-N IDs, volume-weighted entry, fail-closed on invalid/oversell with zero mutation.
 
 ### Pending Todos
 
@@ -101,6 +104,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-01T00:31:03.861Z
+Last session: 2026-07-01T00:39:39.234Z
 Stopped at: Phase 2 context gathered
 Resume file: .planning/phases/02-mock-execution-core/02-CONTEXT.md
