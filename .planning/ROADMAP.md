@@ -93,7 +93,7 @@ Plans:
   4. System fetches a ticker's real-time price via the KIS API using one shared, cached, auto-refreshed access token (no per-call token re-issue) and stays under KIS rate limits
   5. System scrapes per-ticker Naver Finance news with input sanitization and graceful degradation — an empty or failed scrape means "no news" and continues the cycle, never crashes it
 
-**Plans**: 4/6 plans executed
+**Plans**: 5/6 plans executed
 Plans:
 **Wave 0**
 
@@ -107,7 +107,7 @@ Plans:
 
 - [x] 03-03-PLAN.md — Volatility-breakout daily screener
 - [x] 03-04-PLAN.md — Shared KIS token manager and current-price adapter
-- [ ] 03-05-PLAN.md — Compliance-gated sanitized Naver news adapter
+- [x] 03-05-PLAN.md — Compliance-gated sanitized Naver news adapter
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -152,6 +152,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
-| 3. Data Pipeline | 4/6 | In Progress|  |
+| 3. Data Pipeline | 5/6 | In Progress|  |
 | 4. LLM Agent | 0/TBD | Not started | - |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |
