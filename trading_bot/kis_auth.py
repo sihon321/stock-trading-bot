@@ -179,6 +179,18 @@ class KisTokenManager:
         cached = self._token is not None
         return f"KisTokenManager(domain={self._config.domain!r}, cached={cached})"
 
+    @property
+    def app_key(self) -> str:
+        """Expose the app key for KIS request headers (never logged)."""
+
+        return self._config.app_key
+
+    @property
+    def app_secret(self) -> str:
+        """Expose the app secret for KIS request headers (never logged)."""
+
+        return self._config.app_secret
+
     def get_token(self) -> str:
         """Return a valid access token, refreshing only inside the margin window."""
 

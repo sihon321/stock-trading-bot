@@ -42,6 +42,9 @@ def assert_no_secret_leaked(*texts: str) -> None:
 class _FakeTokenManager:
     """Returns a fixed token or raises the shared KisAuthError."""
 
+    app_key = APP_KEY
+    app_secret = APP_SECRET
+
     def __init__(self, token=ACCESS_TOKEN, error=None) -> None:
         self._token = token
         self._error = error
