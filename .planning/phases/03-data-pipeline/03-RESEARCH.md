@@ -332,22 +332,24 @@ technicals = {
 | A3 | Screener lookahead bias is a likely risk if explicit dates are not passed everywhere. | Common Pitfalls | False positives in strategy validation. |
 | A4 | Naver scraping should degrade to no news if human/legal checkpoint is not approved. | Summary | DATA-04 may need requirement clarification. |
 
-## Open Questions
+## Open Questions — RESOLVED by Plan 03-01 Manual Decision Contract
 
-1. **Can Naver Finance scraping be enabled under the operator's acceptable-use policy?**
+The following questions are no longer unresolved research blockers. They are intentionally routed to the blocking manual checkpoint in `.planning/phases/03-data-pipeline/03-01-PLAN.md` and recorded in `.planning/phases/03-data-pipeline/03-MANUAL-DECISIONS.md` before provider behavior is enabled.
+
+1. **RESOLVED: Can Naver Finance scraping be enabled under the operator's acceptable-use policy?**
    - What we know: robots.txt currently disallows general crawlers; live page can be parsed. [VERIFIED: live curl]
-   - What's unclear: whether the operator accepts this risk or wants a different news source.
-   - Recommendation: Add `checkpoint:human-verify` before implementing/enabling Naver fetch; default adapter can return no news safely.
+   - Resolution: Plan 03-01 has a blocking manual verification task requiring the operator to approve or disable Naver Finance scraping and record the decision in `03-MANUAL-DECISIONS.md`.
+   - Implementation contract: Until that recorded decision approves enablement, the Naver adapter remains disabled/unapproved and returns empty news safely.
 
-2. **What are the exact active KIS portal rate limits for this account?**
+2. **RESOLVED: What are the exact active KIS portal rate limits for this account?**
    - What we know: KIS has 2026 portal notices about per-second call limits and official samples sleep 0.05s in prod and 0.5s in mock. [CITED: apiportal.koreainvestment.com] [CITED: github.com/koreainvestment/open-trading-api]
-   - What's unclear: exact numeric limit requires logged-in portal notice/API guide verification.
-   - Recommendation: Plan a manual verification task, then configure `kis_min_interval_seconds` and bounded retry defaults.
+   - Resolution: Plan 03-01 has a blocking manual verification task requiring the operator to verify active-account token TTL and rate-limit values in the KIS portal and record the exact values in `03-MANUAL-DECISIONS.md`.
+   - Implementation contract: KIS token/quote code consumes the recorded values for `kis_min_interval_seconds`, refresh margin, and bounded retry defaults; missing or unrecorded values keep live provider behavior disabled.
 
-3. **Should pykrx use adjusted or unadjusted OHLCV for Phase 3 indicators?**
+3. **RESOLVED: Should pykrx use adjusted or unadjusted OHLCV for Phase 3 indicators?**
    - What we know: README says adjusted is default and issues report adjusted-data edge cases. [CITED: github.com/sharebook-kr/pykrx] [CITED: github.com/sharebook-kr/pykrx/issues/162]
-   - What's unclear: whether volatility-breakout screening should use adjusted continuity or raw tradable prices.
-   - Recommendation: Use a configurable `ohlcv_adjusted` default and assert frame quality either way.
+   - Resolution: Plan 03-01 has a blocking manual verification task requiring the operator to choose and record the Phase 3 `ohlcv_adjusted` default in `03-MANUAL-DECISIONS.md`.
+   - Implementation contract: The pykrx adapter exposes `ohlcv_adjusted` as configuration and asserts frame quality for either selected mode.
 
 ## Environment Availability
 

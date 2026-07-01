@@ -38,13 +38,13 @@ created: 2026-07-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 03-00-01 | 00 | 0 | DATA-01/DATA-02/DATA-03/DATA-04/DATA-05 | — | Runtime/dependency compatibility is explicit before adapter work starts | config/unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_config.py -q` | ❌ W0 | ⬜ pending |
-| 03-01-01 | 01 | 1 | DATA-01 | — | Empty/stale/holiday OHLCV cannot create actionable context | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_pykrx_adapter.py -q` | ❌ W0 | ⬜ pending |
-| 03-01-02 | 01 | 1 | DATA-02 | — | Indicators include MAs, RSI, volatility metric, and volume ratio with NaN/warm-up handling | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_indicators.py -q` | ❌ W0 | ⬜ pending |
-| 03-02-01 | 02 | 2 | DATA-05 | — | Screener hard-excludes unsafe tickers before ranking | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_screener.py -q` | ❌ W0 | ⬜ pending |
-| 03-03-01 | 03 | 2 | DATA-03 | — | KIS token is cached/shared and failures become unavailable price, not retries without bound | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_kis_auth.py tests/test_kis_quote.py -q` | ❌ W0 | ⬜ pending |
-| 03-04-01 | 04 | 2 | DATA-04 | — | Naver failures and disallowed/unapproved scraping degrade to empty sanitized news | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_naver_news.py -q` | ❌ W0 | ⬜ pending |
-| 03-05-01 | 05 | 3 | DATA-01/DATA-02/DATA-03/DATA-04/DATA-05 | — | DataSource emits compact DataContext only when source policy permits it | integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_data_source.py tests/test_ports.py -q` | ❌ W0 | ⬜ pending |
+| 03-01-01 | 01 | 0 | DATA-01/DATA-02/DATA-03/DATA-04/DATA-05 | — | Runtime/dependency compatibility is explicit before adapter work starts | config/unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_config.py -q` | ❌ W0 | ⬜ pending |
+| 03-02-01 | 02 | 1 | DATA-01 | — | Empty/stale/holiday OHLCV cannot create actionable context | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_pykrx_adapter.py -q` | ❌ W0 | ⬜ pending |
+| 03-02-02 | 02 | 1 | DATA-02 | — | Indicators include MAs, RSI, volatility metric, and volume ratio with NaN/warm-up handling | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_indicators.py -q` | ❌ W0 | ⬜ pending |
+| 03-03-01 | 03 | 2 | DATA-05 | — | Screener hard-excludes unsafe tickers before ranking | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_screener.py -q` | ❌ W0 | ⬜ pending |
+| 03-04-01 | 04 | 2 | DATA-03 | — | KIS token is cached/shared and failures become unavailable price, not retries without bound | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_kis_auth.py tests/test_kis_quote.py -q` | ❌ W0 | ⬜ pending |
+| 03-05-01 | 05 | 2 | DATA-04 | — | Naver failures and disallowed/unapproved scraping degrade to empty sanitized news | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_naver_news.py -q` | ❌ W0 | ⬜ pending |
+| 03-06-01 | 06 | 3 | DATA-01/DATA-02/DATA-03/DATA-04/DATA-05 | — | DataSource emits compact DataContext only when source policy permits it | integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest tests/test_data_source.py tests/test_ports.py -q` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
