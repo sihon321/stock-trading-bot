@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: data-pipeline
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-07-01T09:53:21.156Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-07-01T10:03:15.646Z"
 last_activity: 2026-07-01
 last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 12
-  completed_plans: 7
+  completed_plans: 8
   percent: 40
 paused_at: null
 ---
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 03 (data-pipeline) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-07-01 — Phase 03 execution started
 
@@ -61,6 +61,7 @@ Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap
 | Phase 02 P01 | 4 | 2 tasks | 2 files |
 | Phase 02 P03 | 4min | 3 tasks | 4 files |
 | Phase 03 P01 | 6m | 2 tasks | 3 files |
+| Phase 03 P02 | ~10m | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Dry-run gate lives in execution._finalize_cycle before Broker.place_order; dry_run defaults True (EXEC-05).
 - [Phase ?]: MockBroker is a pure in-memory Broker: deterministic MOCK-N IDs, volume-weighted entry, fail-closed on invalid/oversell with zero mutation.
 - [Phase ?]: Phase 3 source policy: pykrx adjusted prices (ohlcv_adjusted=True); Naver scraping disabled by default; KIS mock rate 0.5s/3 retries/1.0s backoff/600s refresh margin; Python floor raised to >=3.10
+- [Phase ?]: pykrx OHLCV validated (schema/monotonic date/min rows/finite positive prices/nonneg volume/freshness) before AVAILABLE; natural-closure fallback via accepted_latest_date; vendor exceptions normalized to typed results (D-01/D-15)
+- [Phase ?]: Indicators (sma/rsi/atr/historical_volatility/volume_ratio) fail closed to UNAVAILABLE with empty technicals on NaN warm-up rather than zero-valued signals (D-05)
 
 ### Pending Todos
 
@@ -107,6 +110,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-01T09:52:49.719Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-data-pipeline/03-CONTEXT.md
+Last session: 2026-07-01T10:03:15.640Z
+Stopped at: Completed 03-02-PLAN.md
+Resume file: None
