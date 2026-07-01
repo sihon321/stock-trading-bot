@@ -93,7 +93,25 @@ Plans:
   4. System fetches a ticker's real-time price via the KIS API using one shared, cached, auto-refreshed access token (no per-call token re-issue) and stays under KIS rate limits
   5. System scrapes per-ticker Naver Finance news with input sanitization and graceful degradation — an empty or failed scrape means "no news" and continues the cycle, never crashes it
 
-**Plans**: TBD
+**Plans**: 6 plans
+Plans:
+**Wave 0**
+
+- [ ] 03-01-PLAN.md — Runtime compatibility, dependency legitimacy, and manual provider policy gates
+
+**Wave 1** *(blocked on Wave 0 completion)*
+
+- [ ] 03-02-PLAN.md — Source-health models, pykrx OHLCV normalization, and indicator transforms
+
+**Wave 2** *(blocked on required Wave 1 or Wave 0 dependencies)*
+
+- [ ] 03-03-PLAN.md — Volatility-breakout daily screener
+- [ ] 03-04-PLAN.md — Shared KIS token manager and current-price adapter
+- [ ] 03-05-PLAN.md — Compliance-gated sanitized Naver news adapter
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03-06-PLAN.md — Thin DataSource orchestrator and full Phase 3 validation
 **Research hint**: KIS token TTL + exact rate limits, pykrx adjusted-price bug (#162), and unstable Naver Finance HTML are MEDIUM-confidence — run `/gsd-plan-phase --research-phase 3` to confirm against the live KIS portal and current Naver DOM during planning.
 
 ### Phase 4: LLM Agent
