@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 3
-current_phase_name: Data Pipeline
+current_phase: 03
+current_phase_name: data-pipeline
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-07-01T08:58:47.518Z"
+last_updated: "2026-07-01T09:53:21.156Z"
 last_activity: 2026-07-01
-last_activity_desc: Phase 02 complete, transitioned to Phase 3
+last_activity_desc: Phase 03 execution started
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 12
+  completed_plans: 7
   percent: 40
 paused_at: null
 ---
@@ -25,14 +25,14 @@ paused_at: null
 See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 02 — mock-execution-core
+**Current focus:** Phase 03 — data-pipeline
 
 ## Current Position
 
-Phase: 3 — Data Pipeline
-Plan: Not started
+Phase: 03 (data-pipeline) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-07-01 — Phase 02 complete, transitioned to Phase 3
+Last activity: 2026-07-01 — Phase 03 execution started
 
 Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap phases
 
@@ -60,6 +60,7 @@ Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap
 | Phase 01-foundation P03 | 2min | 2 tasks | 4 files |
 | Phase 02 P01 | 4 | 2 tasks | 2 files |
 | Phase 02 P03 | 4min | 3 tasks | 4 files |
+| Phase 03 P01 | 6m | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,7 @@ Recent decisions affecting current work:
 - [Phase ?]: D-07/RISK-02: Risk SELL overrides conflicting same-ticker LLM action; CycleAuditEvent records override reason. Broker.place_order deferred to 02-03.
 - [Phase ?]: Dry-run gate lives in execution._finalize_cycle before Broker.place_order; dry_run defaults True (EXEC-05).
 - [Phase ?]: MockBroker is a pure in-memory Broker: deterministic MOCK-N IDs, volume-weighted entry, fail-closed on invalid/oversell with zero mutation.
+- [Phase ?]: Phase 3 source policy: pykrx adjusted prices (ohlcv_adjusted=True); Naver scraping disabled by default; KIS mock rate 0.5s/3 retries/1.0s backoff/600s refresh margin; Python floor raised to >=3.10
 
 ### Pending Todos
 
@@ -105,6 +107,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-01T07:29:01.588Z
+Last session: 2026-07-01T09:52:49.719Z
 Stopped at: Phase 3 context gathered
 Resume file: .planning/phases/03-data-pipeline/03-CONTEXT.md

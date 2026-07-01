@@ -16,11 +16,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Data Pipeline
 
-- [ ] **DATA-01**: System fetches daily OHLCV per ticker via `pykrx`, failing safe to HOLD on holiday/empty/stale data rather than acting on a bad frame
-- [ ] **DATA-02**: System computes technical indicators (e.g. moving averages, RSI) from the daily OHLCV
-- [ ] **DATA-03**: System fetches real-time price for a ticker via the KIS API using a shared, auto-refreshed access token
-- [ ] **DATA-04**: System scrapes per-ticker financial news from Naver Finance, with basic input sanitization and graceful degradation (continue without news on scrape failure)
-- [ ] **DATA-05**: System runs a daily screen over the market (e.g. volume/momentum via `pykrx`) to select candidate tickers for the evaluation cycle
+- [x] **DATA-01**: System fetches daily OHLCV per ticker via `pykrx`, failing safe to HOLD on holiday/empty/stale data rather than acting on a bad frame
+- [x] **DATA-02**: System computes technical indicators (e.g. moving averages, RSI) from the daily OHLCV
+- [x] **DATA-03**: System fetches real-time price for a ticker via the KIS API using a shared, auto-refreshed access token
+- [x] **DATA-04**: System scrapes per-ticker financial news from Naver Finance, with basic input sanitization and graceful degradation (continue without news on scrape failure)
+- [x] **DATA-05**: System runs a daily screen over the market (e.g. volume/momentum via `pykrx`) to select candidate tickers for the evaluation cycle
 
 ### LLM Agent
 
@@ -90,11 +90,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CFG-02 | Phase 1 | Complete |
 | CFG-03 | Phase 1 | Complete |
 | CFG-04 | Phase 5 | Pending |
-| DATA-01 | Phase 3 | Pending |
-| DATA-02 | Phase 3 | Pending |
-| DATA-03 | Phase 3 | Pending |
-| DATA-04 | Phase 3 | Pending |
-| DATA-05 | Phase 3 | Pending |
+| DATA-01 | Phase 3 | Complete |
+| DATA-02 | Phase 3 | Complete |
+| DATA-03 | Phase 3 | Complete |
+| DATA-04 | Phase 3 | Complete |
+| DATA-05 | Phase 3 | Complete |
 | LLM-01 | Phase 4 | Pending |
 | LLM-02 | Phase 4 | Pending |
 | LLM-03 | Phase 4 | Pending |
