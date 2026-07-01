@@ -38,6 +38,13 @@ ENV_KEYS = (
     "KIS_REAL__TR_ID_PROFILE",
     "KIS_REAL__LABEL",
     "DRY_RUN",
+    "BUY_CONFIDENCE_THRESHOLD",
+    "SELL_CONFIDENCE_THRESHOLD",
+    "BUY_CASH_FRACTION",
+    "MAX_POSITION_VALUE",
+    "STOP_LOSS_PCT",
+    "TAKE_PROFIT_PCT",
+    "DAILY_LOSS_THRESHOLD",
 )
 
 
@@ -170,6 +177,76 @@ def test_selected_llm_provider_missing_key_fails_without_inactive_secret_require
     assert "openai" in diagnostic
     assert "ANTHROPIC_API_KEY" not in diagnostic
     assert_no_secret_leaked(diagnostic)
+
+
+def test_execution_and_risk_defaults_are_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch)
+
+    settings = Settings()
+
+    # D-05: separate BUY/SELL confidence thresholds, both default 0.8.
+    assert settings.buy_confidence_threshold == 0.8
+    assert settings.sell_confidence_threshold == 0.8
+    # D-06: cash fraction and per-ticker max position cap.
+    assert 0.0 < settings.buy_cash_fraction <= 1.0
+    assert settings.max_position_value > 0
+    # D-09: stop-loss / take-profit percentages against average price.
+    assert settings.stop_loss_pct > 0
+    assert settings.take_profit_pct > 0
+    # D-08: daily-loss kill-switch threshold.
+    assert settings.daily_loss_threshold > 0
+
+
+def test_execution_and_risk_fields_accept_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(
+        monkeypatch,
+        BUY_CONFIDENCE_THRESHOLD="0.9",
+        SELL_CONFIDENCE_THRESHOLD="0.7",
+        BUY_CASH_FRACTION="0.25",
+        MAX_POSITION_VALUE="1500000",
+        STOP_LOSS_PCT="0.05",
+        TAKE_PROFIT_PCT="0.12",
+        DAILY_LOSS_THRESHOLD="300000",
+    )
+
+    settings = Settings()
+
+    assert settings.buy_confidence_threshold == 0.9
+    assert settings.sell_confidence_threshold == 0.7
+    assert settings.buy_cash_fraction == 0.25
+    assert settings.max_position_value == 1500000.0
+    assert settings.stop_loss_pct == 0.05
+    assert settings.take_profit_pct == 0.12
+    assert settings.daily_loss_threshold == 300000.0
+
+
+def test_config_import_has_no_execution_or_risk_module_side_effects() -> None:
+    import importlib
+    import sys
+
+    before_import = set(sys.modules)
+    importlib.import_module("trading_bot.config")
+
+    loaded = set(sys.modules) - before_import
+    for forbidden in (
+        "anthropic",
+        "openai",
+        "pykrx",
+        "requests",
+        "httpx",
+    ):
+        assert forbidden not in loaded
+    forbidden_local = [
+        name
+        for name in loaded
+        if name.startswith("trading_bot.")
+        and any(fragment in name for fragment in ("execution", "risk", "adapter", "kis", "broker"))
+    ]
+    assert forbidden_local == []
 
 
 def test_startup_banner_reports_safety_facts_without_secrets(
