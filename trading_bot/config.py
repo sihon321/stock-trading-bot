@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     kis_real: KisCredentialGroup
     dry_run: bool = True
 
+    # Execution rule defaults (D-05, D-06). A BUY/SELL only executes when the
+    # parsed signal's confidence meets its side's threshold; both default 0.8.
+    buy_confidence_threshold: float = 0.8
+    sell_confidence_threshold: float = 0.8
+    # BUY sizing spends this fraction of available cash, capped by the per-ticker
+    # maximum position value (D-06).
+    buy_cash_fraction: float = 0.1
+    max_position_value: float = 1_000_000.0
+
+    # Risk-net defaults (D-08, D-09). Stop-loss / take-profit are evaluated as
+    # percentage moves against the held position's average price; the daily-loss
+    # threshold arms the kill switch that blocks new BUYs for the rest of the day.
+    stop_loss_pct: float = 0.05
+    take_profit_pct: float = 0.10
+    daily_loss_threshold: float = 500_000.0
+
     @model_validator(mode="after")
     def validate_safety_gates(self) -> "Settings":
         if self.trading_mode is TradingMode.REAL and not self.confirm_real_trading:
