@@ -13,6 +13,11 @@ Ordering guarantees (safety-critical):
        risk exits (D-08/RISK-03).
     4. BUY/SELL thresholds and sizing are deterministic execution rules
        (EXEC-01/02/03, D-05/D-06).
+    5. The dry-run gate lives here, *before* ``Broker.place_order`` (EXEC-05).
+       A dry run computes and logs the would-be order but performs zero
+       ``place_order`` calls and zero broker mutation; a live run places the
+       order and records the returned broker order ID for audit. The gate is
+       never delegated to the broker, so tests can prove no side effects.
 """
 
 from __future__ import annotations
@@ -66,11 +71,18 @@ class CycleAuditEvent:
     override_reason: str
     final_action: str
     order_reason: str
+    dry_run: bool = True
+    broker_order_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """Immutable outcome of a decision cycle; no broker mutation has occurred."""
+    """Immutable outcome of a decision cycle.
+
+    ``broker_order_id`` is populated only on a live (non-dry-run) cycle that
+    actually placed an order via ``Broker.place_order``; it is ``None`` for every
+    dry run and for any cycle that produced no order.
+    """
 
     action: ExecutionAction
     order: Optional[Order]
@@ -78,6 +90,7 @@ class ExecutionResult:
     risk_override: bool = False
     override_reason: Optional[str] = None
     audit: Optional[CycleAuditEvent] = None
+    broker_order_id: Optional[str] = None
 
 
 def evaluate_signal_action(
@@ -157,6 +170,54 @@ def build_order_intent(
     return None
 
 
+def _finalize_cycle(
+    *,
+    broker: Broker,
+    dry_run: bool,
+    action: ExecutionAction,
+    order: Optional[Order],
+    reason: str,
+    ticker: Ticker,
+    parsed_decision: Optional[str],
+    parse_error: Optional[str],
+    risk_override: bool,
+    override_reason: str,
+    order_reason: str,
+) -> ExecutionResult:
+    """Apply the dry-run gate, then build the audit event and result (EXEC-05).
+
+    This is the *only* place ``Broker.place_order`` is invoked. On a dry run it is
+    never called and the broker is never mutated; the would-be order is still
+    recorded in the audit event. On a live run, an existing order intent is placed
+    and the returned broker order ID is recorded.
+    """
+
+    broker_order_id: Optional[str] = None
+    if not dry_run and order is not None:
+        broker_order_id = broker.place_order(order)
+
+    audit = CycleAuditEvent(
+        ticker=ticker.value,
+        parsed_decision=parsed_decision,
+        parse_error=parse_error,
+        risk_override=risk_override,
+        override_reason=override_reason,
+        final_action=action.value,
+        order_reason=order_reason,
+        dry_run=dry_run,
+        broker_order_id=broker_order_id,
+    )
+    return ExecutionResult(
+        action,
+        order,
+        reason,
+        risk_override=risk_override,
+        override_reason=override_reason or None,
+        audit=audit,
+        broker_order_id=broker_order_id,
+    )
+
+
 def execute_signal_cycle(
     raw_signal: str,
     ticker: Ticker,
@@ -166,12 +227,19 @@ def execute_signal_cycle(
     execution_config: ExecutionConfig,
     risk_config: RiskConfig,
     daily_loss_state: DailyLossState,
+    dry_run: bool = True,
 ) -> ExecutionResult:
-    """Run one parse -> risk -> execute decision cycle without broker mutation.
+    """Run one parse -> risk -> execute -> (gated) place decision cycle.
 
-    ``broker`` is used read-only (``get_position``); ``place_order`` is never
-    called in this plan. Returns an :class:`ExecutionResult` with an attached
-    :class:`CycleAuditEvent` recording risk-override evidence.
+    ``broker`` is read via ``get_position`` for decision inputs. ``place_order`` is
+    invoked exactly once, and only when ``dry_run`` is ``False`` and a valid order
+    intent exists — the gate lives here, before the broker, so a dry run performs
+    zero ``place_order`` calls and zero broker mutation (EXEC-05). ``dry_run``
+    defaults to ``True`` (safety-first, matching ``Settings.dry_run``).
+
+    Returns an :class:`ExecutionResult` with an attached :class:`CycleAuditEvent`
+    recording the final action, would-be order, dry-run status, parse diagnostics,
+    no-order reason, risk-override evidence, and the broker order ID when placed.
     """
 
     position = broker.get_position(ticker)
@@ -180,18 +248,18 @@ def execute_signal_cycle(
     try:
         parsed = parse_signal(raw_signal)
     except SignalParseError as exc:
-        audit = CycleAuditEvent(
-            ticker=ticker.value,
+        return _finalize_cycle(
+            broker=broker,
+            dry_run=dry_run,
+            action=ExecutionAction.HOLD,
+            order=None,
+            reason="invalid signal payload; parser failed",
+            ticker=ticker,
             parsed_decision=None,
             parse_error=str(exc),
             risk_override=False,
             override_reason="",
-            final_action=ExecutionAction.HOLD.value,
             order_reason="invalid signal payload",
-        )
-        return ExecutionResult(
-            ExecutionAction.HOLD, None, "invalid signal payload; parser failed",
-            audit=audit,
         )
 
     parsed_decision = parsed.signal.decision.value
@@ -204,22 +272,18 @@ def execute_signal_cycle(
             ExecutionAction.SELL, ticker, current_price, available_cash, position,
             execution_config,
         )
-        audit = CycleAuditEvent(
-            ticker=ticker.value,
+        return _finalize_cycle(
+            broker=broker,
+            dry_run=dry_run,
+            action=ExecutionAction.SELL,
+            order=order,
+            reason=f"risk override: {risk.reason}",
+            ticker=ticker,
             parsed_decision=parsed_decision,
             parse_error=None,
             risk_override=True,
             override_reason=risk.reason,
-            final_action=ExecutionAction.SELL.value,
             order_reason=f"risk exit ({risk.reason}) overrides LLM {parsed_decision}",
-        )
-        return ExecutionResult(
-            ExecutionAction.SELL,
-            order,
-            f"risk override: {risk.reason}",
-            risk_override=True,
-            override_reason=risk.reason,
-            audit=audit,
         )
 
     # 3. LLM action evaluation, gated by the daily-loss kill switch (D-08).
@@ -230,22 +294,21 @@ def execute_signal_cycle(
     if action_result.action is ExecutionAction.BUY and blocks_new_buy(
         daily_loss_state, risk_config
     ):
-        audit = CycleAuditEvent(
-            ticker=ticker.value,
+        return _finalize_cycle(
+            broker=broker,
+            dry_run=dry_run,
+            action=ExecutionAction.HOLD,
+            order=None,
+            reason="daily_loss kill switch blocks new BUY",
+            ticker=ticker,
             parsed_decision=parsed_decision,
             parse_error=None,
             risk_override=False,
             override_reason="",
-            final_action=ExecutionAction.HOLD.value,
             order_reason="daily_loss kill switch blocks new BUY",
         )
-        return ExecutionResult(
-            ExecutionAction.HOLD, None,
-            "daily_loss kill switch blocks new BUY",
-            audit=audit,
-        )
 
-    # 4. Build the order intent for the qualified action (no broker mutation).
+    # 4. Build the order intent for the qualified action.
     order = build_order_intent(
         action_result.action, ticker, current_price, available_cash, position,
         execution_config,
@@ -257,13 +320,16 @@ def execute_signal_cycle(
         final_action = ExecutionAction.HOLD
         order_reason = f"{action_result.reason}; no valid order quantity"
 
-    audit = CycleAuditEvent(
-        ticker=ticker.value,
+    return _finalize_cycle(
+        broker=broker,
+        dry_run=dry_run,
+        action=final_action,
+        order=order,
+        reason=order_reason,
+        ticker=ticker,
         parsed_decision=parsed_decision,
         parse_error=None,
         risk_override=False,
         override_reason="",
-        final_action=final_action.value,
         order_reason=order_reason,
     )
-    return ExecutionResult(final_action, order, order_reason, audit=audit)
