@@ -1,9 +1,29 @@
+import importlib
 import json
+import sys
 
 import pytest
 
 from trading_bot.domain import Decision, LLMSignal
 from trading_bot.signal_parser import ParsedSignal, SignalParseError, parse_signal
+
+
+FORBIDDEN_MODULE_PREFIXES = (
+    "anthropic",
+    "openai",
+    "pykrx",
+    "requests",
+    "httpx",
+)
+
+FORBIDDEN_LOCAL_MODULE_FRAGMENTS = (
+    "adapter",
+    "broker",
+    "execution",
+    "kis",
+    "naver",
+    "scrap",
+)
 
 
 def _valid_payload(**overrides: object) -> str:
@@ -121,3 +141,62 @@ def test_invalid_payloads_raise_signal_parse_error(raw_input: str) -> None:
 
 def test_signal_parse_error_is_a_value_error() -> None:
     assert issubclass(SignalParseError, ValueError)
+
+
+def test_parsed_signal_preserves_raw_input() -> None:
+    # D-04: the wrapper preserves the exact raw input for audit/diagnostics.
+    raw = _valid_payload(ticker="005930")
+    result = parse_signal(raw)
+
+    assert result.raw_input == raw
+
+
+def test_ignored_field_names_are_observable_as_diagnostics() -> None:
+    # D-04: extra fields surface only as non-sensitive diagnostics and cannot
+    # affect the canonical signal.
+    result = parse_signal(_valid_payload(model="claude-opus-4-8", ticker="005930"))
+
+    assert tuple(result.ignored_fields) == ("model", "ticker")
+    assert result.signal == LLMSignal(
+        decision=Decision.BUY,
+        confidence=0.82,
+        reason="Momentum and volume both improved.",
+    )
+
+
+def test_valid_payload_without_extras_has_no_ignored_fields() -> None:
+    result = parse_signal(_valid_payload())
+
+    assert tuple(result.ignored_fields) == ()
+
+
+def test_diagnostics_never_expose_required_field_names() -> None:
+    result = parse_signal(_valid_payload(extra="x"))
+
+    assert "decision" not in result.ignored_fields
+    assert "confidence" not in result.ignored_fields
+    assert "reason" not in result.ignored_fields
+
+
+def test_signal_parser_import_has_no_forbidden_module_side_effects() -> None:
+    for name in list(sys.modules):
+        if name == "trading_bot.signal_parser" or name.startswith(
+            "trading_bot.signal_parser."
+        ):
+            del sys.modules[name]
+
+    before_import = set(sys.modules)
+    importlib.import_module("trading_bot.signal_parser")
+
+    loaded_modules = set(sys.modules) - before_import
+    for prefix in FORBIDDEN_MODULE_PREFIXES:
+        assert prefix not in loaded_modules
+
+    forbidden_local = [
+        name
+        for name in loaded_modules
+        if name.startswith("trading_bot.")
+        and any(fragment in name for fragment in FORBIDDEN_LOCAL_MODULE_FRAGMENTS)
+    ]
+    assert forbidden_local == []
+    assert "trading_bot.config" not in loaded_modules
