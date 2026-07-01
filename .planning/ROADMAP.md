@@ -66,11 +66,11 @@ Plans:
   4. Any malformed or schema-invalid signal maps to HOLD (no trade), full stop — never a repaired-into-a-trade partial object
   5. Dry-run mode logs the would-be decision and order while making zero order calls and zero external state mutation
 
-**Plans**: 3 plans
+**Plans**: 1/3 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Fail-safe signal parser and parser tests
+- [x] 02-01-PLAN.md — Fail-safe signal parser and parser tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -132,7 +132,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
-| 2. Mock Execution Core | 0/TBD | Not started | - |
+| 2. Mock Execution Core | 1/3 | In Progress|  |
 | 3. Data Pipeline | 0/TBD | Not started | - |
 | 4. LLM Agent | 0/TBD | Not started | - |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |

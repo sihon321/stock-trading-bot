@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 2
-current_phase_name: Mock Execution Core
-status: verifying
+current_phase: 02
+current_phase_name: mock-execution-core
+status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-30T15:22:51.333Z"
-last_activity: 2026-06-30
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
+last_updated: "2026-07-01T00:21:23.123Z"
+last_activity: 2026-07-01
+last_activity_desc: Phase 02 execution started
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 6
+  completed_plans: 4
   percent: 20
 paused_at: null
 ---
@@ -25,14 +25,14 @@ paused_at: null
 See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 01 — foundation
+**Current focus:** Phase 02 — mock-execution-core
 
 ## Current Position
 
-Phase: 2 — Mock Execution Core
-Plan: Not started
-Status: Phase 1 plans complete; ready for verification
-Last activity: 2026-06-30 — Phase 01 complete, transitioned to Phase 2
+Phase: 02 (mock-execution-core) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-07-01 — Phase 02 execution started
 
 Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap phases
 
@@ -57,6 +57,7 @@ Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap
 - Trend: started
 
 | Phase 01-foundation P03 | 2min | 2 tasks | 4 files |
+| Phase 02 P01 | 4 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,9 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: [Phase 01 Plan 03]: Domain objects use stdlib enums and frozen dataclasses, keeping the core free of Pydantic and settings imports.
 - [Phase 01-foundation]: [Phase 01 Plan 03]: Ports remain synchronous semantic Protocols so future adapters can satisfy them structurally without inheritance.
 - [Phase 01-foundation]: [Phase 01 Plan 03]: LLMSignal captures the strict JSON signal shape now while fail-safe parsing remains deferred to later execution/LLM phases.
+- [Phase ?]: [Phase 02 Plan 01]: parse_signal is the single strict raw-JSON to LLMSignal boundary; SignalParseError (a ValueError) fails closed to HOLD/no-trade and never repairs partial input.
+- [Phase ?]: [Phase 02 Plan 01]: Parser validates confidence range 0.0..1.0 only (bool rejected); BUY/SELL execution thresholds deferred to Plan 02-02.
+- [Phase ?]: [Phase 02 Plan 01]: ParsedSignal exposes ignored extra-field names as sorted non-sensitive diagnostics that cannot mutate the canonical LLMSignal.
 
 ### Pending Todos
 
@@ -94,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-30T15:22:51.326Z
+Last session: 2026-07-01T00:20:48.740Z
 Stopped at: Phase 2 context gathered
 Resume file: .planning/phases/02-mock-execution-core/02-CONTEXT.md

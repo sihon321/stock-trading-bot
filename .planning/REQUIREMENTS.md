@@ -30,7 +30,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Trade Execution
 
-- [ ] **EXEC-01**: System parses the validated signal and issues a BUY only when `decision == "BUY"` AND `confidence >= 0.8`
+- [x] **EXEC-01**: System parses the validated signal and issues a BUY only when `decision == "BUY"` AND `confidence >= 0.8`
 - [ ] **EXEC-02**: BUY position sizing is a configurable % of available capital, bounded by a max-position cap
 - [ ] **EXEC-03**: System issues a SELL on `decision == "SELL"` (with confidence threshold) for tickers currently held
 - [ ] **EXEC-04**: All orders route through the KIS API against the configured account (mock first); order placement is idempotent — the system reconciles against broker truth before resubmitting and never blind-retries an order POST
@@ -98,7 +98,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LLM-01 | Phase 4 | Pending |
 | LLM-02 | Phase 4 | Pending |
 | LLM-03 | Phase 4 | Pending |
-| EXEC-01 | Phase 2 | Pending |
+| EXEC-01 | Phase 2 | Complete |
 | EXEC-02 | Phase 2 | Pending |
 | EXEC-03 | Phase 2 | Pending |
 | EXEC-04 | Phase 5 | Pending |
