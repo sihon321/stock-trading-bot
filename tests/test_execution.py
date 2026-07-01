@@ -449,3 +449,285 @@ def test_live_run_hold_places_no_order() -> None:
     assert result.order is None
     assert result.broker_order_id is None
     assert broker.order_history == []
+
+
+# ---------------------------------------------------------------------------
+# Plan 02-03, Task 3: full mock-safe Phase 2 chain, parse -> risk -> execute
+# -> log, covering every Phase 2 requirement ID against hand-written signals.
+# ---------------------------------------------------------------------------
+
+
+def test_integration_exec_01_valid_buy_signal_produces_mock_buy() -> None:
+    """EXEC-01: a valid BUY at/above threshold produces a live mock BUY."""
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.8),  # exactly at threshold
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(cash_fraction=0.1, max_position_value=5_000_000.0),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.BUY
+    assert result.broker_order_id == "MOCK-1"
+    assert broker.get_position(TICKER) is not None
+
+
+def test_integration_exec_01_below_threshold_buy_does_not_trade() -> None:
+    """EXEC-01: a BUY below threshold becomes HOLD and places nothing."""
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.79),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.HOLD
+    assert broker.get_position(TICKER) is None
+    assert broker.order_history == []
+
+
+def test_integration_exec_02_buy_sizing_respects_percent_and_cap() -> None:
+    """EXEC-02: BUY quantity uses cash fraction capped by max position value."""
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.95),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        # Cap budget at 200,000 -> 200,000 // 70000 = 2 shares.
+        execution_config=_exec_config(cash_fraction=0.1, max_position_value=200_000.0),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.BUY
+    assert result.order is not None
+    assert result.order.quantity == 2
+    position = broker.get_position(TICKER)
+    assert position is not None and position.quantity == 2
+
+
+def test_integration_exec_03_held_position_sell_produces_mock_sell() -> None:
+    """EXEC-03: a SELL at/above threshold on a held position sells in full."""
+    held = Position(ticker=TICKER, quantity=6, average_price=Money(70000.0, "KRW"))
+    broker = MockBroker(cash=Money(0.0, "KRW"), positions=[held])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("SELL", 0.9),
+        ticker=TICKER,
+        current_price=Money(72000.0, "KRW"),  # +2.8%: within risk bounds
+        available_cash=0.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.SELL
+    assert result.order is not None and result.order.quantity == 6
+    assert broker.get_position(TICKER) is None  # fully closed
+    assert broker.cash.amount == pytest.approx(6 * 72000.0)
+
+
+def test_integration_exec_03_sell_without_position_does_not_trade() -> None:
+    """EXEC-03: a SELL with no held position becomes HOLD."""
+    broker = MockBroker(cash=Money(0.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("SELL", 0.99),
+        ticker=TICKER,
+        current_price=Money(72000.0, "KRW"),
+        available_cash=0.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.HOLD
+    assert broker.order_history == []
+
+
+def test_integration_malformed_signal_becomes_hold_no_trade() -> None:
+    """EXEC-01/D-01: malformed input fails closed to HOLD with no place_order."""
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal='{"decision": "BUY", "confidence": "high"}',  # bad confidence
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.HOLD
+    assert result.order is None
+    assert result.audit is not None
+    assert result.audit.parse_error is not None
+    assert broker.order_history == []
+
+
+def test_integration_risk_01_stop_loss_sells_without_llm_sell() -> None:
+    """RISK-01: a stop-loss breach sells a held position with no LLM SELL."""
+    held = Position(ticker=TICKER, quantity=5, average_price=Money(70000.0, "KRW"))
+    broker = MockBroker(cash=Money(0.0, "KRW"), positions=[held])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("HOLD", 0.99),  # LLM does NOT say SELL
+        ticker=TICKER,
+        current_price=Money(60000.0, "KRW"),  # -14% -> stop-loss
+        available_cash=0.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.SELL
+    assert result.risk_override is True
+    assert "stop_loss" in (result.override_reason or "")
+    assert result.broker_order_id == "MOCK-1"
+    assert broker.get_position(TICKER) is None
+
+
+def test_integration_risk_02_risk_suppresses_conflicting_llm_buy() -> None:
+    """RISK-02/D-07: a take-profit exit overrides a same-ticker LLM BUY, logged."""
+    held = Position(ticker=TICKER, quantity=5, average_price=Money(70000.0, "KRW"))
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"), positions=[held])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.99),  # LLM wants to BUY more
+        ticker=TICKER,
+        current_price=Money(80000.0, "KRW"),  # +14% -> take-profit
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.SELL  # BUY suppressed
+    assert result.risk_override is True
+    assert result.audit is not None
+    assert result.audit.risk_override is True
+    assert "take_profit" in result.audit.override_reason
+    assert result.audit.parsed_decision == "BUY"  # records the suppressed LLM action
+    assert broker.get_position(TICKER) is None
+
+
+def test_integration_risk_03_daily_loss_blocks_buy_allows_exits() -> None:
+    """RISK-03/D-08: daily-loss breach blocks new BUY but allows SELL exits."""
+    breached = DailyLossState(realized_loss=600000.0, threshold=500000.0)
+
+    buy_broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+    blocked_buy = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.99),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=buy_broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=breached,
+        dry_run=False,
+    )
+
+    held = Position(ticker=TICKER, quantity=4, average_price=Money(70000.0, "KRW"))
+    sell_broker = MockBroker(cash=Money(0.0, "KRW"), positions=[held])
+    allowed_sell = execute_signal_cycle(
+        raw_signal=_signal("SELL", 0.99),
+        ticker=TICKER,
+        current_price=Money(71000.0, "KRW"),  # within risk bounds
+        available_cash=0.0,
+        broker=sell_broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=breached,
+        dry_run=False,
+    )
+
+    assert blocked_buy.action is ExecutionAction.HOLD
+    assert buy_broker.order_history == []
+    assert allowed_sell.action is ExecutionAction.SELL
+    assert sell_broker.get_position(TICKER) is None
+
+
+def test_integration_exec_05_dry_run_vs_live_same_decision_different_effect() -> None:
+    """EXEC-05: identical inputs decide the same order; only live mutates state."""
+    common = dict(
+        raw_signal=_signal("BUY", 0.95),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        execution_config=_exec_config(cash_fraction=0.1, max_position_value=5_000_000.0),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+    )
+
+    dry_broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+    dry = execute_signal_cycle(broker=dry_broker, dry_run=True, **common)
+
+    live_broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+    live = execute_signal_cycle(broker=live_broker, dry_run=False, **common)
+
+    # Same computed order intent.
+    assert dry.order == live.order
+    # Dry run: no place_order, no mutation.
+    assert dry.broker_order_id is None
+    assert dry_broker.order_history == []
+    assert dry_broker.get_position(TICKER) is None
+    assert dry_broker.cash.amount == pytest.approx(10_000_000.0)
+    # Live run: placed and mutated.
+    assert live.broker_order_id == "MOCK-1"
+    assert live_broker.order_history == [live.order]
+    assert live_broker.get_position(TICKER) is not None
+
+
+def test_phase2_core_modules_import_no_forbidden_dependencies() -> None:
+    """T-02-10: parser, risk, execution, mock broker stay adapter/external-free."""
+    core_modules = (
+        "trading_bot.signal_parser",
+        "trading_bot.risk",
+        "trading_bot.execution",
+        "trading_bot.mock_broker",
+    )
+
+    before_import = set(sys.modules)
+    for name in core_modules:
+        importlib.import_module(name)
+    loaded = set(sys.modules) - before_import
+
+    for prefix in FORBIDDEN_MODULE_PREFIXES:
+        assert prefix not in loaded, f"{prefix} leaked into Phase 2 core imports"
+
+    forbidden_local = [
+        name
+        for name in loaded
+        if name.startswith("trading_bot.")
+        and any(fragment in name for fragment in FORBIDDEN_LOCAL_MODULE_FRAGMENTS)
+    ]
+    assert forbidden_local == []
