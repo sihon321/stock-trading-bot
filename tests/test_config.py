@@ -45,6 +45,20 @@ ENV_KEYS = (
     "STOP_LOSS_PCT",
     "TAKE_PROFIT_PCT",
     "DAILY_LOSS_THRESHOLD",
+    # Phase 3 data-pipeline source-policy fields (DATA-01..05, D-02/08/09/11/12/14).
+    "OHLCV_ADJUSTED",
+    "SCREENER_MAX_CANDIDATES",
+    "SCREENER_MARKETS",
+    "SCREENER_MIN_TRADING_VALUE",
+    "SCREENER_MIN_VOLUME_RATIO",
+    "SCREENER_EXCLUDED_STATES",
+    "KIS_TOKEN_REFRESH_MARGIN_SECONDS",
+    "KIS_MIN_INTERVAL_SECONDS",
+    "KIS_MAX_RETRIES",
+    "KIS_RETRY_BACKOFF_SECONDS",
+    "NAVER_NEWS_ENABLED",
+    "NAVER_NEWS_MAX_ITEMS",
+    "NAVER_NEWS_MAX_CHARS",
 )
 
 
@@ -222,6 +236,107 @@ def test_execution_and_risk_fields_accept_environment_overrides(
     assert settings.stop_loss_pct == 0.05
     assert settings.take_profit_pct == 0.12
     assert settings.daily_loss_threshold == 300000.0
+
+
+def test_phase3_source_policy_defaults_are_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch)
+
+    settings = Settings()
+
+    # DATA-01/02/05: adjusted OHLCV (수정주가) per recorded manual decision.
+    assert settings.ohlcv_adjusted is True
+    # D-02/D-11: small operator-reviewable screener breadth over KOSPI+KOSDAQ.
+    assert settings.screener_max_candidates == 20
+    assert settings.screener_markets == ("KOSPI", "KOSDAQ")
+    # D-11/D-12: positive liquidity floors.
+    assert settings.screener_min_trading_value > 0
+    assert settings.screener_min_volume_ratio > 0
+    assert isinstance(settings.screener_excluded_states, tuple)
+    assert settings.screener_excluded_states  # non-empty exclusion set
+    # DATA-03: KIS token/rate controls, all positive.
+    assert settings.kis_token_refresh_margin_seconds == 600
+    assert settings.kis_min_interval_seconds == 0.5
+    assert settings.kis_max_retries == 3
+    assert settings.kis_retry_backoff_seconds == 1.0
+    # DATA-04: Naver scraping disabled by default.
+    assert settings.naver_news_enabled is False
+    assert settings.naver_news_max_items > 0
+    assert settings.naver_news_max_chars > 0
+
+
+def test_phase3_source_policy_fields_accept_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(
+        monkeypatch,
+        OHLCV_ADJUSTED="false",
+        SCREENER_MAX_CANDIDATES="5",
+        SCREENER_MARKETS='["KOSPI"]',
+        SCREENER_MIN_TRADING_VALUE="2000000000",
+        SCREENER_MIN_VOLUME_RATIO="1.5",
+        SCREENER_EXCLUDED_STATES='["HALTED"]',
+        KIS_TOKEN_REFRESH_MARGIN_SECONDS="300",
+        KIS_MIN_INTERVAL_SECONDS="1.0",
+        KIS_MAX_RETRIES="5",
+        KIS_RETRY_BACKOFF_SECONDS="2.0",
+        NAVER_NEWS_ENABLED="true",
+        NAVER_NEWS_MAX_ITEMS="3",
+        NAVER_NEWS_MAX_CHARS="500",
+    )
+
+    settings = Settings()
+
+    assert settings.ohlcv_adjusted is False
+    assert settings.screener_max_candidates == 5
+    assert settings.screener_markets == ("KOSPI",)
+    assert settings.screener_min_trading_value == 2_000_000_000.0
+    assert settings.screener_min_volume_ratio == 1.5
+    assert settings.screener_excluded_states == ("HALTED",)
+    assert settings.kis_token_refresh_margin_seconds == 300
+    assert settings.kis_min_interval_seconds == 1.0
+    assert settings.kis_max_retries == 5
+    assert settings.kis_retry_backoff_seconds == 2.0
+    assert settings.naver_news_enabled is True
+    assert settings.naver_news_max_items == 3
+    assert settings.naver_news_max_chars == 500
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"SCREENER_MAX_CANDIDATES": "0"},
+        {"SCREENER_MIN_TRADING_VALUE": "0"},
+        {"SCREENER_MIN_VOLUME_RATIO": "0"},
+        {"KIS_TOKEN_REFRESH_MARGIN_SECONDS": "-1"},
+        {"KIS_MIN_INTERVAL_SECONDS": "-0.5"},
+        {"KIS_MAX_RETRIES": "-1"},
+        {"KIS_RETRY_BACKOFF_SECONDS": "-1"},
+        {"NAVER_NEWS_MAX_ITEMS": "0"},
+        {"NAVER_NEWS_MAX_CHARS": "0"},
+    ],
+)
+def test_phase3_non_positive_source_policy_values_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    override: dict[str, str],
+) -> None:
+    set_base_env(monkeypatch, **override)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings()
+
+    assert_no_secret_leaked(str(exc_info.value))
+
+
+def test_phase3_source_policy_fields_do_not_leak_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch, NAVER_NEWS_ENABLED="true")
+
+    settings = Settings()
+
+    assert_no_secret_leaked(repr(settings), startup_banner(settings))
 
 
 def test_config_import_has_no_execution_or_risk_module_side_effects() -> None:
