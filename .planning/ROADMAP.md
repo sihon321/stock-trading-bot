@@ -24,7 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Typed config/secrets, atomic mock/real TradingMode guard, domain models, and the ports skeleton (completed 2026-06-30)
 - [x] **Phase 2: Mock Execution Core** - Rules risk engine, fail-safe signal parser, dry-run executor, and MockBroker — testable with zero external deps and zero financial risk (completed 2026-07-01)
-- [ ] **Phase 3: Data Pipeline** - pykrx OHLCV + indicators + daily screener, fail-soft Naver news, and KIS real-time price behind a shared token manager
+- [x] **Phase 3: Data Pipeline** - pykrx OHLCV + indicators + daily screener, fail-soft Naver news, and KIS real-time price behind a shared token manager (completed 2026-07-01)
 - [ ] **Phase 4: LLM Agent** - Switchable Claude/OpenAI provider behind the port, strict-JSON structured output, and context builder wired to the fail-safe parser
 - [ ] **Phase 5: Real-Money Readiness & Operations** - Manual CLI trigger, per-cycle audit log, Telegram notifications, idempotent real KISBroker, and the gated real-money promotion
 
@@ -93,7 +93,7 @@ Plans:
   4. System fetches a ticker's real-time price via the KIS API using one shared, cached, auto-refreshed access token (no per-call token re-issue) and stays under KIS rate limits
   5. System scrapes per-ticker Naver Finance news with input sanitization and graceful degradation — an empty or failed scrape means "no news" and continues the cycle, never crashes it
 
-**Plans**: 5/6 plans executed
+**Plans**: 6/6 plans complete
 Plans:
 **Wave 0**
 
@@ -111,7 +111,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-06-PLAN.md — Thin DataSource orchestrator and full Phase 3 validation
+- [x] 03-06-PLAN.md — Thin DataSource orchestrator and full Phase 3 validation
 
 **Research hint**: KIS token TTL + exact rate limits, pykrx adjusted-price bug (#162), and unstable Naver Finance HTML are MEDIUM-confidence — run `/gsd-plan-phase --research-phase 3` to confirm against the live KIS portal and current Naver DOM during planning.
 
@@ -152,6 +152,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
-| 3. Data Pipeline | 5/6 | In Progress|  |
+| 3. Data Pipeline | 6/6 | Complete   | 2026-07-01 |
 | 4. LLM Agent | 0/TBD | Not started | - |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |
