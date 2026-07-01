@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 from pydantic import BaseModel, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -67,6 +67,31 @@ class Settings(BaseSettings):
     take_profit_pct: float = 0.10
     daily_loss_threshold: float = 500_000.0
 
+    # Phase 3 data-source policy (DATA-01..05, D-02/D-08/D-09/D-11/D-12/D-14).
+    # Defaults are safe and operator-reviewable; recorded in 03-MANUAL-DECISIONS.md.
+    #
+    # pykrx price policy (DATA-01/02/05): adjusted prices (수정주가) by default so
+    # indicators and screening use a consistent split/dividend-adjusted series.
+    ohlcv_adjusted: bool = True
+    # Screener breadth/markets/liquidity (D-11/D-12): small candidate set over
+    # KOSPI+KOSDAQ, with positive liquidity floors and hard exclusion states.
+    screener_max_candidates: int = 20
+    screener_markets: Tuple[str, ...] = ("KOSPI", "KOSDAQ")
+    screener_min_trading_value: float = 1_000_000_000.0
+    screener_min_volume_ratio: float = 1.0
+    screener_excluded_states: Tuple[str, ...] = ("HALTED", "DELISTING", "ADMIN")
+    # KIS token/rate controls (DATA-03): refresh margin ahead of the runtime-
+    # discovered token expiry, a min inter-request interval, and bounded retries.
+    kis_token_refresh_margin_seconds: int = 600
+    kis_min_interval_seconds: float = 0.5
+    kis_max_retries: int = 3
+    kis_retry_backoff_seconds: float = 1.0
+    # Naver Finance news (DATA-04): disabled by default (robots.txt disallows
+    # general crawlers); adapter fails soft to empty sanitized news when off.
+    naver_news_enabled: bool = False
+    naver_news_max_items: int = 5
+    naver_news_max_chars: int = 2_000
+
     @model_validator(mode="after")
     def validate_safety_gates(self) -> "Settings":
         if self.trading_mode is TradingMode.REAL and not self.confirm_real_trading:
@@ -75,7 +100,28 @@ class Settings(BaseSettings):
                 "real trading configuration can start"
             )
         self._require_selected_llm_key()
+        self._require_positive_source_policy()
         return self
+
+    def _require_positive_source_policy(self) -> None:
+        """Fail closed when Phase 3 source-policy controls are non-positive."""
+
+        positive_fields = {
+            "screener_max_candidates": self.screener_max_candidates,
+            "screener_min_trading_value": self.screener_min_trading_value,
+            "screener_min_volume_ratio": self.screener_min_volume_ratio,
+            "kis_token_refresh_margin_seconds": self.kis_token_refresh_margin_seconds,
+            "kis_min_interval_seconds": self.kis_min_interval_seconds,
+            "kis_max_retries": self.kis_max_retries,
+            "kis_retry_backoff_seconds": self.kis_retry_backoff_seconds,
+            "naver_news_max_items": self.naver_news_max_items,
+            "naver_news_max_chars": self.naver_news_max_chars,
+        }
+        for name, value in positive_fields.items():
+            if value <= 0:
+                raise ValueError(
+                    f"{name} must be positive, got {value}"
+                )
 
     @property
     def active_kis(self) -> KisCredentialGroup:
