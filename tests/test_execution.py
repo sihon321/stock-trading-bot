@@ -295,3 +295,157 @@ def test_execution_import_has_no_forbidden_external_or_adapter_side_effects() ->
         and any(fragment in name for fragment in FORBIDDEN_LOCAL_MODULE_FRAGMENTS)
     ]
     assert forbidden_local == []
+
+
+# ---------------------------------------------------------------------------
+# Plan 02-03, Task 2: dry-run side-effect gate + audit chain (EXEC-05).
+# ---------------------------------------------------------------------------
+
+from trading_bot.mock_broker import MockBroker  # noqa: E402
+
+
+def _broker_snapshot(broker: MockBroker, tickers) -> dict:
+    return {
+        "cash": broker.cash.amount,
+        "positions": {t.value: broker.get_position(t) for t in tickers},
+        "history": list(broker.order_history),
+    }
+
+
+def test_dry_run_skips_broker_place_order_and_logs_intent() -> None:
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+    before = _broker_snapshot(broker, [TICKER])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.95),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(cash_fraction=0.1, max_position_value=5_000_000.0),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    after = _broker_snapshot(broker, [TICKER])
+
+    # Would-be order is computed and logged, but never placed.
+    assert result.action is ExecutionAction.BUY
+    assert result.order is not None
+    assert result.order.side is OrderSide.BUY
+    assert result.broker_order_id is None
+    assert result.audit is not None
+    assert result.audit.dry_run is True
+    assert result.audit.broker_order_id is None
+    # Zero mutation: cash, positions, and order history are all unchanged.
+    assert after == before
+    assert broker.order_history == []
+
+
+def test_dry_run_leaves_mock_broker_state_unchanged_for_sell() -> None:
+    held = Position(ticker=TICKER, quantity=7, average_price=Money(70000.0, "KRW"))
+    broker = MockBroker(cash=Money(0.0, "KRW"), positions=[held])
+    before = _broker_snapshot(broker, [TICKER])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("SELL", 0.95),
+        ticker=TICKER,
+        current_price=Money(72000.0, "KRW"),  # within risk bounds, LLM SELL
+        available_cash=0.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    after = _broker_snapshot(broker, [TICKER])
+
+    assert result.action is ExecutionAction.SELL
+    assert result.order is not None
+    assert result.broker_order_id is None
+    assert after == before
+    assert broker.order_history == []
+
+
+def test_dry_run_risk_exit_records_override_and_places_nothing() -> None:
+    held = Position(ticker=TICKER, quantity=5, average_price=Money(70000.0, "KRW"))
+    broker = MockBroker(cash=Money(0.0, "KRW"), positions=[held])
+    before = _broker_snapshot(broker, [TICKER])
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.99),  # LLM BUY; risk must override
+        ticker=TICKER,
+        current_price=Money(60000.0, "KRW"),  # -14% -> stop-loss
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    after = _broker_snapshot(broker, [TICKER])
+
+    assert result.action is ExecutionAction.SELL
+    assert result.risk_override is True
+    assert result.broker_order_id is None
+    assert result.audit is not None
+    assert result.audit.dry_run is True
+    assert result.audit.risk_override is True
+    assert "stop_loss" in result.audit.override_reason
+    assert after == before
+    assert broker.order_history == []
+
+
+def test_live_run_places_buy_and_mutates_only_via_place_order() -> None:
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("BUY", 0.95),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(cash_fraction=0.1, max_position_value=5_000_000.0),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.BUY
+    assert result.order is not None
+    assert result.broker_order_id == "MOCK-1"
+    assert result.audit is not None
+    assert result.audit.dry_run is False
+    assert result.audit.broker_order_id == "MOCK-1"
+    # Broker state mutated only through place_order.
+    position = broker.get_position(TICKER)
+    assert position is not None
+    assert position.quantity == result.order.quantity
+    assert broker.order_history == [result.order]
+    # 10% of 10,000,000 = 1,000,000 budget capped at 5,000,000 -> 14 shares.
+    assert result.order.quantity == 14
+    assert broker.cash.amount == pytest.approx(10_000_000.0 - 14 * 70000.0)
+
+
+def test_live_run_hold_places_no_order() -> None:
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+
+    result = execute_signal_cycle(
+        raw_signal=_signal("HOLD", 0.99),
+        ticker=TICKER,
+        current_price=Money(70000.0, "KRW"),
+        available_cash=10_000_000.0,
+        broker=broker,
+        execution_config=_exec_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=False,
+    )
+
+    assert result.action is ExecutionAction.HOLD
+    assert result.order is None
+    assert result.broker_order_id is None
+    assert broker.order_history == []
