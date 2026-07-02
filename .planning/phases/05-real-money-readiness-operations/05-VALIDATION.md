@@ -44,13 +44,16 @@ created: 2026-07-02
 | EXEC-04 | Partial fill read back; tracked position = filled qty (D-07) | position-drift | Position mirrors broker truth | unit | `pytest tests/test_kis_broker.py::test_partial_fill_reconciled -x` | ❌ W0 |
 | EXEC-04 | KISBroker structurally satisfies `Broker` (like MockBroker) | — | N/A | unit | `pytest tests/test_kis_broker.py::test_kis_broker_is_broker -x` | ❌ W0 |
 | EXEC-04 / D-08 | Off-tick price snapped to valid band; market-closed → HOLD | stale-order | Closed/stale → fail-safe HOLD | unit | `pytest tests/test_kis_broker.py::test_tick_snap_and_market_guard -x` | ❌ W0 |
-| EXEC-04 | order-cash body/headers/TR_ID selection + fill parsing | wrong-domain-order | Mock/real TR_ID from atomic `active_kis` | unit | `pytest tests/test_kis_order.py -x` | ❌ W0 |
+| EXEC-04 / D-08 | snap_to_tick returns valid-band value per side (independent) | off-tick-reject | Off-tick → snapped before POST | unit | `pytest tests/test_kis_order.py::test_tick_snap -x` | ❌ W0 |
+| EXEC-04 / D-05 | Mock/real TR_ID resolved from `tr_id_profile` (independent) | wrong-domain-order | Mock/real TR_ID from atomic `active_kis` | unit | `pytest tests/test_kis_order.py::test_tr_id_selection -x` | ❌ W0 |
+| EXEC-04 / D-07 | order-cash body/headers/POST-not-retried + fill parsing (confirmed A2 spellings) | wrong-domain-order | Limit body; POST single-shot; fills on confirmed fields | unit | `pytest tests/test_kis_order.py -x` | ❌ W0 |
 | CFG-04 / D-04 | Real execute without `--live-confirm` refuses | unguarded-real-order | Real+execute w/o confirm → refuse | unit | `pytest tests/test_cli.py::test_real_execute_requires_live_confirm -x` | ❌ W0 |
 | OPS-01 / D-02,D-13 | Per-ticker failure isolated; run continues | run-abort | One ticker error captured, not fatal | unit | `pytest tests/test_cli.py::test_ticker_error_isolation -x` | ❌ W0 |
 | OPS-01 / D-03 | Bare `bot run` places nothing (dry-run default) | accidental-order | No `--execute` → places nothing | unit | `pytest tests/test_cli.py::test_dry_run_default_no_orders -x` | ❌ W0 |
 | OPS-02 / D-09 | Two-table write; runs↔decisions link queryable | — | N/A | unit | `pytest tests/test_sqlite_audit.py::test_two_table_write -x` | ❌ W0 |
 | OPS-02 / D-10 | Correlation ID stored, matches structlog line | audit-gap | Every decision traceable to raw line | unit | `pytest tests/test_sqlite_audit.py::test_correlation_id -x` | ❌ W0 |
 | OPS-03 / D-13 | One consolidated summary per run | — | N/A | unit | `pytest tests/test_notifier.py::test_consolidated_summary -x` | ❌ W0 |
+| OPS-01 / D-13 | Cycle-level error triggers an immediate push distinct from the end-of-run consolidated send | silent-error | Error → immediate `notifier.send` + still one consolidated send | unit | `pytest tests/test_cli.py::test_immediate_error_push -x` | ❌ W0 |
 | OPS-03 / D-14 | Notify failure never raises/blocks cycle | notify-blocks-trade | Notify error → log + continue | unit | `pytest tests/test_notifier.py::test_fail_soft -x` | ❌ W0 |
 | ports | `Notifier` added but `ports.py` stays adapter-free | port-leak | No adapter imports in ports | unit | `pytest tests/test_ports.py -x` | ✅ (extend) |
 
@@ -62,7 +65,7 @@ created: 2026-07-02
 
 - [ ] `tests/test_kis_broker.py` — EXEC-04 (no-retry POST, reconcile, partial fill, tick snap, market guard, `Broker` conformance)
 - [ ] `tests/test_kis_order.py` — order-cash body/headers/TR_ID selection + fill parsing with a fake HTTP client (mirror `test_kis_quote.py`)
-- [ ] `tests/test_cli.py` — CFG-04/OPS-01 gate + error isolation + dry-run default
+- [ ] `tests/test_cli.py` — CFG-04/OPS-01 gate + error isolation + dry-run default + immediate-error-push (`test_immediate_error_push`) distinct from the consolidated send
 - [ ] `tests/test_sqlite_audit.py` — OPS-02 two-table write + correlation ID (`:memory:` or `tmp_path` DB)
 - [ ] `tests/test_notifier.py` — OPS-03 consolidated summary + fail-soft (fake `httpx` client)
 - [ ] `tests/test_ports.py` — extend to assert `Notifier` is a runtime-checkable, adapter-free Protocol

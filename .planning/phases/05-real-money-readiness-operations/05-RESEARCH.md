@@ -481,22 +481,21 @@ def run(
 
 **If this table is empty:** it is not — 8 assumptions need planner/operator confirmation, all KIS-API-specific or policy choices. Every one fails *safe* (rejected order / no trade) if wrong, consistent with the phase's safety-first posture.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does KIS accept any client order reference for idempotency?**
+> All three questions are now resolved as decisions. Each fails *safe* (rejected order / no trade) if the underlying assumption is wrong. The one assumption that could silently corrupt real-money state if wrong — Q2's fill-field spellings (`[ASSUMED] A2`) — is gated behind an explicit `checkpoint:human-verify` in Plan 05-02 (Task: verify fill-field spellings) BEFORE the fill-readback parsing lands, so the assumed spellings are operator-confirmed against the KIS portal before any reconciliation path is trusted.
+
+1. **Does KIS accept any client order reference for idempotency? — RESOLVED.**
    - What we know: The order-cash spec returns a broker-assigned `ODNO`; no client-ref parameter is documented in the standard body (`CANO/ACNT_PRDT_CD/PDNO/ORD_DVSN/ORD_QTY/ORD_UNPR`).
-   - What's unclear: Whether an undocumented/optional field exists.
-   - Recommendation: Assume NO (A1); make broker-truth query the dedup gate. Safe either way.
+   - **Decision (A1):** Assume KIS honors NO client order key. Reconciliation-by-query (query-before-POST against broker truth) is the dedup gate; the client-generated order id is a LOCAL audit tag only. Safe regardless of whether an undocumented field exists.
 
-2. **Exact fill-status field names on `inquire-daily-ccld`.**
+2. **Exact fill-status field names on `inquire-daily-ccld`. — RESOLVED (operator-gated).**
    - What we know: The endpoint (TTTC8001R) returns per-order rows including `odno` and execution quantities.
-   - What's unclear: Precise field spelling (`tot_ccld_qty` vs `ccld_qty`, `rmn_qty`).
-   - Recommendation: Verify on the KIS portal response schema before coding the readback (A2). A `checkpoint:human-verify` on first real reconciliation is prudent.
+   - **Decision (A2, `[ASSUMED]`):** Proceed with the `tot_ccld_qty` / `rmn_qty` / `ord_qty` / `odno` field family as the working assumption, BUT the exact spellings MUST be operator-confirmed against the KIS portal response schema via a blocking `checkpoint:human-verify` in Plan 05-02 before the fill-readback parsing is coded/trusted. This is the single assumption whose silent failure would corrupt real-money reconciliation, so it is the only one carrying a human gate.
 
-3. **Closed-market / holiday detection mechanism.**
+3. **Closed-market / holiday detection mechanism. — RESOLVED.**
    - What we know: Regular session 09:00–15:30 KST; pykrx already knows trading days (Phase 3 uses `accepted_latest_date`).
-   - What's unclear: Whether to reuse pykrx trading-day logic, a hard-coded holiday list, or a KIS session flag for the D-08 guard.
-   - Recommendation: Reuse the Phase 3 trading-date machinery + a KST clock window; fail safe when uncertain.
+   - **Decision (A5):** Reuse the Phase 3 pykrx trading-date logic PLUS a KST 09:00–15:30 clock window for the D-08 closed-market/stale pre-flight guard. Fail safe (skip/HOLD) when uncertain. No new holiday feed or KIS session flag is introduced.
 
 ## Environment Availability
 
