@@ -126,11 +126,11 @@ Plans:
   2. The active provider emits a strict JSON signal `{"decision","confidence","reason"}` with no markdown, enforced via provider-native structured output, with model + temperature pinned and the raw prompt/response logged for reproducibility
   3. Every signal is re-validated against the shared schema regardless of provider, and any malformed or unparseable output fails safe to HOLD — scraped news inside the prompt can never be followed as instructions
 
-**Plans**: 4 plans
+**Plans**: 1/4 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Dependency lock gate (anthropic/openai/structlog pins + OpenAI model ID + D-07 temperature divergence) and Settings LLM pinning
+- [x] 04-01-PLAN.md — Dependency lock gate (anthropic/openai/structlog pins + OpenAI model ID + D-07 temperature divergence) and Settings LLM pinning
 - [ ] 04-02-PLAN.md — Versioned system prompt + pure DataContext render and the TradeSignal pydantic mirror with lockstep guard
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -166,5 +166,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
-| 4. LLM Agent | 0/TBD | Not started | - |
+| 4. LLM Agent | 1/4 | In Progress|  |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |
