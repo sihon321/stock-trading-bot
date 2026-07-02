@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation** - Typed config/secrets, atomic mock/real TradingMode guard, domain models, and the ports skeleton (completed 2026-06-30)
 - [x] **Phase 2: Mock Execution Core** - Rules risk engine, fail-safe signal parser, dry-run executor, and MockBroker — testable with zero external deps and zero financial risk (completed 2026-07-01)
 - [x] **Phase 3: Data Pipeline** - pykrx OHLCV + indicators + daily screener, fail-soft Naver news, and KIS real-time price behind a shared token manager (completed 2026-07-01)
-- [ ] **Phase 4: LLM Agent** - Switchable Claude/OpenAI provider behind the port, strict-JSON structured output, and context builder wired to the fail-safe parser
+- [x] **Phase 4: LLM Agent** - Switchable Claude/OpenAI provider behind the port, strict-JSON structured output, and context builder wired to the fail-safe parser (completed 2026-07-02)
 - [ ] **Phase 5: Real-Money Readiness & Operations** - Manual CLI trigger, per-cycle audit log, Telegram notifications, idempotent real KISBroker, and the gated real-money promotion
 
 ## Phase Details
@@ -126,7 +126,7 @@ Plans:
   2. The active provider emits a strict JSON signal `{"decision","confidence","reason"}` with no markdown, enforced via provider-native structured output, with model + temperature pinned and the raw prompt/response logged for reproducibility
   3. Every signal is re-validated against the shared schema regardless of provider, and any malformed or unparseable output fails safe to HOLD — scraped news inside the prompt can never be followed as instructions
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 Plans:
 **Wave 1**
 
@@ -139,7 +139,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 04-04-PLAN.md — build_llm_provider switchable factory (lazy SDK imports) and run_llm_cycle wiring (LLMProviderError → HOLD) into the proven execution chain
+- [x] 04-04-PLAN.md — build_llm_provider switchable factory (lazy SDK imports) and run_llm_cycle wiring (LLMProviderError → HOLD) into the proven execution chain
 
 ### Phase 5: Real-Money Readiness & Operations
 
@@ -166,5 +166,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Foundation | 3/3 | Complete    | 2026-06-30 |
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
-| 4. LLM Agent | 3/4 | In Progress|  |
+| 4. LLM Agent | 4/4 | Complete   | 2026-07-02 |
 | 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |
