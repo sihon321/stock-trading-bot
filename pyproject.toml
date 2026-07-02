@@ -21,6 +21,7 @@ dependencies = [
     "anthropic==0.115.1",
     "openai==2.44.0",
     "structlog==25.5.0",
+    "typer==0.26.8",
 ]
 
 [tool.setuptools.packages.find]
