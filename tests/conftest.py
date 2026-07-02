@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pydantic import SecretStr
+
+from trading_bot.config import KisCredentialGroup, Settings
 from trading_bot.domain import DataContext, Money, Ticker
 
 
@@ -24,6 +27,30 @@ def make_data_context(**overrides) -> DataContext:
     }
     values.update(overrides)
     return DataContext(**values)
+
+
+def make_settings(**overrides) -> Settings:
+    values = {
+        "kis_mock": KisCredentialGroup(
+            domain="https://mock.example.test",
+            app_key=SecretStr("test-mock-app-key"),
+            app_secret=SecretStr("test-mock-app-secret"),
+            tr_id_profile="mock",
+            label="KIS mock account",
+        ),
+        "kis_real": KisCredentialGroup(
+            domain="https://real.example.test",
+            app_key=SecretStr("test-real-app-key"),
+            app_secret=SecretStr("test-real-app-secret"),
+            tr_id_profile="real",
+            label="KIS real account",
+        ),
+        "anthropic_api_key": SecretStr("test-anthropic-key"),
+        "openai_api_key": SecretStr("test-openai-key"),
+        "_env_file": None,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def anthropic_response(*, tool_input=None, stop_reason="end_turn", content=None):

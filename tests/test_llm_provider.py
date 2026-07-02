@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import inspect
+import subprocess
+import sys
+from unittest.mock import patch
+
 import pytest
 import structlog.testing
+from pydantic import SecretStr
 
+from trading_bot.config import LLMProviderName
 from trading_bot.domain import Decision, LLMSignal
+from trading_bot.ports import LLMProvider
 from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
 from trading_bot.signal_parser import SignalParseError
 from trading_bot.trade_signal import TradeSignal
@@ -13,6 +21,7 @@ from conftest import (
     FakeOpenAIClient,
     anthropic_response,
     make_data_context,
+    make_settings,
     openai_response,
 )
 
@@ -31,6 +40,99 @@ def _provider(fake, *, max_retries=3):
 
 def _valid_tool_input(decision="BUY", confidence=0.9, reason="RSI 72 + vol 2x"):
     return {"decision": decision, "confidence": confidence, "reason": reason}
+
+
+def test_build_llm_provider_selects_adapter_from_settings_value() -> None:
+    from trading_bot.llm_provider import (
+        ClaudeLLMProvider,
+        OpenAILLMProvider,
+        build_llm_provider,
+    )
+
+    claude_settings = make_settings(
+        llm_provider=LLMProviderName.CLAUDE,
+        anthropic_model="claude-sonnet-4-6",
+        anthropic_temperature=0.2,
+        llm_max_retries=5,
+        llm_retry_backoff_seconds=2.5,
+    )
+    claude = build_llm_provider(claude_settings, client=FakeAnthropicClient())
+
+    assert isinstance(claude, ClaudeLLMProvider)
+    assert claude._model == claude_settings.anthropic_model
+    assert claude._temperature == claude_settings.anthropic_temperature
+    assert claude._max_retries == claude_settings.llm_max_retries
+    assert claude._retry_backoff_seconds == claude_settings.llm_retry_backoff_seconds
+
+    openai_settings = make_settings(
+        llm_provider=LLMProviderName.OPENAI,
+        openai_model="gpt-4.1-mini",
+        openai_temperature=0.1,
+        llm_max_retries=4,
+        llm_retry_backoff_seconds=1.5,
+    )
+    openai = build_llm_provider(openai_settings, client=FakeOpenAIClient())
+
+    assert isinstance(openai, OpenAILLMProvider)
+    assert openai._model == openai_settings.openai_model
+    assert openai._temperature == openai_settings.openai_temperature
+    assert openai._max_retries == openai_settings.llm_max_retries
+    assert openai._retry_backoff_seconds == openai_settings.llm_retry_backoff_seconds
+
+
+def test_built_adapters_satisfy_llm_provider_protocol() -> None:
+    from trading_bot.llm_provider import build_llm_provider
+
+    claude = build_llm_provider(
+        make_settings(llm_provider=LLMProviderName.CLAUDE),
+        client=FakeAnthropicClient(),
+    )
+    openai = build_llm_provider(
+        make_settings(llm_provider=LLMProviderName.OPENAI),
+        client=FakeOpenAIClient(),
+    )
+
+    assert isinstance(claude, LLMProvider)
+    assert isinstance(openai, LLMProvider)
+    assert not inspect.iscoroutinefunction(claude.generate_signal)
+    assert not inspect.iscoroutinefunction(openai.generate_signal)
+
+
+def test_llm_provider_import_keeps_sdks_lazy_in_fresh_interpreter() -> None:
+    program = (
+        "import sys\n"
+        "import trading_bot.llm_provider\n"
+        "loaded = set(sys.modules)\n"
+        "for p in ('anthropic', 'openai'):\n"
+        "    assert not any(m == p or m.startswith(p + '.') for m in loaded), p\n"
+        "print('OK')\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "OK" in completed.stdout
+
+
+def test_injected_client_does_not_surface_active_api_key() -> None:
+    from trading_bot.llm_provider import build_llm_provider
+
+    fake = FakeAnthropicClient(api_key=None)
+
+    with patch.object(
+        SecretStr,
+        "get_secret_value",
+        side_effect=AssertionError("secret should not be surfaced"),
+    ):
+        provider = build_llm_provider(
+            make_settings(llm_provider=LLMProviderName.CLAUDE),
+            client=fake,
+        )
+
+    assert provider._client is fake
+    assert fake.api_key is None
 
 
 def test_claude_request_shape_forces_strict_tool_and_omits_sampling_params() -> None:
