@@ -15,8 +15,16 @@ from tenacity import (
 
 from trading_bot.config import LLMProviderName, Settings
 from trading_bot.domain import DataContext, LLMSignal
-from trading_bot.ports import LLMProvider
+from trading_bot.execution import (
+    CycleAuditEvent,
+    ExecutionAction,
+    ExecutionConfig,
+    ExecutionResult,
+    execute_signal_cycle,
+)
+from trading_bot.ports import Broker, LLMProvider
 from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
+from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot.signal_parser import SignalParseError, parse_signal
 from trading_bot.trade_signal import TradeSignal
 
@@ -307,4 +315,61 @@ def build_llm_provider(settings: Settings, *, client: Any = None) -> LLMProvider
         temperature=settings.openai_temperature,
         max_retries=settings.llm_max_retries,
         retry_backoff_seconds=settings.llm_retry_backoff_seconds,
+    )
+
+
+def run_llm_cycle(
+    provider: LLMProvider,
+    context: DataContext,
+    *,
+    broker: Broker,
+    available_cash: float,
+    execution_config: ExecutionConfig,
+    risk_config: RiskConfig,
+    daily_loss_state: DailyLossState,
+    dry_run: bool = True,
+) -> ExecutionResult:
+    """Generate a provider signal and feed it through the execution core."""
+
+    try:
+        signal = provider.generate_signal(context)
+    except LLMProviderError as exc:
+        audit = CycleAuditEvent(
+            ticker=context.ticker.value,
+            parsed_decision=None,
+            parse_error=f"llm_provider_error: {exc}",
+            risk_override=False,
+            override_reason="",
+            final_action=ExecutionAction.HOLD.value,
+            order_reason="llm provider failure",
+            dry_run=dry_run,
+            broker_order_id=None,
+        )
+        return ExecutionResult(
+            ExecutionAction.HOLD,
+            None,
+            "llm provider failed; fail-safe HOLD",
+            risk_override=False,
+            override_reason=None,
+            audit=audit,
+            broker_order_id=None,
+        )
+
+    raw_signal = json.dumps(
+        {
+            "decision": signal.decision.value,
+            "confidence": signal.confidence,
+            "reason": signal.reason,
+        }
+    )
+    return execute_signal_cycle(
+        raw_signal,
+        context.ticker,
+        context.current_price,
+        available_cash,
+        broker,
+        execution_config,
+        risk_config,
+        daily_loss_state,
+        dry_run=dry_run,
     )
