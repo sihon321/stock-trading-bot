@@ -6,15 +6,15 @@ current_phase: 5
 current_phase_name: Real-Money Readiness & Operations
 status: executing
 stopped_at: Phase 5 context gathered
-last_updated: "2026-07-02T13:03:57.635Z"
+last_updated: "2026-07-02T13:33:44Z"
 last_activity: 2026-07-02
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 16
-  completed_plans: 16
-  percent: 80
+  total_plans: 20
+  completed_plans: 17
+  percent: 85
 paused_at: null
 ---
 
@@ -25,16 +25,16 @@ paused_at: null
 See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 04 — llm-agent
+**Current focus:** Phase 05 — real-money-readiness-operations
 
 ## Current Position
 
 Phase: 5 — Real-Money Readiness & Operations
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-02 — Phase 04 complete, transitioned to Phase 5
+Plan: 05-02 next
+Status: Ready to execute next plan
+Last activity: 2026-07-02 — Phase 05 Plan 01 complete
 
-Progress: [██████████] 100% of roadmap plans
+Progress: [████████░░] 85% of roadmap plans
 
 ## Performance Metrics
 
@@ -71,6 +71,7 @@ Progress: [██████████] 100% of roadmap plans
 | Phase 04 P02 | 6min | 2 tasks | 5 files |
 | Phase 04-llm-agent P03 | 5min | 2 tasks | 4 files |
 | Phase 04-llm-agent P04 | 4min | 2 tasks | 4 files |
+| Phase 05-real-money-readiness-operations P01 | 40min | 5 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -112,6 +113,9 @@ Recent decisions affecting current work:
 - [Phase 04]: [Phase 04 Plan 03]: Installed openai==2.44.0 parse signature confirmed response_format and temperature support on chat.completions.parse.
 - [Phase 04]: [Phase 04 Plan 04]: LLM provider selection is centralized in build_llm_provider; swapping Claude and OpenAI is a Settings.llm_provider change.
 - [Phase 04]: [Phase 04 Plan 04]: run_llm_cycle maps LLMProviderError to audited HOLD with zero broker interaction and re-serializes successful signals through execute_signal_cycle.
+- [Phase 05]: [Phase 05 Plan 01]: Only typer==0.26.8 was added; python-kis remains excluded per the approved direct-REST order path.
+- [Phase 05]: [Phase 05 Plan 01]: Workspace verification uses /opt/homebrew/bin/python3.14 ahead of /usr/bin/python3 because Typer 0.26.8 requires Python >=3.10.
+- [Phase 05]: [Phase 05 Plan 01]: Wave 0 scaffolds collect exact downstream test names while import-gating missing modules until later plans implement them.
 
 ### Pending Todos
 
@@ -129,6 +133,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-02T10:35:19.363Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-real-money-readiness-operations/05-CONTEXT.md
+Last session: 2026-07-02T13:33:44Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None

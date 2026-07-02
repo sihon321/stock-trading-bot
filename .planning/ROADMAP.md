@@ -153,11 +153,11 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: 4 plans
+**Plans**: 1/4 plans complete
 Plans:
 **Wave 1**
 
-- [ ] 05-01-PLAN.md — Foundation: typer install (SUS gate), Settings extensions (audit DB path, Discord webhook, real-order params), Notifier port, and Wave 0 test scaffolds
+- [x] 05-01-PLAN.md — Foundation: typer install (SUS gate), Settings extensions (audit DB path, Discord webhook, real-order params), Notifier port, and Wave 0 test scaffolds
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -181,4 +181,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
 | 4. LLM Agent | 4/4 | Complete    | 2026-07-02 |
-| 5. Real-Money Readiness & Operations | 0/4 | Planned | - |
+| 5. Real-Money Readiness & Operations | 1/4 | In Progress | - |
