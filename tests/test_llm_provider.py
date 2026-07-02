@@ -10,9 +10,12 @@ import structlog.testing
 from pydantic import SecretStr
 
 from trading_bot.config import LLMProviderName
-from trading_bot.domain import Decision, LLMSignal
+from trading_bot.domain import Decision, LLMSignal, Money, Order, Ticker
+from trading_bot.execution import ExecutionAction, ExecutionConfig
+from trading_bot.mock_broker import MockBroker
 from trading_bot.ports import LLMProvider
 from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
+from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot.signal_parser import SignalParseError
 from trading_bot.trade_signal import TradeSignal
 
@@ -40,6 +43,52 @@ def _provider(fake, *, max_retries=3):
 
 def _valid_tool_input(decision="BUY", confidence=0.9, reason="RSI 72 + vol 2x"):
     return {"decision": decision, "confidence": confidence, "reason": reason}
+
+
+def _execution_config() -> ExecutionConfig:
+    return ExecutionConfig(
+        buy_confidence_threshold=0.8,
+        sell_confidence_threshold=0.8,
+        buy_cash_fraction=0.1,
+        max_position_value=1_000_000.0,
+    )
+
+
+def _risk_config() -> RiskConfig:
+    return RiskConfig(stop_loss_pct=0.05, take_profit_pct=0.10)
+
+
+def _no_loss() -> DailyLossState:
+    return DailyLossState(realized_loss=0.0, threshold=500_000.0)
+
+
+class FailingProvider:
+    def generate_signal(self, context):
+        from trading_bot.llm_provider import LLMProviderError
+
+        raise LLMProviderError("transient outage")
+
+
+class StubSignalProvider:
+    def __init__(self, signal: LLMSignal) -> None:
+        self.signal = signal
+
+    def generate_signal(self, context):
+        return self.signal
+
+
+class RecordingNoTouchBroker:
+    def __init__(self) -> None:
+        self.get_position_calls = []
+        self.place_order_calls = []
+
+    def get_position(self, ticker: Ticker):
+        self.get_position_calls.append(ticker)
+        raise AssertionError("get_position must not be called")
+
+    def place_order(self, order: Order):
+        self.place_order_calls.append(order)
+        raise AssertionError("place_order must not be called")
 
 
 def test_build_llm_provider_selects_adapter_from_settings_value() -> None:
@@ -133,6 +182,92 @@ def test_injected_client_does_not_surface_active_api_key() -> None:
 
     assert provider._client is fake
     assert fake.api_key is None
+
+
+def test_error_maps_to_hold() -> None:
+    from trading_bot.llm_provider import run_llm_cycle
+
+    broker = RecordingNoTouchBroker()
+
+    result = run_llm_cycle(
+        FailingProvider(),
+        make_data_context(),
+        broker=broker,
+        available_cash=10_000_000.0,
+        execution_config=_execution_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    assert result.action is ExecutionAction.HOLD
+    assert result.order is None
+    assert result.audit is not None
+    assert result.audit.final_action == "HOLD"
+    assert result.audit.parse_error is not None
+    assert result.audit.parse_error.startswith("llm_provider_error:")
+    assert broker.get_position_calls == []
+    assert broker.place_order_calls == []
+
+
+def test_claude_run_llm_cycle_flows_into_dry_run_execution_chain() -> None:
+    from trading_bot.llm_provider import ClaudeLLMProvider, run_llm_cycle
+
+    context = make_data_context()
+    fake = FakeAnthropicClient(
+        [anthropic_response(tool_input=_valid_tool_input("BUY", 0.9))]
+    )
+    broker = MockBroker(cash=Money(10_000_000.0, "KRW"))
+    provider = ClaudeLLMProvider(
+        client=fake,
+        model="claude-opus-4-8",
+        temperature=0.0,
+        max_retries=3,
+        retry_backoff_seconds=0.0,
+    )
+
+    result = run_llm_cycle(
+        provider,
+        context,
+        broker=broker,
+        available_cash=10_000_000.0,
+        execution_config=_execution_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    assert result.action is ExecutionAction.BUY
+    assert result.order is not None
+    assert result.audit is not None
+    assert result.audit.dry_run is True
+    assert result.audit.order_reason == "buy signal qualified"
+    assert broker.order_history == []
+
+
+def test_run_llm_cycle_serializes_signal_for_execution_revalidation() -> None:
+    from trading_bot.llm_provider import run_llm_cycle
+
+    signal = LLMSignal(
+        decision=Decision.BUY,
+        confidence=0.97,
+        reason="breakout signal survived provider validation",
+    )
+
+    result = run_llm_cycle(
+        StubSignalProvider(signal),
+        make_data_context(),
+        broker=MockBroker(cash=Money(10_000_000.0, "KRW")),
+        available_cash=10_000_000.0,
+        execution_config=_execution_config(),
+        risk_config=_risk_config(),
+        daily_loss_state=_no_loss(),
+        dry_run=True,
+    )
+
+    assert result.audit is not None
+    assert result.audit.parsed_decision == Decision.BUY.value
+    assert result.action is ExecutionAction.BUY
 
 
 def test_claude_request_shape_forces_strict_tool_and_omits_sampling_params() -> None:
