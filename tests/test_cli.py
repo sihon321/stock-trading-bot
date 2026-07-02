@@ -1,33 +1,218 @@
-"""Wave 0 scaffolds for the Typer CLI real-money gate and run loop."""
+"""Offline tests for the Typer CLI composition root."""
 
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import dataclass
+from typing import Any
+
 import pytest
+from typer.testing import CliRunner
 
-from conftest import make_settings
+from conftest import make_data_context, make_settings
+from trading_bot.config import TradingMode
+from trading_bot.domain import Decision, LLMSignal, Money, Ticker
+from trading_bot.execution import (
+    CycleAuditEvent,
+    ExecutionAction,
+    ExecutionResult,
+)
 
-CLI_MODULE = "trading_bot.cli"
+
+@dataclass
+class _ScreenerResult:
+    selected: tuple[str, ...]
 
 
-def _pending_until_module_exists(test_name: str) -> None:
-    pytest.importorskip(CLI_MODULE, reason="pending: implemented in 05-04")
-    pytest.fail(f"pending: {test_name} implemented in 05-04")
+class _DataSource:
+    def __init__(self, tickers: tuple[str, ...] = ("005930",), fail_on: str | None = None):
+        self.tickers = tickers
+        self.fail_on = fail_on
+        self.contexts: list[str] = []
+
+    def screen_daily_candidates(self, trading_date: str) -> _ScreenerResult:
+        assert trading_date
+        return _ScreenerResult(self.tickers)
+
+    def build_context(self, ticker: Ticker):
+        self.contexts.append(ticker.value)
+        if ticker.value == self.fail_on:
+            raise RuntimeError(f"context failed for {ticker.value}")
+        return make_data_context(
+            ticker=ticker,
+            current_price=Money(70_000.0, "KRW"),
+        )
+
+
+class _Provider:
+    def generate_signal(self, context):
+        return LLMSignal(
+            decision=Decision.BUY,
+            confidence=0.95,
+            reason=f"qualified {context.ticker.value}",
+        )
+
+
+class _Broker:
+    def __init__(self) -> None:
+        self.orders = []
+
+    def get_position(self, ticker: Ticker):
+        return None
+
+    def place_order(self, order):
+        self.orders.append(order)
+        return f"ORDER-{len(self.orders)}"
+
+
+class _Notifier:
+    def __init__(self, *, fail_on_error: bool = False) -> None:
+        self.messages: list[str] = []
+        self.fail_on_error = fail_on_error
+
+    def send(self, summary: str) -> bool:
+        self.messages.append(summary)
+        if self.fail_on_error and "ERROR" in summary:
+            raise RuntimeError("transport down")
+        return True
+
+
+def _run_with(
+    *,
+    settings=None,
+    data_source=None,
+    broker=None,
+    notifier=None,
+    ticker: str | None = None,
+    execute: bool = False,
+    live_confirm: bool = False,
+    run_cycle=None,
+) -> dict[str, Any]:
+    from trading_bot.cli import run_cycle as cli_run_cycle
+
+    return cli_run_cycle(
+        ticker=ticker,
+        execute=execute,
+        live_confirm=live_confirm,
+        settings=settings or make_settings(),
+        data_source=data_source or _DataSource(),
+        llm_provider=_Provider(),
+        broker=broker or _Broker(),
+        audit_conn=sqlite3.connect(":memory:"),
+        notifier=notifier or _Notifier(),
+        run_cycle=run_cycle,
+        trading_date="20260702",
+        run_id="test-run",
+    )
 
 
 def test_real_execute_requires_live_confirm() -> None:
-    _pending_until_module_exists("real execute requires --live-confirm")
+    from trading_bot.cli import app
+
+    real_settings = make_settings(
+        trading_mode=TradingMode.REAL,
+        confirm_real_trading=True,
+    )
+    broker = _Broker()
+
+    with pytest.raises(SystemExit):
+        _run_with(settings=real_settings, broker=broker, execute=True)
+    assert broker.orders == []
+
+    accepted = _run_with(
+        settings=real_settings,
+        broker=broker,
+        execute=True,
+        live_confirm=True,
+        run_cycle=lambda **kwargs: ExecutionResult(
+            action=ExecutionAction.HOLD,
+            order=None,
+            reason="safe hold",
+            audit=CycleAuditEvent(
+                ticker=kwargs["context"].ticker.value,
+                parsed_decision="HOLD",
+                parse_error=None,
+                risk_override=False,
+                override_reason="",
+                final_action="HOLD",
+                order_reason="safe hold",
+                dry_run=kwargs["dry_run"],
+            ),
+        ),
+    )
+    assert accepted["refused"] is False
+
+    runner = CliRunner()
+    assert "run" in runner.invoke(app, ["--help"]).stdout
+    assert "screen" in runner.invoke(app, ["--help"]).stdout
+    assert "status" in runner.invoke(app, ["--help"]).stdout
+
+
+def test_dry_run_default_no_orders(capsys) -> None:
+    broker = _Broker()
+
+    result = _run_with(broker=broker)
+
+    assert broker.orders == []
+    assert result["dry_run"] is True
+    captured = capsys.readouterr()
+    assert "Trading bot startup safety" in captured.out
+    assert "Trading mode: mock" in captured.out
 
 
 def test_ticker_error_isolation() -> None:
-    _pending_until_module_exists("per-ticker error isolation")
+    data_source = _DataSource(("005930", "000660", "035420"), fail_on="000660")
+    notifier = _Notifier()
+    conn = sqlite3.connect(":memory:")
 
+    from trading_bot.cli import run_cycle as cli_run_cycle
 
-def test_dry_run_default_no_orders() -> None:
-    _pending_until_module_exists("dry-run default places no orders")
+    result = cli_run_cycle(
+        ticker=None,
+        execute=False,
+        live_confirm=False,
+        settings=make_settings(),
+        data_source=data_source,
+        llm_provider=_Provider(),
+        broker=_Broker(),
+        audit_conn=conn,
+        notifier=notifier,
+        trading_date="20260702",
+        run_id="test-run",
+    )
+
+    assert [outcome["ticker"] for outcome in result["outcomes"]] == [
+        "005930",
+        "000660",
+        "035420",
+    ]
+    assert result["outcomes"][1]["status"] == "error"
+    assert "000660" in notifier.messages[-1]
+    assert "context failed" in notifier.messages[-1]
+    rows = conn.execute(
+        "SELECT ticker FROM decisions ORDER BY id"
+    ).fetchall()
+    assert rows == [("005930",), ("035420",)]
+    assert data_source.contexts == ["005930", "000660", "035420"]
 
 
 def test_immediate_error_push() -> None:
-    _pending_until_module_exists("cycle-level error sends immediate push")
+    error_notifier = _Notifier(fail_on_error=True)
+    error_result = _run_with(
+        data_source=_DataSource(("005930", "000660"), fail_on="000660"),
+        notifier=error_notifier,
+    )
+    assert error_result["errors"] == 1
+    assert len(error_notifier.messages) == 2
+    assert "ERROR" in error_notifier.messages[0]
+    assert "000660" in error_notifier.messages[0]
+    assert "Trading run test-run" in error_notifier.messages[1]
 
-
-__all__ = ["make_settings"]
+    clean_notifier = _Notifier()
+    clean_result = _run_with(
+        data_source=_DataSource(("005930", "035420")),
+        notifier=clean_notifier,
+    )
+    assert clean_result["errors"] == 0
+    assert len(clean_notifier.messages) == 1
+    assert "Trading run test-run" in clean_notifier.messages[0]
