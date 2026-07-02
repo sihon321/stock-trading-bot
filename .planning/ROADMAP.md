@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Mock Execution Core** - Rules risk engine, fail-safe signal parser, dry-run executor, and MockBroker — testable with zero external deps and zero financial risk (completed 2026-07-01)
 - [x] **Phase 3: Data Pipeline** - pykrx OHLCV + indicators + daily screener, fail-soft Naver news, and KIS real-time price behind a shared token manager (completed 2026-07-01)
 - [x] **Phase 4: LLM Agent** - Switchable Claude/OpenAI provider behind the port, strict-JSON structured output, and context builder wired to the fail-safe parser (completed 2026-07-02)
-- [ ] **Phase 5: Real-Money Readiness & Operations** - Manual CLI trigger, per-cycle audit log, Telegram notifications, idempotent real KISBroker, and the gated real-money promotion
+- [x] **Phase 5: Real-Money Readiness & Operations** - Manual CLI trigger, per-cycle audit log, Telegram notifications, idempotent real KISBroker, and the gated real-money promotion (completed 2026-07-02)
 
 ## Phase Details
 
@@ -153,7 +153,7 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 Plans:
 **Wave 1**
 
@@ -166,7 +166,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 05-04-PLAN.md — typer CLI (bot run/screen/status) with dry-run default + layered real-money gate, universe loop with per-ticker error isolation, broker selection, audit + consolidated notify
+- [x] 05-04-PLAN.md — typer CLI (bot run/screen/status) with dry-run default + layered real-money gate, universe loop with per-ticker error isolation, broker selection, audit + consolidated notify
 
 **Research hint**: KIS order params (TR_ID prefixes, hashkey, tick-size bands, market-hours codes) and the reconciliation/idempotency flow need API-specific verification before any real-money path — verified in 05-RESEARCH.md (D-05 resolves to extending the direct-REST layer; python-kis not adopted).
 
@@ -181,4 +181,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
 | 4. LLM Agent | 4/4 | Complete    | 2026-07-02 |
-| 5. Real-Money Readiness & Operations | 3/4 | In Progress|  |
+| 5. Real-Money Readiness & Operations | 4/4 | Complete    | 2026-07-02 |

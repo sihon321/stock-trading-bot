@@ -12,7 +12,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **CFG-01**: Operator can configure all secrets (KIS appkey/secret, LLM API keys) via a gitignored `.env`, loaded through typed settings; secrets never appear in logs
 - [x] **CFG-02**: Operator selects trading mode (`mock` / `real`) in config; the mock/real switch binds KIS domain, appkey, appsecret, and TR_ID atomically so a partial swap can never trade real money by accident
 - [x] **CFG-03**: Operator selects the active LLM provider (`claude` / `openai`) in config; exactly one is active per run
-- [ ] **CFG-04**: System defaults to `mock` mode; switching to `real` requires an explicit, deliberate config change
+- [x] **CFG-04**: System defaults to `mock` mode; switching to `real` requires an explicit, deliberate config change
 
 ### Data Pipeline
 
@@ -44,7 +44,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Operations & Observability
 
-- [ ] **OPS-01**: Operator triggers a full evaluation cycle on demand (manual CLI trigger; no scheduler in v1)
+- [x] **OPS-01**: Operator triggers a full evaluation cycle on demand (manual CLI trigger; no scheduler in v1)
 - [x] **OPS-02**: System logs every cycle's data context, LLM signal, risk decisions, and order outcome to a persistent, reviewable audit store
 - [x] **OPS-03**: System pushes each cycle's decision and order outcome to the operator via a notification channel (e.g. Telegram)
 
@@ -89,7 +89,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 1 | Complete |
 | CFG-03 | Phase 1 | Complete |
-| CFG-04 | Phase 5 | Pending |
+| CFG-04 | Phase 5 | Complete |
 | DATA-01 | Phase 3 | Complete |
 | DATA-02 | Phase 3 | Complete |
 | DATA-03 | Phase 3 | Complete |
@@ -106,7 +106,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RISK-01 | Phase 2 | Complete |
 | RISK-02 | Phase 2 | Complete |
 | RISK-03 | Phase 2 | Complete |
-| OPS-01 | Phase 5 | Pending |
+| OPS-01 | Phase 5 | Complete |
 | OPS-02 | Phase 5 | Complete |
 | OPS-03 | Phase 5 | Complete |
 

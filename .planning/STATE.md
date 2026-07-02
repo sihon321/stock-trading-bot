@@ -5,16 +5,16 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Real-Money Readiness & Operations
 status: executing
-stopped_at: Completed 05-03-PLAN.md
-last_updated: "2026-07-02T14:04:34.267Z"
+stopped_at: Completed 05-04-PLAN.md
+last_updated: "2026-07-02T14:12:34Z"
 last_activity: 2026-07-02
-last_activity_desc: Phase 05 Plan 03 complete
+last_activity_desc: Phase 05 Plan 04 complete
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 20
-  completed_plans: 19
-  percent: 95
+  completed_plans: 20
+  percent: 100
 paused_at: null
 ---
 
@@ -30,17 +30,17 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 5 — Real-Money Readiness & Operations
-Plan: 05-04 next
-Status: Ready to execute next plan
-Last activity: 2026-07-02 — Phase 05 Plan 03 complete
+Plan: 05-04 complete
+Status: Phase 05 complete
+Last activity: 2026-07-02 — Phase 05 Plan 04 complete
 
-Progress: [██████████] 95% of roadmap plans
+Progress: [██████████] 100% of roadmap plans
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 19
+- Total plans completed: 20
 - Average duration: 3 min
 - Total execution time: 0.15 hours
 
@@ -74,6 +74,7 @@ Progress: [██████████] 95% of roadmap plans
 | Phase 05-real-money-readiness-operations P01 | 40min | 5 tasks | 11 files |
 | Phase 05-real-money-readiness-operations P02 | 5min | 3 tasks | 4 files |
 | Phase 05-real-money-readiness-operations P03 | 5min | 2 tasks | 4 files |
+| Phase 05-real-money-readiness-operations P04 | 35min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -122,6 +123,9 @@ Recent decisions affecting current work:
 - [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 02]: KISBroker requires a caller-provided KisOrderAccount and shared KisTokenManager; it does not open a second token flow.
 - [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 03]: SQLite audit stores structured decision fields plus correlation_id only; raw prompt/response remain in structlog.
 - [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 03]: Discord delivery is fail-soft with bounded retry and returns False on final failure.
+- [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 04]: CLI run orchestration is injectable; Typer commands stay thin wrappers over `run_cycle`.
+- [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 04]: Real KIS broker CLI construction requires one caller-owned shared `KisTokenManager` and a real account descriptor; no dummy live account values are invented.
+- [Phase 05-real-money-readiness-operations]: [Phase 05 Plan 04]: Cycle-level failures send an immediate fail-soft notification and are also included in the single end-of-run consolidated summary.
 
 ### Pending Todos
 
@@ -139,6 +143,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-02T14:04:34.261Z
-Stopped at: Completed 05-03-PLAN.md
+Last session: 2026-07-02T14:12:34Z
+Stopped at: Completed 05-04-PLAN.md
 Resume file: None
