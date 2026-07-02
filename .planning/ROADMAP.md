@@ -153,8 +153,22 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: TBD
-**Research hint**: KIS order params (TR_ID prefixes, hashkey, tick-size bands, market-hours codes) and the reconciliation/idempotency flow need API-specific verification before any real-money path — run `/gsd-plan-phase --research-phase 5` during planning.
+**Plans**: 4 plans
+Plans:
+**Wave 1**
+
+- [ ] 05-01-PLAN.md — Foundation: typer install (SUS gate), Settings extensions (audit DB path, Discord webhook, real-order params), Notifier port, and Wave 0 test scaffolds
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 05-02-PLAN.md — Idempotent reconciled KIS order path: direct-REST order/query adapter + KISBroker (query-before-POST, never-retried POST, partial-fill readback, tick snap, market guard)
+- [ ] 05-03-PLAN.md — Two-table SQLite audit writer (correlation to structlog) + fail-soft Discord Notifier (consolidated per-run summary)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 05-04-PLAN.md — typer CLI (bot run/screen/status) with dry-run default + layered real-money gate, universe loop with per-ticker error isolation, broker selection, audit + consolidated notify
+
+**Research hint**: KIS order params (TR_ID prefixes, hashkey, tick-size bands, market-hours codes) and the reconciliation/idempotency flow need API-specific verification before any real-money path — verified in 05-RESEARCH.md (D-05 resolves to extending the direct-REST layer; python-kis not adopted).
 
 ## Progress
 
@@ -167,4 +181,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
 | 4. LLM Agent | 4/4 | Complete    | 2026-07-02 |
-| 5. Real-Money Readiness & Operations | 0/TBD | Not started | - |
+| 5. Real-Money Readiness & Operations | 0/4 | Planned | - |
