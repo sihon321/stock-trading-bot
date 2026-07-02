@@ -8,6 +8,7 @@
 venv/
 env/
 .python-userbase/
+data/
 
 # Python caches
 __pycache__/

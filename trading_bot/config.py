@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     naver_news_enabled: bool = False
     naver_news_max_items: int = 5
     naver_news_max_chars: int = 2_000
+    # Phase 5 operations settings (OPS-02/03, EXEC-04): local audit persistence,
+    # fail-soft Discord notifications, and bounded real-order request timeout.
+    audit_db_path: str = "./data/audit.db"
+    discord_webhook_url: Optional[SecretStr] = None
+    order_timeout_seconds: float = 5.0
 
     @model_validator(mode="after")
     def validate_safety_gates(self) -> "Settings":
@@ -127,6 +132,7 @@ class Settings(BaseSettings):
             "llm_retry_backoff_seconds": self.llm_retry_backoff_seconds,
             "naver_news_max_items": self.naver_news_max_items,
             "naver_news_max_chars": self.naver_news_max_chars,
+            "order_timeout_seconds": self.order_timeout_seconds,
         }
         for name, value in positive_fields.items():
             if value <= 0:
