@@ -196,6 +196,57 @@ def test_ticker_error_isolation() -> None:
     assert data_source.contexts == ["005930", "000660", "035420"]
 
 
+def test_ticker_option_narrows_universe() -> None:
+    data_source = _DataSource(("005930", "000660", "035420"))
+
+    result = _run_with(data_source=data_source, ticker="000660")
+
+    assert [outcome["ticker"] for outcome in result["outcomes"]] == ["000660"]
+    assert data_source.contexts == ["000660"]
+
+
+def test_real_broker_uses_shared_token_manager(monkeypatch) -> None:
+    import trading_bot.cli as cli
+    from trading_bot.kis_order import KisOrderAccount
+
+    real_settings = make_settings(
+        trading_mode=TradingMode.REAL,
+        confirm_real_trading=True,
+    )
+    token_manager = object()
+    account = KisOrderAccount(cano="12345678", account_product_code="01")
+    calls = []
+
+    def fake_build_kis_broker(settings, *, token_manager, account, client=None):
+        calls.append(
+            {
+                "settings": settings,
+                "token_manager": token_manager,
+                "account": account,
+                "client": client,
+            }
+        )
+        return _Broker()
+
+    monkeypatch.setattr(cli, "build_kis_broker", fake_build_kis_broker)
+
+    broker = cli._build_broker(
+        real_settings,
+        token_manager=token_manager,
+        account=account,
+    )
+
+    assert isinstance(broker, _Broker)
+    assert calls == [
+        {
+            "settings": real_settings,
+            "token_manager": token_manager,
+            "account": account,
+            "client": None,
+        }
+    ]
+
+
 def test_immediate_error_push() -> None:
     error_notifier = _Notifier(fail_on_error=True)
     error_result = _run_with(
