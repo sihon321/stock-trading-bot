@@ -93,6 +93,32 @@ def _log_cycle(
     )
 
 
+def _call_provider_with_retry(
+    raw_call: Any,
+    *,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> Any:
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(max_retries),
+        wait=wait_exponential(multiplier=retry_backoff_seconds),
+        retry=retry_if_exception_type(_TransientLLMError),
+    )
+    def _attempt() -> Any:
+        try:
+            return raw_call()
+        except Exception as exc:  # noqa: BLE001 - provider transports vary.
+            raise _TransientLLMError(
+                f"LLM request failed: {type(exc).__name__}"
+            ) from exc
+
+    try:
+        return _attempt()
+    except _TransientLLMError as exc:
+        raise LLMProviderError(str(exc)) from exc
+
+
 class ClaudeLLMProvider:
     """Anthropic Claude adapter using strict forced tool use."""
 
@@ -148,31 +174,18 @@ class ClaudeLLMProvider:
             raise
 
     def _call_with_retry(self, prompt: str) -> Any:
-        @retry(
-            reraise=True,
-            stop=stop_after_attempt(self._max_retries),
-            wait=wait_exponential(multiplier=self._retry_backoff_seconds),
-            retry=retry_if_exception_type(_TransientLLMError),
+        return _call_provider_with_retry(
+            lambda: self._client.messages.create(
+                model=self._model,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=[EMIT_SIGNAL_TOOL],
+                tool_choice={"type": "tool", "name": "emit_signal"},
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            max_retries=self._max_retries,
+            retry_backoff_seconds=self._retry_backoff_seconds,
         )
-        def _attempt() -> Any:
-            try:
-                return self._client.messages.create(
-                    model=self._model,
-                    max_tokens=1024,
-                    system=SYSTEM_PROMPT,
-                    tools=[EMIT_SIGNAL_TOOL],
-                    tool_choice={"type": "tool", "name": "emit_signal"},
-                    messages=[{"role": "user", "content": prompt}],
-                )
-            except Exception as exc:  # noqa: BLE001 - provider transports vary.
-                raise _TransientLLMError(
-                    f"LLM request failed: {type(exc).__name__}"
-                ) from exc
-
-        try:
-            return _attempt()
-        except _TransientLLMError as exc:
-            raise LLMProviderError(str(exc)) from exc
 
     def _select_tool_input(self, response: Any) -> dict[str, Any]:
         for block in getattr(response, "content", ()) or ():
@@ -185,3 +198,78 @@ class ClaudeLLMProvider:
                     return tool_input
                 raise LLMProviderError("emit_signal tool input was not an object")
         raise LLMProviderError("provider response missing emit_signal tool block")
+
+
+class OpenAILLMProvider:
+    """OpenAI adapter using chat.completions.parse structured outputs."""
+
+    provider_name = "openai"
+
+    def __init__(
+        self,
+        *,
+        client: Any,
+        model: str,
+        temperature: float,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
+        self._client = client
+        self._model = model
+        self._temperature = float(temperature)
+        self._max_retries = max(1, int(max_retries))
+        self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial redaction
+        return f"OpenAILLMProvider(provider_name={self.provider_name!r}, model={self._model!r})"
+
+    def generate_signal(self, context: DataContext) -> LLMSignal:
+        prompt = render_prompt(context)
+        response_text = ""
+        try:
+            response = self._call_with_retry(prompt)
+            response_text = _serialize_response(response)
+            message = response.choices[0].message
+            refusal = getattr(message, "refusal", None)
+            if refusal:
+                raise LLMProviderError(f"provider refused to emit a signal: {refusal}")
+
+            parsed = getattr(message, "parsed", None)
+            if parsed is None:
+                raise LLMProviderError("provider returned no parsed signal")
+
+            signal = _finalize(dict(parsed.model_dump(mode="json")))
+            _log_cycle(
+                provider=self.provider_name,
+                model=self._model,
+                temperature=self._temperature,
+                prompt=prompt,
+                response=response_text,
+                outcome=f"parsed:{signal.decision.value}",
+            )
+            return signal
+        except LLMProviderError as exc:
+            _log_cycle(
+                provider=self.provider_name,
+                model=self._model,
+                temperature=self._temperature,
+                prompt=prompt,
+                response=response_text or str(exc),
+                outcome=f"error:{exc}",
+            )
+            raise
+
+    def _call_with_retry(self, prompt: str) -> Any:
+        return _call_provider_with_retry(
+            lambda: self._client.chat.completions.parse(
+                model=self._model,
+                temperature=self._temperature,
+                response_format=TradeSignal,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            ),
+            max_retries=self._max_retries,
+            retry_backoff_seconds=self._retry_backoff_seconds,
+        )
