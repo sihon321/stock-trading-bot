@@ -27,6 +27,12 @@ ENV_KEYS = (
     "LLM_PROVIDER",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_TEMPERATURE",
+    "OPENAI_MODEL",
+    "OPENAI_TEMPERATURE",
+    "LLM_MAX_RETRIES",
+    "LLM_RETRY_BACKOFF_SECONDS",
     "KIS_MOCK__DOMAIN",
     "KIS_MOCK__APP_KEY",
     "KIS_MOCK__APP_SECRET",
@@ -191,6 +197,80 @@ def test_selected_llm_provider_missing_key_fails_without_inactive_secret_require
     assert "openai" in diagnostic
     assert "ANTHROPIC_API_KEY" not in diagnostic
     assert_no_secret_leaked(diagnostic)
+
+
+def test_phase4_llm_defaults_are_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch)
+
+    settings = Settings()
+
+    assert settings.anthropic_model == "claude-opus-4-8"
+    assert settings.anthropic_temperature == 0.0
+    assert settings.openai_model == "gpt-4.1"
+    assert settings.openai_temperature == 0.0
+    assert settings.llm_max_retries == 3
+    assert settings.llm_retry_backoff_seconds == 1.0
+
+
+def test_phase4_llm_fields_accept_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(
+        monkeypatch,
+        ANTHROPIC_MODEL="claude-sonnet-4-6",
+        ANTHROPIC_TEMPERATURE="0.2",
+        OPENAI_MODEL="gpt-4.1-mini",
+        OPENAI_TEMPERATURE="0.1",
+        LLM_MAX_RETRIES="5",
+        LLM_RETRY_BACKOFF_SECONDS="2.5",
+    )
+
+    settings = Settings()
+
+    assert settings.anthropic_model == "claude-sonnet-4-6"
+    assert settings.anthropic_temperature == 0.2
+    assert settings.openai_model == "gpt-4.1-mini"
+    assert settings.openai_temperature == 0.1
+    assert settings.llm_max_retries == 5
+    assert settings.llm_retry_backoff_seconds == 2.5
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"LLM_MAX_RETRIES": "0"},
+        {"LLM_RETRY_BACKOFF_SECONDS": "0"},
+    ],
+)
+def test_phase4_non_positive_llm_retry_values_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    override: dict[str, str],
+) -> None:
+    set_base_env(monkeypatch, **override)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings()
+
+    diagnostic = str(exc_info.value)
+    assert next(iter(override)).lower() in diagnostic.lower()
+    assert_no_secret_leaked(diagnostic)
+
+
+def test_phase4_llm_temperature_zero_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(
+        monkeypatch,
+        ANTHROPIC_TEMPERATURE="0.0",
+        OPENAI_TEMPERATURE="0.0",
+    )
+
+    settings = Settings()
+
+    assert settings.anthropic_temperature == 0.0
+    assert settings.openai_temperature == 0.0
 
 
 def test_execution_and_risk_defaults_are_deterministic(
