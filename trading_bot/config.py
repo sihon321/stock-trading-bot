@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     llm_provider: LLMProviderName = LLMProviderName.CLAUDE
     anthropic_api_key: Optional[SecretStr] = None
     openai_api_key: Optional[SecretStr] = None
+    # Phase 4 LLM provider pins (D-07/D-09). Anthropic temperature is
+    # advisory/log-only because Claude 4.6+ rejects sampling parameters; the
+    # OpenAI adapter is the only adapter that transmits its temperature.
+    anthropic_model: str = "claude-opus-4-8"
+    anthropic_temperature: float = 0.0
+    openai_model: str = "gpt-4.1"
+    openai_temperature: float = 0.0
+    llm_max_retries: int = 3
+    llm_retry_backoff_seconds: float = 1.0
     kis_mock: KisCredentialGroup
     kis_real: KisCredentialGroup
     dry_run: bool = True
@@ -114,6 +123,8 @@ class Settings(BaseSettings):
             "kis_min_interval_seconds": self.kis_min_interval_seconds,
             "kis_max_retries": self.kis_max_retries,
             "kis_retry_backoff_seconds": self.kis_retry_backoff_seconds,
+            "llm_max_retries": self.llm_max_retries,
+            "llm_retry_backoff_seconds": self.llm_retry_backoff_seconds,
             "naver_news_max_items": self.naver_news_max_items,
             "naver_news_max_chars": self.naver_news_max_chars,
         }
