@@ -1,7 +1,9 @@
 import logging
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
+
+from conftest import make_settings
 
 from trading_bot.config import (
     KisCredentialGroup,
@@ -65,6 +67,9 @@ ENV_KEYS = (
     "NAVER_NEWS_ENABLED",
     "NAVER_NEWS_MAX_ITEMS",
     "NAVER_NEWS_MAX_CHARS",
+    "AUDIT_DB_PATH",
+    "DISCORD_WEBHOOK_URL",
+    "ORDER_TIMEOUT_SECONDS",
 )
 
 
@@ -417,6 +422,26 @@ def test_phase3_source_policy_fields_do_not_leak_secrets(
     settings = Settings()
 
     assert_no_secret_leaked(repr(settings), startup_banner(settings))
+
+
+def test_phase5_audit_db_path_default_is_gitignored_location() -> None:
+    assert make_settings().audit_db_path == "./data/audit.db"
+
+
+def test_phase5_discord_webhook_is_secret_and_redacted_from_banner() -> None:
+    webhook_url = "https://discord.test/webhook/SECRET"
+    settings = make_settings(discord_webhook_url=SecretStr(webhook_url))
+
+    assert settings.discord_webhook_url is not None
+    assert settings.discord_webhook_url.get_secret_value() == webhook_url
+    assert webhook_url not in startup_banner(settings)
+
+
+def test_phase5_non_positive_order_timeout_fails_closed() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(order_timeout_seconds=0)
+
+    assert "order_timeout_seconds" in str(exc_info.value)
 
 
 def test_config_import_has_no_execution_or_risk_module_side_effects() -> None:
