@@ -4,7 +4,7 @@ import sys
 from typing import Optional
 
 from trading_bot.domain import DataContext, Decision, LLMSignal, Money, Order, OrderSide, Position, Ticker
-from trading_bot.ports import Broker, DataSource, LLMProvider
+from trading_bot.ports import Broker, DataSource, LLMProvider, Notifier
 
 
 FORBIDDEN_MODULE_PREFIXES = (
@@ -55,6 +55,15 @@ class FakeDataSource:
         )
 
 
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def send(self, summary: str) -> bool:
+        self.messages.append(summary)
+        return True
+
+
 def test_broker_protocol_is_runtime_checkable_and_structural() -> None:
     broker = FakeBroker()
     order = Order(
@@ -88,11 +97,22 @@ def test_data_source_protocol_is_runtime_checkable_and_structural() -> None:
     assert data_source.build_context(Ticker("005930")).ticker == Ticker("005930")
 
 
+def test_notifier_protocol_is_runtime_checkable_and_structural() -> None:
+    notifier = FakeNotifier()
+
+    assert isinstance(notifier, Notifier)
+    result = notifier.send("run summary")
+    assert isinstance(result, bool)
+    assert result is True
+    assert notifier.messages == ["run summary"]
+
+
 def test_ports_are_synchronous_semantic_protocols() -> None:
     assert not inspect.iscoroutinefunction(Broker.get_position)
     assert not inspect.iscoroutinefunction(Broker.place_order)
     assert not inspect.iscoroutinefunction(LLMProvider.generate_signal)
     assert not inspect.iscoroutinefunction(DataSource.build_context)
+    assert not inspect.iscoroutinefunction(Notifier.send)
 
 
 def test_ports_import_domain_types_without_concrete_adapters() -> None:
