@@ -36,3 +36,12 @@ class DataSource(Protocol):
     def build_context(self, ticker: Ticker) -> DataContext:
         """Build ticker-oriented context for signal generation."""
         ...
+
+
+@runtime_checkable
+class Notifier(Protocol):
+    """Operator notification boundary (fail-soft; never raises)."""
+
+    def send(self, summary: str) -> bool:
+        """Deliver a run summary; return True on delivery, False on give-up."""
+        ...
