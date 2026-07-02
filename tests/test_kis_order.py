@@ -1,9 +1,4 @@
-"""Offline tests for the direct-REST KIS order query foundation.
-
-Task 1 of 05-02 intentionally adds only retryable account-query legs,
-mode-derived TR_ID selection, and KRX tick snapping. The dangerous order-cash
-POST and fill-readback parser are gated behind a later human verification task.
-"""
+"""Offline tests for the direct-REST KIS order adapter."""
 
 from __future__ import annotations
 
@@ -20,11 +15,13 @@ from test_kis_quote import (
     _FakeTokenManager,
 )
 from trading_bot.data_models import SourceStatus
-from trading_bot.domain import OrderSide
-from trading_bot.kis_order import KisOrderAdapter, snap_to_tick
+from trading_bot.domain import Money, Order, OrderSide, Ticker
+from trading_bot.kis_order import KisOrderAccount, KisOrderAdapter, snap_to_tick
 
 DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+HASHKEY_PATH = "/uapi/hashkey"
+ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 
 
 def assert_no_secret_leaked(*texts: str) -> None:
@@ -49,6 +46,17 @@ class _FakeClient:
             raise item
         return item
 
+    def post(self, url, *, json=None, headers=None, timeout=None):
+        self.calls.append(
+            {"method": "POST", "url": url, "json": json, "headers": headers, "timeout": timeout}
+        )
+        if not self._responses:
+            raise AssertionError("no more fake responses queued")
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
 
 def _response(path: str, *, status_code: int = 200, output=None, rt_cd="0"):
     if output is None:
@@ -57,6 +65,16 @@ def _response(path: str, *, status_code: int = 200, output=None, rt_cd="0"):
         status_code=status_code,
         json={"rt_cd": rt_cd, "msg1": "정상", "output": output},
         request=httpx.Request("GET", DOMAIN + path),
+    )
+
+
+def _post_response(path: str, *, status_code: int = 200, payload=None):
+    if payload is None:
+        payload = {"rt_cd": "0", "output": {"ODNO": "KIS-1"}}
+    return httpx.Response(
+        status_code=status_code,
+        json=payload,
+        request=httpx.Request("POST", DOMAIN + path),
     )
 
 
@@ -137,13 +155,95 @@ def test_malformed_query_output_fails_safe_without_secret_leakage() -> None:
     assert_no_secret_leaked(repr(adapter), repr(daily), daily.health.reason, balance.health.reason)
 
 
-def test_task1_introduces_no_order_post_or_fill_parser_surface() -> None:
-    import trading_bot.kis_order as module
+def test_order_cash_body_headers_and_mode_tr_id() -> None:
+    order = Order(Ticker("005930"), OrderSide.BUY, 3, Money(74_321, "KRW"))
+    account = KisOrderAccount(cano="12345678", account_product_code="01")
+    client = _FakeClient(
+        [
+            _post_response(HASHKEY_PATH, payload={"HASH": "server-hash"}),
+            _post_response(ORDER_CASH_PATH, payload={"rt_cd": "0", "output": {"ODNO": "KIS-100"}}),
+        ]
+    )
+    adapter = _adapter([], tr_id_profile="mock", client=client)
 
-    source = inspect.getsource(module)
-    lowered = source.lower()
-    assert "order-cash" not in lowered
-    assert "hashkey" not in lowered
-    assert not hasattr(KisOrderAdapter, "place_order")
-    assert not hasattr(KisOrderAdapter, "order_cash")
-    assert not hasattr(KisOrderAdapter, "parse_fill")
+    result = adapter.place_order_cash(account=account, order=order, snapped_price=74_300)
+
+    assert result.order_id == "KIS-100"
+    hash_call, order_call = client.calls
+    assert hash_call["url"].endswith(HASHKEY_PATH)
+    assert hash_call["json"] == {
+        "CANO": "12345678",
+        "ACNT_PRDT_CD": "01",
+        "PDNO": "005930",
+        "ORD_DVSN": "00",
+        "ORD_QTY": "3",
+        "ORD_UNPR": "74300",
+    }
+    assert order_call["url"].endswith(ORDER_CASH_PATH)
+    assert order_call["json"] == hash_call["json"]
+    assert order_call["headers"]["tr_id"] == "VTTC0802U"
+    assert order_call["headers"]["hashkey"] == "server-hash"
+
+    real_client = _FakeClient(
+        [
+            _post_response(HASHKEY_PATH, payload={"HASH": "server-hash"}),
+            _post_response(ORDER_CASH_PATH, payload={"rt_cd": "0", "output": {"ODNO": "KIS-101"}}),
+        ]
+    )
+    real_adapter = _adapter([], tr_id_profile="real", client=real_client)
+
+    real_adapter.place_order_cash(
+        account=account,
+        order=Order(Ticker("005930"), OrderSide.SELL, 3, Money(74_321, "KRW")),
+        snapped_price=74_300,
+    )
+
+    assert real_client.calls[1]["headers"]["tr_id"] == "TTTC0801U"
+
+
+def test_order_cash_post_not_retried() -> None:
+    account = KisOrderAccount(cano="12345678", account_product_code="01")
+    order = Order(Ticker("005930"), OrderSide.BUY, 1, Money(70_000, "KRW"))
+    client = _FakeClient(
+        [
+            _post_response(HASHKEY_PATH, payload={"HASH": "server-hash"}),
+            httpx.ConnectError("one failed order POST", request=httpx.Request("POST", DOMAIN)),
+        ]
+    )
+    adapter = _adapter([], client=client)
+
+    try:
+        adapter.place_order_cash(account=account, order=order, snapped_price=70_000)
+    except Exception as exc:  # noqa: BLE001 - exact exception type belongs to implementation.
+        assert "order POST failed" in str(exc) or isinstance(exc, httpx.ConnectError)
+    else:  # pragma: no cover - the implementation must fail safe here.
+        raise AssertionError("order POST failure did not propagate")
+
+    order_posts = [
+        call for call in client.calls if call["method"] == "POST" and call["url"].endswith(ORDER_CASH_PATH)
+    ]
+    assert len(order_posts) == 1
+    assert not hasattr(KisOrderAdapter.place_order_cash, "retry")
+
+
+def test_fill_parser_uses_confirmed_daily_ccld_fields() -> None:
+    adapter = _adapter([])
+
+    fills = adapter.parse_fill_status(
+        [
+            {
+                "odno": "KIS-100",
+                "pdno": "005930",
+                "ord_qty": "5",
+                "tot_ccld_qty": "2",
+                "rmn_qty": "3",
+            }
+        ],
+        order_id="KIS-100",
+        ticker="005930",
+    )
+
+    assert fills.order_id == "KIS-100"
+    assert fills.ordered_qty == 5
+    assert fills.filled_qty == 2
+    assert fills.remaining_qty == 3

@@ -1,37 +1,197 @@
-"""Wave 0 scaffolds for the KIS Broker adapter."""
+"""Offline tests for the structural KIS Broker adapter."""
 
 from __future__ import annotations
 
 import pytest
 
 from conftest import make_settings
-
-BROKER_MODULE = "trading_bot.kis_broker"
-
-
-def _pending_until_module_exists(test_name: str) -> None:
-    pytest.importorskip(BROKER_MODULE, reason="pending: implemented in 05-02")
-    pytest.fail(f"pending: {test_name} implemented in 05-02")
+from trading_bot.data_models import SourceHealth, SourceStatus
+from trading_bot.domain import Money, Order, OrderSide, Position, Ticker
+from trading_bot.kis_order import FillStatus, KisOrderAccount, KisOrderQueryResult
+from trading_bot.ports import Broker
 
 
-def test_order_post_not_retried() -> None:
-    _pending_until_module_exists("order POST is never retried")
+def _query_result(output):
+    return KisOrderQueryResult(
+        output=output,
+        health=SourceHealth(source="kis_order", status=SourceStatus.AVAILABLE, reason="ok"),
+    )
 
 
-def test_reconcile_skips_duplicate() -> None:
-    _pending_until_module_exists("query-before-POST duplicate reconciliation")
+class _FakeOrderAdapter:
+    def __init__(
+        self,
+        *,
+        daily_outputs=None,
+        fill_statuses=None,
+        post_results=None,
+        post_exception: Exception | None = None,
+    ) -> None:
+        self.daily_outputs = list(daily_outputs or [])
+        self.fill_statuses = list(fill_statuses or [])
+        self.post_results = list(post_results or ["KIS-POSTED"])
+        self.post_exception = post_exception
+        self.post_attempts = 0
+        self.seen_prices = []
+
+    def inquire_daily_ccld(self, *, ticker=None, order_id=None):
+        if self.daily_outputs:
+            return _query_result(self.daily_outputs.pop(0))
+        return _query_result([])
+
+    def inquire_balance(self):
+        return _query_result({"dnca_tot_amt": "1000000"})
+
+    def place_order_cash(self, *, account, order, snapped_price):
+        self.post_attempts += 1
+        self.seen_prices.append(snapped_price)
+        if self.post_exception is not None:
+            raise self.post_exception
+        order_id = self.post_results.pop(0)
+
+        class _Result:
+            def __init__(self, value: str) -> None:
+                self.order_id = value
+
+        return _Result(order_id)
+
+    def parse_fill_status(self, output, *, order_id, ticker):
+        if self.fill_statuses:
+            return self.fill_statuses.pop(0)
+        return FillStatus(
+            order_id=order_id,
+            ticker=ticker,
+            ordered_qty=1,
+            filled_qty=1,
+            remaining_qty=0,
+        )
 
 
-def test_partial_fill_reconciled() -> None:
-    _pending_until_module_exists("partial-fill reconciliation")
+def _order(quantity: int = 5, price: float = 74_321.0) -> Order:
+    return Order(
+        ticker=Ticker("005930"),
+        side=OrderSide.BUY,
+        quantity=quantity,
+        limit_price=Money(price, "KRW"),
+    )
 
 
 def test_kis_broker_is_broker() -> None:
-    _pending_until_module_exists("Broker Protocol structural conformance")
+    from trading_bot.kis_broker import KISBroker
+
+    broker = KISBroker(
+        order_adapter=_FakeOrderAdapter(),
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+    )
+
+    assert isinstance(broker, Broker)
+
+
+def test_order_post_not_retried() -> None:
+    from trading_bot.kis_broker import KISBroker
+
+    adapter = _FakeOrderAdapter(post_exception=RuntimeError("single POST failure"))
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+    )
+
+    with pytest.raises(RuntimeError, match="single POST failure"):
+        broker.place_order(_order(quantity=1, price=70_000))
+
+    assert adapter.post_attempts == 1
+
+
+def test_reconcile_skips_duplicate() -> None:
+    from trading_bot.kis_broker import KISBroker
+
+    adapter = _FakeOrderAdapter(
+        daily_outputs=[
+            [
+                {
+                    "odno": "KIS-EXISTING",
+                    "pdno": "005930",
+                    "ord_qty": "5",
+                    "tot_ccld_qty": "0",
+                    "rmn_qty": "5",
+                }
+            ]
+        ]
+    )
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+    )
+
+    assert broker.place_order(_order()) == "KIS-EXISTING"
+    assert adapter.post_attempts == 0
+
+
+def test_partial_fill_reconciled() -> None:
+    from trading_bot.kis_broker import KISBroker
+
+    adapter = _FakeOrderAdapter(
+        fill_statuses=[
+            FillStatus(
+                order_id="KIS-POSTED",
+                ticker="005930",
+                ordered_qty=5,
+                filled_qty=2,
+                remaining_qty=3,
+            )
+        ]
+    )
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+    )
+
+    assert broker.place_order(_order()) == "KIS-POSTED"
+    assert adapter.post_attempts == 1
+    assert broker.get_position(Ticker("005930")) == Position(
+        ticker=Ticker("005930"),
+        quantity=2,
+        average_price=Money(74_300, "KRW"),
+    )
+    assert broker.last_reconciliation is not None
+    assert broker.last_reconciliation.requested_qty == 5
+    assert broker.last_reconciliation.filled_qty == 2
+    assert broker.last_reconciliation.remaining_qty == 3
 
 
 def test_tick_snap_and_market_guard() -> None:
-    _pending_until_module_exists("tick snapping and market-hours guard")
+    from trading_bot.kis_broker import KISBroker, MarketClosedError
+
+    adapter = _FakeOrderAdapter()
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+    )
+
+    broker.place_order(_order(quantity=1, price=74_321))
+    assert adapter.seen_prices == [74_300]
+
+    closed_adapter = _FakeOrderAdapter()
+    closed_broker = KISBroker(
+        order_adapter=closed_adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: False,
+    )
+
+    with pytest.raises(MarketClosedError):
+        closed_broker.place_order(_order(quantity=1, price=74_321))
+    assert closed_adapter.post_attempts == 0
 
 
-__all__ = ["make_settings"]
+def test_build_kis_broker_requires_shared_token_manager() -> None:
+    from trading_bot.kis_broker import build_kis_broker
+
+    settings = make_settings()
+
+    with pytest.raises(ValueError, match="shared KisTokenManager"):
+        build_kis_broker(settings, token_manager=None)
