@@ -33,7 +33,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **EXEC-01**: System parses the validated signal and issues a BUY only when `decision == "BUY"` AND `confidence >= 0.8`
 - [x] **EXEC-02**: BUY position sizing is a configurable % of available capital, bounded by a max-position cap
 - [x] **EXEC-03**: System issues a SELL on `decision == "SELL"` (with confidence threshold) for tickers currently held
-- [ ] **EXEC-04**: All orders route through the KIS API against the configured account (mock first); order placement is idempotent — the system reconciles against broker truth before resubmitting and never blind-retries an order POST
+- [x] **EXEC-04**: All orders route through the KIS API against the configured account (mock first); order placement is idempotent — the system reconciles against broker truth before resubmitting and never blind-retries an order POST
 - [x] **EXEC-05**: Dry-run mode logs the would-be decision and order without placing it
 
 ### Risk Net (LLM-independent)
@@ -101,7 +101,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EXEC-01 | Phase 2 | Complete |
 | EXEC-02 | Phase 2 | Complete |
 | EXEC-03 | Phase 2 | Complete |
-| EXEC-04 | Phase 5 | Pending |
+| EXEC-04 | Phase 5 | Complete |
 | EXEC-05 | Phase 2 | Complete |
 | RISK-01 | Phase 2 | Complete |
 | RISK-02 | Phase 2 | Complete |
