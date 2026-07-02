@@ -153,7 +153,7 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: 4/4 plans complete
+**Plans**: 5 plans (4 complete + 1 gap-closure)
 Plans:
 **Wave 1**
 
@@ -167,6 +167,10 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 05-04-PLAN.md — typer CLI (bot run/screen/status) with dry-run default + layered real-money gate, universe loop with per-ticker error isolation, broker selection, audit + consolidated notify
+
+**Wave 4** *(gap closure — OPS-02)*
+
+- [ ] 05-05-PLAN.md — Close OPS-02 audit gap: thread parsed LLM signal confidence through ExecutionResult to the SQLite decisions.confidence column at the CLI write site (D-10; CycleAuditEvent stays frozen per D-11), with an end-to-end confidence-persistence test
 
 **Research hint**: KIS order params (TR_ID prefixes, hashkey, tick-size bands, market-hours codes) and the reconciliation/idempotency flow need API-specific verification before any real-money path — verified in 05-RESEARCH.md (D-05 resolves to extending the direct-REST layer; python-kis not adopted).
 
