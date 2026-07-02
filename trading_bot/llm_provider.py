@@ -13,7 +13,9 @@ from tenacity import (
     wait_exponential,
 )
 
+from trading_bot.config import LLMProviderName, Settings
 from trading_bot.domain import DataContext, LLMSignal
+from trading_bot.ports import LLMProvider
 from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
 from trading_bot.signal_parser import SignalParseError, parse_signal
 from trading_bot.trade_signal import TradeSignal
@@ -273,3 +275,36 @@ class OpenAILLMProvider:
             max_retries=self._max_retries,
             retry_backoff_seconds=self._retry_backoff_seconds,
         )
+
+
+def build_llm_provider(settings: Settings, *, client: Any = None) -> LLMProvider:
+    """Build the configured LLM provider, constructing real SDK clients lazily."""
+
+    if settings.llm_provider is LLMProviderName.CLAUDE:
+        if client is None:
+            import anthropic
+
+            client = anthropic.Anthropic(
+                api_key=settings.active_llm_api_key.get_secret_value()
+            )
+        return ClaudeLLMProvider(
+            client=client,
+            model=settings.anthropic_model,
+            temperature=settings.anthropic_temperature,
+            max_retries=settings.llm_max_retries,
+            retry_backoff_seconds=settings.llm_retry_backoff_seconds,
+        )
+
+    if client is None:
+        import openai
+
+        client = openai.OpenAI(
+            api_key=settings.active_llm_api_key.get_secret_value()
+        )
+    return OpenAILLMProvider(
+        client=client,
+        model=settings.openai_model,
+        temperature=settings.openai_temperature,
+        max_retries=settings.llm_max_retries,
+        retry_backoff_seconds=settings.llm_retry_backoff_seconds,
+    )
