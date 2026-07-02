@@ -6,14 +6,14 @@ current_phase: 04
 current_phase_name: llm-agent
 status: executing
 stopped_at: Phase 4 context gathered
-last_updated: "2026-07-02T03:59:55.616Z"
+last_updated: "2026-07-02T04:06:49.644Z"
 last_activity: 2026-07-02
 last_activity_desc: Phase 04 execution started
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 16
-  completed_plans: 13
+  completed_plans: 14
   percent: 60
 paused_at: null
 ---
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 04 (llm-agent) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-02 — Phase 04 execution started
 
@@ -67,6 +67,7 @@ Progress: [██████████] 100% of Phase 1 plans; 20% of roadmap
 | Phase 03 P04 | 14min | 2 tasks | 4 files |
 | Phase 03 P05 | ~8m | 1 tasks | 2 files |
 | Phase 04 P01 | 29min | 3 tasks | 4 files |
+| Phase 04 P02 | 6min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Screener hard-excludes unsafe tickers before ranking; volatility+liquidity dominate over momentum in ranking (D-07/D-10/D-11, plan 03-03)
 - [Phase 04]: [Phase 04 Plan 01]: Approved LLM dependency pins are anthropic==0.115.1, openai==2.44.0, and corrected structlog==25.5.0.
 - [Phase 04]: [Phase 04 Plan 01]: OpenAI model default is gpt-4.1; Anthropic temperature remains advisory/log-only and must be omitted from Anthropic requests.
+- [Phase 04]: [Phase 04 Plan 02]: PROMPT_VERSION starts at string literal "1" and prompt news delimiter tags are <untrusted_news> and <news_item>.
+- [Phase 04]: [Phase 04 Plan 02]: TradeSignal forbids extra fields but leaves confidence range, bool rejection, and non-empty reason validation to parse_signal.
 
 ### Pending Todos
 
@@ -118,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-02T03:59:31.745Z
+Last session: 2026-07-02T04:06:28.039Z
 Stopped at: Phase 4 context gathered
 Resume file: .planning/phases/04-llm-agent/04-CONTEXT.md

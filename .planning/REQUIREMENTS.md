@@ -26,7 +26,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **LLM-01**: System feeds the collected data context (price, indicators, news) to the active provider through a single switchable provider interface
 - [x] **LLM-02**: The LLM must emit a strict JSON signal `{"decision","confidence","reason"}` with no markdown, enforced via provider-native structured output
-- [ ] **LLM-03**: Every signal is re-validated against a shared schema; any malformed/unparseable output fails safe to no-trade (HOLD), independent of provider
+- [x] **LLM-03**: Every signal is re-validated against a shared schema; any malformed/unparseable output fails safe to no-trade (HOLD), independent of provider
 
 ### Trade Execution
 
@@ -97,7 +97,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-05 | Phase 3 | Complete |
 | LLM-01 | Phase 4 | Pending |
 | LLM-02 | Phase 4 | Complete |
-| LLM-03 | Phase 4 | Pending |
+| LLM-03 | Phase 4 | Complete |
 | EXEC-01 | Phase 2 | Complete |
 | EXEC-02 | Phase 2 | Complete |
 | EXEC-03 | Phase 2 | Complete |
