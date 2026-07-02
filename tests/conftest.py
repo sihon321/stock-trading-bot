@@ -62,3 +62,39 @@ class FakeAnthropicClient:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+def openai_response(*, parsed=None, refusal=None):
+    message = SimpleNamespace(parsed=parsed, refusal=refusal)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class FakeOpenAIClient:
+    def __init__(
+        self,
+        responses=None,
+        *,
+        error: Exception | None = None,
+        fail_times: int = 0,
+        api_key: str = "sk-test-sentinel-secret",
+    ) -> None:
+        self.calls = []
+        self.api_key = api_key
+        self._responses = list(responses or [])
+        self._error = error
+        self._fail_times = fail_times
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(parse=self._parse)
+        )
+
+    def _parse(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise self._error or RuntimeError("transient openai failure")
+        if not self._responses:
+            raise AssertionError("no more fake OpenAI responses queued")
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item

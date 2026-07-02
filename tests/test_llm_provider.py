@@ -8,7 +8,13 @@ from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
 from trading_bot.signal_parser import SignalParseError
 from trading_bot.trade_signal import TradeSignal
 
-from conftest import FakeAnthropicClient, anthropic_response, make_data_context
+from conftest import (
+    FakeAnthropicClient,
+    FakeOpenAIClient,
+    anthropic_response,
+    make_data_context,
+    openai_response,
+)
 
 
 def _provider(fake, *, max_retries=3):
@@ -185,3 +191,137 @@ def test_claude_logs_one_secret_free_cycle_event_on_success_and_error() -> None:
     assert logs[0]["provider"] == "claude"
     assert logs[0]["outcome"].startswith("error:")
     assert secret not in repr(logs[0])
+
+
+def _openai_provider(fake, *, max_retries=3):
+    from trading_bot.llm_provider import OpenAILLMProvider
+
+    return OpenAILLMProvider(
+        client=fake,
+        model="gpt-4.1",
+        temperature=0.0,
+        max_retries=max_retries,
+        retry_backoff_seconds=0.0,
+    )
+
+
+def test_openai_request_shape_uses_parse_with_trade_signal_schema() -> None:
+    context = make_data_context()
+    fake = FakeOpenAIClient(
+        [
+            openai_response(
+                parsed=TradeSignal(
+                    decision=Decision.SELL,
+                    confidence=0.85,
+                    reason="breakdown below 20-day low on 2x volume",
+                )
+            )
+        ]
+    )
+
+    _openai_provider(fake).generate_signal(context)
+
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["model"] == "gpt-4.1"
+    assert call["temperature"] == 0.0
+    assert call["response_format"] is TradeSignal
+    assert call["messages"] == [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": render_prompt(context)},
+    ]
+
+
+def test_openai_valid_parsed_signal_is_revalidated_through_parse_signal() -> None:
+    fake = FakeOpenAIClient(
+        [
+            openai_response(
+                parsed=TradeSignal(
+                    decision=Decision.SELL,
+                    confidence=0.85,
+                    reason="breakdown below 20-day low on 2x volume",
+                )
+            )
+        ]
+    )
+
+    signal = _openai_provider(fake).generate_signal(make_data_context())
+
+    assert signal == LLMSignal(
+        decision=Decision.SELL,
+        confidence=0.85,
+        reason="breakdown below 20-day low on 2x volume",
+    )
+
+
+def test_openai_refusal_raises_llm_provider_error() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    fake = FakeOpenAIClient([openai_response(parsed=None, refusal="policy refusal")])
+
+    with pytest.raises(LLMProviderError):
+        _openai_provider(fake).generate_signal(make_data_context())
+
+
+def test_openai_none_parsed_raises_llm_provider_error() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    fake = FakeOpenAIClient([openai_response(parsed=None, refusal=None)])
+
+    with pytest.raises(LLMProviderError):
+        _openai_provider(fake).generate_signal(make_data_context())
+
+
+def test_openai_retries_are_bounded() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    fake = FakeOpenAIClient(
+        [
+            openai_response(
+                parsed=TradeSignal(
+                    decision=Decision.HOLD,
+                    confidence=0.5,
+                    reason="insufficient confirmation",
+                )
+            )
+        ],
+        error=RuntimeError("transport down"),
+        fail_times=3,
+    )
+
+    with pytest.raises(LLMProviderError):
+        _openai_provider(fake, max_retries=3).generate_signal(make_data_context())
+
+    assert len(fake.calls) == 3
+
+
+def test_openai_logs_one_secret_free_cycle_event() -> None:
+    context = make_data_context()
+    secret = "sk-test-sentinel-secret"
+    fake = FakeOpenAIClient(
+        [
+            openai_response(
+                parsed=TradeSignal(
+                    decision=Decision.HOLD,
+                    confidence=0.5,
+                    reason="insufficient confirmation",
+                )
+            )
+        ],
+        api_key=secret,
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        _openai_provider(fake).generate_signal(context)
+
+    assert len(logs) == 1
+    event = logs[0]
+    assert event["event"] == "llm_signal_cycle"
+    assert event["provider"] == "openai"
+    assert event["model"] == "gpt-4.1"
+    assert event["temperature"] == 0.0
+    assert event["prompt_version"] == PROMPT_VERSION
+    assert event["prompt"] == render_prompt(context)
+    assert event["response"]
+    assert event["outcome"] == "parsed:HOLD"
+    assert secret not in repr(event)
