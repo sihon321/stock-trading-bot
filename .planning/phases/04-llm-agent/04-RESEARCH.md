@@ -519,21 +519,24 @@ def _call_with_retry(self, system_prompt: str, user_body: str):
 | A2 | `chat.completions.parse(response_format=<pydantic model>)` and `responses.parse(text_format=...)` exact signatures on `openai==2.44.0`. Confirmed from CLAUDE.md's locked stack + training knowledge, but not re-fetched from OpenAI docs this session (OpenAI docs are not in the cached skill). | Code Examples §2 | Minor signature drift (e.g. `parse` vs `create` + `response_format`) → a fixable call-site error, caught by the fake-client test. Planner should confirm against `openai` 2.44.0 docs during planning. `[ASSUMED]` |
 | A3 | `structlog>=24,<27` range and `>=0.40,<1` for anthropic are compatible with Python 3.14 and pydantic 2.13.4. Latest versions verified to exist on PyPI; full transitive-compat not exhaustively tested. | Standard Stack | A resolver conflict at install → caught immediately at `pip install`. Low risk (all are pydantic-v2-era, 3.14-supporting). `[ASSUMED]` |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact OpenAI model ID + whether to use `chat.completions.parse` vs `responses.parse`.**
    - What we know: CLAUDE.md allows either; both return a validated pydantic instance. D-07 leaves the OpenAI model ID to discretion.
    - What's unclear: the operator's preferred OpenAI model and API surface.
    - Recommendation: default `chat.completions.parse` (simpler, more documented); gate the model ID behind a `checkpoint:human-verify`.
+   - **RESOLVED:** `chat.completions.parse` adopted in plan 04-03 Task 2; OpenAI model ID gated behind the blocking human checkpoint in plan 04-01 Task 1.
 
 2. **Reuse `kis_max_retries`/`kis_retry_backoff_seconds` vs. add dedicated `llm_*` retry settings.**
    - What we know: D-09 says "reusing/aligning with existing retry defaults."
    - What's unclear: whether the operator wants LLM and KIS retry to share one knob.
    - Recommendation: add dedicated `llm_max_retries=3` / `llm_retry_backoff_seconds=1.0` (same defaults as KIS) so they can diverge later without coupling — but "reuse the KIS fields directly" also satisfies D-09. Planner's discretion.
+   - **RESOLVED:** dedicated `llm_max_retries` / `llm_retry_backoff_seconds` Settings fields (KIS-matching defaults), plan 04-01 Task 3.
 
 3. **`wait_fixed` vs `wait_exponential`.**
    - What we know: `kis_quote.py` uses `wait_fixed`; D-09 says "exponential backoff."
    - Recommendation: `wait_exponential` honors D-09's wording literally while staying within tenacity's standard API; both are "the Phase 3 posture." Minor; planner's discretion.
+   - **RESOLVED:** `wait_exponential`, per D-09's literal wording — plan 04-03 Task 1.
 
 ## Environment Availability
 
