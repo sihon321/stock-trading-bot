@@ -126,7 +126,20 @@ Plans:
   2. The active provider emits a strict JSON signal `{"decision","confidence","reason"}` with no markdown, enforced via provider-native structured output, with model + temperature pinned and the raw prompt/response logged for reproducibility
   3. Every signal is re-validated against the shared schema regardless of provider, and any malformed or unparseable output fails safe to HOLD — scraped news inside the prompt can never be followed as instructions
 
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Dependency lock gate (anthropic/openai/structlog pins + OpenAI model ID + D-07 temperature divergence) and Settings LLM pinning
+- [ ] 04-02-PLAN.md — Versioned system prompt + pure DataContext render and the TradeSignal pydantic mirror with lockstep guard
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-03-PLAN.md — Claude (forced strict tool use, no temperature) and OpenAI (chat.completions.parse) adapters with parse_signal re-validation, bounded retry, and the structlog reproducibility line
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 04-04-PLAN.md — build_llm_provider switchable factory (lazy SDK imports) and run_llm_cycle wiring (LLMProviderError → HOLD) into the proven execution chain
 
 ### Phase 5: Real-Money Readiness & Operations
 
