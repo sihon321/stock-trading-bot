@@ -1,10 +1,9 @@
-"""KIS domestic-stock account-query foundation for real order readiness.
+"""KIS domestic-stock order/query adapter for real order readiness.
 
 This module reuses the shared :class:`~trading_bot.kis_auth.KisTokenManager`
 and mirrors the Phase 3 quote adapter's bounded retry and fail-safe response
-validation. Task 1 intentionally exposes only account query legs, TR_ID
-selection, and tick snapping; the dangerous placement path and fill parser are
-deferred until the operator confirms the KIS field spellings.
+validation for query legs. The order-cash POST is intentionally single-shot and
+is never decorated with tenacity retry.
 """
 
 from __future__ import annotations
@@ -22,12 +21,14 @@ from tenacity import (
 )
 
 from trading_bot.data_models import SourceHealth, SourceStatus
-from trading_bot.domain import OrderSide
+from trading_bot.domain import Order, OrderSide
 from trading_bot.kis_auth import KisAuthError, KisTokenManager
 
 _SOURCE = "kis_order"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+_HASHKEY_PATH = "/uapi/hashkey"
+_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 _MARKET_DIV_CODE = "J"
 
 _TICK_BANDS = (
@@ -46,6 +47,18 @@ class _TransientOrderQueryError(Exception):
     """Internal marker for retryable KIS account-query failures."""
 
 
+class KisOrderError(RuntimeError):
+    """Raised when a single-shot KIS order operation fails safe."""
+
+
+@dataclass(frozen=True)
+class KisOrderAccount:
+    """KIS account tuple required by domestic stock order endpoints."""
+
+    cano: str
+    account_product_code: str
+
+
 @dataclass(frozen=True)
 class KisOrderTrIds:
     """Mode-derived TR_ID family for domestic stock trading endpoints."""
@@ -62,6 +75,26 @@ class KisOrderQueryResult:
 
     output: Optional[Union[dict, list]]
     health: SourceHealth
+
+
+@dataclass(frozen=True)
+class KisOrderPostResult:
+    """Broker-assigned identifiers from a successful order-cash POST."""
+
+    order_id: str
+    krx_forwarding_order_orgno: str = ""
+    raw_output: Optional[dict] = None
+
+
+@dataclass(frozen=True)
+class FillStatus:
+    """Validated fill readback from the confirmed TTTC8001R field family."""
+
+    order_id: str
+    ticker: str
+    ordered_qty: int
+    filled_qty: int
+    remaining_qty: int
 
 
 def _unavailable(reason: str) -> KisOrderQueryResult:
@@ -207,6 +240,110 @@ class KisOrderAdapter:
             return _unavailable(str(exc))
         return self._parse_query_output(body, expected_shape=dict)
 
+    def place_order_cash(
+        self, *, account: KisOrderAccount, order: Order, snapped_price: int
+    ) -> KisOrderPostResult:
+        """Submit one limit order-cash POST and return the broker order ID.
+
+        This method deliberately has no tenacity retry wrapper. If the hashkey or
+        order POST fails, the exception propagates after exactly one order-cash
+        POST attempt so callers can re-query broker truth before any resend.
+        """
+
+        body = self.build_order_body(
+            account=account, order=order, snapped_price=snapped_price
+        )
+        token = self._token_manager.get_token()
+        hashkey = self._request_hashkey(body=body)
+        tr_id = self._tr_ids.buy if order.side is OrderSide.BUY else self._tr_ids.sell
+        headers = self._headers(token=token, tr_id=tr_id, hashkey=hashkey)
+
+        url = self._domain.rstrip("/") + _ORDER_CASH_PATH
+        try:
+            response = self._client.post(
+                url, json=body, headers=headers, timeout=self._timeout_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - never retry a real order POST.
+            raise KisOrderError(f"order POST failed: {type(exc).__name__}") from exc
+
+        status = getattr(response, "status_code", None)
+        if status is None or int(status) >= 400:
+            raise KisOrderError(f"order POST returned HTTP {status}")
+
+        try:
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001 - malformed body is terminal.
+            raise KisOrderError("order POST response was not valid JSON") from exc
+
+        output = self._validated_response_output(payload, expected_shape=dict)
+        order_id = str(output.get("ODNO") or output.get("odno") or "").strip()
+        if not order_id:
+            raise KisOrderError("order POST response missing ODNO")
+        krx_orgno = str(output.get("KRX_FWDG_ORD_ORGNO") or "").strip()
+        return KisOrderPostResult(
+            order_id=order_id,
+            krx_forwarding_order_orgno=krx_orgno,
+            raw_output=output,
+        )
+
+    def parse_fill_status(
+        self, output: Union[dict, list], *, order_id: str, ticker: str
+    ) -> FillStatus:
+        """Parse confirmed TTTC8001R fill fields for one broker order."""
+
+        rows = output if isinstance(output, list) else [output]
+        matched: Optional[dict] = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_order_id = str(row.get("odno") or row.get("ODNO") or "").strip()
+            row_ticker = str(row.get("pdno") or row.get("PDNO") or "").strip()
+            if row_order_id == str(order_id) and (not ticker or row_ticker == ticker):
+                matched = row
+                break
+        if matched is None:
+            raise KisOrderError(f"fill status not found for order {order_id}")
+
+        ordered_qty = self._parse_quantity(matched, "ord_qty")
+        filled_qty = self._parse_quantity(matched, "tot_ccld_qty")
+        remaining_qty = self._parse_quantity(matched, "rmn_qty")
+        return FillStatus(
+            order_id=str(order_id),
+            ticker=str(ticker),
+            ordered_qty=ordered_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+        )
+
+    def read_fill_status(self, *, ticker: str, order_id: str) -> FillStatus:
+        """Query recent executions and parse the confirmed fill-status fields."""
+
+        result = self.inquire_daily_ccld(ticker=ticker, order_id=order_id)
+        if result.health.status is not SourceStatus.AVAILABLE or result.output is None:
+            raise KisOrderError(f"fill readback unavailable: {result.health.reason}")
+        return self.parse_fill_status(result.output, order_id=order_id, ticker=ticker)
+
+    @staticmethod
+    def build_order_body(
+        *, account: KisOrderAccount, order: Order, snapped_price: int
+    ) -> dict:
+        if order.quantity <= 0:
+            raise ValueError("order quantity must be positive")
+        if order.limit_price.currency != "KRW":
+            raise ValueError("KIS domestic stock orders require KRW limit prices")
+        if not _is_valid_ticker(order.ticker.value):
+            raise ValueError("order ticker must be a 6-digit KRX code")
+        if int(snapped_price) <= 0:
+            raise ValueError("snapped_price must be positive")
+        return {
+            "CANO": account.cano,
+            "ACNT_PRDT_CD": account.account_product_code,
+            "PDNO": order.ticker.value,
+            "ORD_DVSN": "00",
+            "ORD_QTY": str(order.quantity),
+            "ORD_UNPR": str(int(snapped_price)),
+        }
+
     def _fetch_query_body(
         self, *, path: str, tr_id: str, params: dict, token: str
     ) -> Any:
@@ -225,14 +362,7 @@ class KisOrderAdapter:
         self._respect_min_interval()
 
         url = self._domain.rstrip("/") + path
-        headers = {
-            "content-type": "application/json",
-            "authorization": f"Bearer {token}",
-            "appkey": getattr(self._token_manager, "app_key", ""),
-            "appsecret": getattr(self._token_manager, "app_secret", ""),
-            "tr_id": tr_id,
-            "custtype": "P",
-        }
+        headers = self._headers(token=token, tr_id=tr_id)
 
         try:
             response = self._client.get(
@@ -253,20 +383,78 @@ class KisOrderAdapter:
             return {"__nonjson__": True}
 
     def _parse_query_output(self, body: Any, *, expected_shape: type) -> KisOrderQueryResult:
+        try:
+            output = self._validated_response_output(body, expected_shape=expected_shape)
+        except KisOrderError as exc:
+            return _unavailable(str(exc))
+        return _available(output)
+
+    def _request_hashkey(self, *, body: dict) -> str:
+        url = self._domain.rstrip("/") + _HASHKEY_PATH
+        headers = {
+            "content-type": "application/json",
+            "appkey": getattr(self._token_manager, "app_key", ""),
+            "appsecret": getattr(self._token_manager, "app_secret", ""),
+        }
+        try:
+            response = self._client.post(
+                url, json=body, headers=headers, timeout=self._timeout_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - fail before placing any order.
+            raise KisOrderError(f"hashkey request failed: {type(exc).__name__}") from exc
+        status = getattr(response, "status_code", None)
+        if status is None or int(status) >= 400:
+            raise KisOrderError(f"hashkey request returned HTTP {status}")
+        try:
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise KisOrderError("hashkey response was not valid JSON") from exc
+        hashkey = str(payload.get("HASH") or payload.get("hashkey") or "").strip()
+        if not hashkey:
+            raise KisOrderError("hashkey response missing HASH")
+        return hashkey
+
+    def _headers(
+        self, *, token: str, tr_id: str, hashkey: Optional[str] = None
+    ) -> dict:
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "appkey": getattr(self._token_manager, "app_key", ""),
+            "appsecret": getattr(self._token_manager, "app_secret", ""),
+            "tr_id": tr_id,
+            "custtype": "P",
+        }
+        if hashkey is not None:
+            headers["hashkey"] = hashkey
+        return headers
+
+    def _validated_response_output(self, body: Any, *, expected_shape: type) -> Any:
         if not isinstance(body, dict) or body.get("__nonjson__"):
-            return _unavailable("order query response was not valid JSON")
+            raise KisOrderError("order response was not valid JSON")
 
         rt_cd = body.get("rt_cd")
         if rt_cd is not None and str(rt_cd) != "0":
-            return _unavailable(f"order query response rt_cd={rt_cd}")
+            raise KisOrderError(f"order response rt_cd={rt_cd}")
 
         output = body.get("output")
         if not isinstance(output, expected_shape):
-            return _unavailable("order query response missing output")
+            raise KisOrderError("order response missing output")
         if not self._numeric_fields_are_valid(output):
-            return _unavailable("order query numeric field is invalid")
+            raise KisOrderError("order response numeric field is invalid")
 
-        return _available(output)
+        return output
+
+    @staticmethod
+    def _parse_quantity(row: dict, field: str) -> int:
+        value = row.get(field)
+        try:
+            quantity = int(str(value))
+        except (TypeError, ValueError):
+            raise KisOrderError(f"fill status field {field} is not an integer") from None
+        if quantity < 0:
+            raise KisOrderError(f"fill status field {field} is negative")
+        return quantity
 
     def _numeric_fields_are_valid(self, output: Union[dict, list]) -> bool:
         candidates = output if isinstance(output, list) else [output]
