@@ -45,8 +45,8 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Operations & Observability
 
 - [ ] **OPS-01**: Operator triggers a full evaluation cycle on demand (manual CLI trigger; no scheduler in v1)
-- [ ] **OPS-02**: System logs every cycle's data context, LLM signal, risk decisions, and order outcome to a persistent, reviewable audit store
-- [ ] **OPS-03**: System pushes each cycle's decision and order outcome to the operator via a notification channel (e.g. Telegram)
+- [x] **OPS-02**: System logs every cycle's data context, LLM signal, risk decisions, and order outcome to a persistent, reviewable audit store
+- [x] **OPS-03**: System pushes each cycle's decision and order outcome to the operator via a notification channel (e.g. Telegram)
 
 ## v2 Requirements
 
@@ -107,8 +107,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RISK-02 | Phase 2 | Complete |
 | RISK-03 | Phase 2 | Complete |
 | OPS-01 | Phase 5 | Pending |
-| OPS-02 | Phase 5 | Pending |
-| OPS-03 | Phase 5 | Pending |
+| OPS-02 | Phase 5 | Complete |
+| OPS-03 | Phase 5 | Complete |
 
 **Coverage:**
 

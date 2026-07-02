@@ -153,7 +153,7 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: 2/4 plans executed
+**Plans**: 3/4 plans executed
 Plans:
 **Wave 1**
 
@@ -162,7 +162,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 05-02-PLAN.md — Idempotent reconciled KIS order path: direct-REST order/query adapter + KISBroker (query-before-POST, never-retried POST, partial-fill readback, tick snap, market guard)
-- [ ] 05-03-PLAN.md — Two-table SQLite audit writer (correlation to structlog) + fail-soft Discord Notifier (consolidated per-run summary)
+- [x] 05-03-PLAN.md — Two-table SQLite audit writer (correlation to structlog) + fail-soft Discord Notifier (consolidated per-run summary)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -181,4 +181,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
 | 4. LLM Agent | 4/4 | Complete    | 2026-07-02 |
-| 5. Real-Money Readiness & Operations | 2/4 | In Progress|  |
+| 5. Real-Money Readiness & Operations | 3/4 | In Progress|  |
