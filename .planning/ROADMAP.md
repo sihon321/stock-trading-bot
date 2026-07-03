@@ -153,7 +153,7 @@ Plans:
   3. Every cycle's data context, LLM signal, risk decisions, and order outcome are written to a persistent, reviewable audit store
   4. Each cycle's decision and order outcome are pushed to the operator via a notification channel (e.g. Telegram)
 
-**Plans**: 5 plans (4 complete + 1 gap-closure)
+**Plans**: 5/5 plans complete
 Plans:
 **Wave 1**
 
@@ -170,7 +170,7 @@ Plans:
 
 **Wave 4** *(gap closure — OPS-02)*
 
-- [ ] 05-05-PLAN.md — Close OPS-02 audit gap: thread parsed LLM signal confidence through ExecutionResult to the SQLite decisions.confidence column at the CLI write site (D-10; CycleAuditEvent stays frozen per D-11), with an end-to-end confidence-persistence test
+- [x] 05-05-PLAN.md — Close OPS-02 audit gap: thread parsed LLM signal confidence through ExecutionResult to the SQLite decisions.confidence column at the CLI write site (D-10; CycleAuditEvent stays frozen per D-11), with an end-to-end confidence-persistence test
 
 **Research hint**: KIS order params (TR_ID prefixes, hashkey, tick-size bands, market-hours codes) and the reconciliation/idempotency flow need API-specific verification before any real-money path — verified in 05-RESEARCH.md (D-05 resolves to extending the direct-REST layer; python-kis not adopted).
 
@@ -185,4 +185,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Mock Execution Core | 3/3 | Complete    | 2026-07-01 |
 | 3. Data Pipeline | 6/6 | Complete    | 2026-07-01 |
 | 4. LLM Agent | 4/4 | Complete    | 2026-07-02 |
-| 5. Real-Money Readiness & Operations | 4/4 | Complete    | 2026-07-02 |
+| 5. Real-Money Readiness & Operations | 5/5 | Complete   | 2026-07-02 |
