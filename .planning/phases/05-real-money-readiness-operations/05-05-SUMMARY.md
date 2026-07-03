@@ -77,3 +77,8 @@ Environment note (not a code deviation): the worktree does not carry the gitigno
 
 - `6bf6ab5` feat(05-05): thread parsed signal confidence into the audit write
 - `f60f523` test(05-05): pin confidence persistence end-to-end (OPS-02)
+
+## Self-Check: PASSED
+
+- SUMMARY.md present on disk.
+- Commits 6bf6ab5, f60f523 (task commits) and b37144d (docs) all present in git history.
