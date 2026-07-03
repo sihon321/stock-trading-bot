@@ -196,6 +196,57 @@ def test_ticker_error_isolation() -> None:
     assert data_source.contexts == ["005930", "000660", "035420"]
 
 
+def test_confidence_persisted_end_to_end() -> None:
+    """OPS-02/D-10: the parsed signal confidence round-trips into SQLite.
+
+    Runs the real cycle path (run_cycle defaulted to None so _run_llm_cycle ->
+    execute_signal_cycle runs the genuine _Provider signal) through the real
+    write_decision sink, then reads the stored decisions.confidence back. This
+    inverts the verifier's failing probe (VERIFICATION.md line 94, which saw NULL)
+    and pins the fail-safe: a failing ticker records no decisions row, so its
+    confidence is never a spurious non-null.
+    """
+
+    data_source = _DataSource(("005930", "000660"), fail_on="000660")
+    conn = sqlite3.connect(":memory:")
+
+    from trading_bot.cli import run_cycle as cli_run_cycle
+
+    result = cli_run_cycle(
+        ticker=None,
+        execute=False,
+        live_confirm=False,
+        settings=make_settings(),
+        data_source=data_source,
+        llm_provider=_Provider(),
+        broker=_Broker(),
+        audit_conn=conn,
+        notifier=_Notifier(),
+        run_cycle=None,  # real _run_llm_cycle -> execute_signal_cycle path
+        trading_date="20260702",
+        run_id="test-run",
+    )
+
+    # The parsed ticker persists a NON-NULL confidence equal to the provider's 0.95.
+    row = conn.execute(
+        "SELECT confidence FROM decisions WHERE ticker = ?", ("005930",)
+    ).fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert row[0] == pytest.approx(0.95)
+
+    # Fail-safe: the failing ticker records NO decisions row (so no spurious
+    # non-null confidence); confidence is non-null ONLY for the parsed ticker.
+    failed_rows = conn.execute(
+        "SELECT confidence FROM decisions WHERE ticker = ?", ("000660",)
+    ).fetchall()
+    assert failed_rows == []
+    assert result["errors"] == 1
+
+    all_conf = conn.execute("SELECT confidence FROM decisions").fetchall()
+    assert all_conf == [(pytest.approx(0.95),)]
+
+
 def test_ticker_option_narrows_universe() -> None:
     data_source = _DataSource(("005930", "000660", "035420"))
 
