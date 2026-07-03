@@ -91,6 +91,7 @@ class ExecutionResult:
     override_reason: Optional[str] = None
     audit: Optional[CycleAuditEvent] = None
     broker_order_id: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 def evaluate_signal_action(
@@ -183,6 +184,7 @@ def _finalize_cycle(
     risk_override: bool,
     override_reason: str,
     order_reason: str,
+    confidence: Optional[float] = None,
 ) -> ExecutionResult:
     """Apply the dry-run gate, then build the audit event and result (EXEC-05).
 
@@ -215,6 +217,7 @@ def _finalize_cycle(
         override_reason=override_reason or None,
         audit=audit,
         broker_order_id=broker_order_id,
+        confidence=confidence,
     )
 
 
@@ -284,6 +287,7 @@ def execute_signal_cycle(
             risk_override=True,
             override_reason=risk.reason,
             order_reason=f"risk exit ({risk.reason}) overrides LLM {parsed_decision}",
+            confidence=confidence,
         )
 
     # 3. LLM action evaluation, gated by the daily-loss kill switch (D-08).
@@ -306,6 +310,7 @@ def execute_signal_cycle(
             risk_override=False,
             override_reason="",
             order_reason="daily_loss kill switch blocks new BUY",
+            confidence=confidence,
         )
 
     # 4. Build the order intent for the qualified action.
@@ -332,4 +337,5 @@ def execute_signal_cycle(
         risk_override=False,
         override_reason="",
         order_reason=order_reason,
+        confidence=confidence,
     )
