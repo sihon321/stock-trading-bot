@@ -65,7 +65,12 @@ _None — milestone v1.0 requirements are all validated. New requirements will b
 - **Safety posture:** Mock account first, dry-run capability, and a rules-based stop-loss/
   take-profit net that does not depend on the LLM. The bot must never place an order the
   explicit rules don't justify.
-- **Usage:** Personal tool, run manually per evaluation cycle.
+- **Usage:** Personal tool, run manually per evaluation cycle via the `bot run/screen/status` Typer CLI.
+- **Shipped state (v1.0):** ~11,272 LOC Python across 48 modules with 22 test files. Stack in
+  use: `pydantic` / `pydantic-settings`, `pykrx` + `ta`, direct KIS REST over `httpx`,
+  `anthropic` / `openai` behind one provider port, `typer` CLI, SQLite audit store, `structlog`,
+  and fail-soft Discord notifications. Real-money path exists but is gated behind an explicit,
+  confirmed `TRADING_MODE=real` promotion; the bot defaults to the mock (모의투자) account.
 
 ## Constraints
 
