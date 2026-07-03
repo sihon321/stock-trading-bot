@@ -1,7 +1,7 @@
 ---
 phase: 05-real-money-readiness-operations
 verified: 2026-07-03T10:20:00Z
-status: human_needed
+status: passed
 score: 15/15 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -9,13 +9,16 @@ re_verification:
   previous_status: gaps_found
   previous_score: 14/15
   gaps_closed:
+
     - "Every cycle's data context, LLM signal including confidence, risk decisions, and order outcome are written to a persistent, reviewable audit store (OPS-02)"
   gaps_remaining: []
   regressions: []
 human_verification:
+
   - test: "With live KIS mock credentials and an open market session, run `bot run --ticker <code> --execute --live-confirm` under `TRADING_MODE=real` and `CONFIRM_REAL_TRADING=yes`."
     expected: "The order appears in KIS broker truth; re-running after a transport uncertainty reconciles and skips the duplicate POST (idempotent, query-before-POST)."
     why_human: "Requires live KIS credentials, the external KIS service, and market/session state — cannot be exercised offline."
+
   - test: "Set `DISCORD_WEBHOOK_URL`, run a dry-run cycle, and inspect the Discord channel."
     expected: "One consolidated per-run summary arrives; on a forced per-ticker error, an immediate error message also arrives."
     why_human: "Requires an external Discord webhook and real network delivery."

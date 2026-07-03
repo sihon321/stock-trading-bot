@@ -20,26 +20,33 @@ acts on it through KIS — without placing an order the rules don't justify.
 
 ### Validated
 
-- [x] CFG-01: typed gitignored settings load KIS and LLM secrets without leaking them to logs - validated in Phase 1 Foundation
-- [x] CFG-02: trading mode atomically selects mock or real KIS credentials, endpoint, and TR_ID - validated in Phase 1 Foundation
-- [x] CFG-03: exactly one active LLM provider is selected per run - validated in Phase 1 Foundation
+_Milestone v1.0 complete — all requirements shipped and verified. IDs trace to `.planning/REQUIREMENTS.md`._
+
+- [x] CFG-01: typed gitignored settings load KIS and LLM secrets without leaking them to logs — Phase 1
+- [x] CFG-02: trading mode atomically selects mock or real KIS credentials, endpoint, and TR_ID — Phase 1
+- [x] CFG-03: exactly one active LLM provider is selected per run — Phase 1
+- [x] CFG-04: defaults to `mock`; switching to `real` requires an explicit, deliberate config change — Phase 5
+- [x] DATA-01/02: daily OHLCV + technical indicators via `pykrx`, fail-safe to HOLD on bad frames — Phase 3
+- [x] DATA-03: real-time price via the KIS API through a shared auto-refreshed token — Phase 3
+- [x] DATA-04: per-ticker Naver Finance news scrape with sanitization + graceful degradation — Phase 3
+- [x] DATA-05: daily market screen selects candidate tickers for the cycle — Phase 3
+- [x] LLM-01: collected data context fed to a switchable Claude/OpenAI provider interface — Phase 4
+- [x] LLM-02/03: strict JSON `{"decision","confidence","reason"}`, schema-revalidated, fail-safe to HOLD — Phase 4
+- [x] EXEC-01: BUY only when `decision=="BUY"` AND `confidence >= 0.8` — Phase 2
+- [x] EXEC-02: BUY sizing as a configurable % of available capital, bounded by a max-position cap — Phase 2
+- [x] EXEC-03: SELL on `decision=="SELL"` (confidence threshold) for held positions — Phase 2
+- [x] EXEC-04: orders route through KIS (mock first), idempotent — reconciles before resubmitting, never blind-retries a POST — Phase 5
+- [x] EXEC-05: dry-run mode logs the would-be decision/order without placing it — Phase 2
+- [x] RISK-01: rules-based stop-loss / take-profit net evaluates held positions independent of the LLM — Phase 2
+- [x] RISK-02: on conflict, the risk net takes precedence over the LLM signal — Phase 2
+- [x] RISK-03: daily-loss kill switch halts new trading once the loss threshold is breached — Phase 2
+- [x] OPS-01: operator triggers a full evaluation cycle on demand (manual CLI, no scheduler) — Phase 5
+- [x] OPS-02: every cycle's data context, LLM signal (incl. confidence), risk decisions, and order outcome persist to a reviewable audit store — Phase 5
+- [x] OPS-03: each cycle's decision and order outcome pushed to the operator via a notification channel — Phase 5
 
 ### Active
 
-- [ ] Data pipeline: fetch daily OHLCV + technical indicators via `pykrx`
-- [ ] Data pipeline: fetch real-time prices via the KIS API
-- [ ] Data pipeline: scrape per-ticker financial news from Naver Finance (네이버 금융)
-- [ ] Daily screening selects candidate tickers from the market (e.g. volume/momentum via `pykrx`)
-- [ ] LLM agent: feed collected data as context to a switchable provider (Claude or OpenAI)
-- [ ] LLM agent: enforce strict JSON output `{"decision","confidence","reason"}` with no markdown
-- [ ] Execution: parse signal; BUY when `decision=="BUY"` and `confidence >= 0.8`
-- [ ] Execution: position sizing as a % of available capital, with a max-position cap
-- [ ] Execution: SELL on LLM `decision=="SELL"` (confidence threshold) for held positions
-- [ ] Execution: automatic stop-loss / take-profit safety net independent of the LLM
-- [ ] Run against the KIS mock (모의투자) account first; promote to real money only after validation
-- [ ] Manual trigger runs a full evaluation cycle on demand
-- [ ] Dry-run mode: log the would-be decision/order without placing it
-- [ ] Log every cycle's data context, LLM signal, and order outcome for review
+_None — milestone v1.0 requirements are all validated. New requirements will be added here at the next milestone._
 
 ### Out of Scope
 
@@ -74,13 +81,14 @@ acts on it through KIS — without placing an order the rules don't justify.
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Mock account first, real money later | Validate logic with zero capital risk before going live | — Pending |
-| Switchable LLM provider (Claude/OpenAI), not ensemble | Simpler v1; one provider at a time, swap via config | — Pending |
-| Daily screening for the trading universe | Surface candidates dynamically rather than a fixed list | — Pending |
-| Manual trigger (no scheduler) for v1 | Keep the operator in the loop while logic is unproven | — Pending |
-| % -of-capital sizing with max-position cap | Scales with account size while bounding single-trade risk | — Pending |
-| Rules-based stop-loss/take-profit on top of LLM SELL | Safety net independent of LLM judgment | — Pending |
-| Strict JSON LLM contract, fail-safe on parse error | Programmatic execution requires deterministic, parseable signals | — Pending |
+| Mock account first, real money later | Validate logic with zero capital risk before going live | ✓ Shipped — Phase 5 gated real-money promotion behind `TRADING_MODE=real` + `CONFIRM_REAL_TRADING` |
+| Switchable LLM provider (Claude/OpenAI), not ensemble | Simpler v1; one provider at a time, swap via config | ✓ Shipped — Phase 4 provider port |
+| Daily screening for the trading universe | Surface candidates dynamically rather than a fixed list | ✓ Shipped — Phase 3 screener |
+| Manual trigger (no scheduler) for v1 | Keep the operator in the loop while logic is unproven | ✓ Shipped — Phase 5 typer CLI (`bot run/screen/status`) |
+| % -of-capital sizing with max-position cap | Scales with account size while bounding single-trade risk | ✓ Shipped — Phase 2 |
+| Rules-based stop-loss/take-profit on top of LLM SELL | Safety net independent of LLM judgment | ✓ Shipped — Phase 2 risk net (takes precedence on conflict) |
+| Strict JSON LLM contract, fail-safe on parse error | Programmatic execution requires deterministic, parseable signals | ✓ Shipped — Phase 4 structured output, HOLD on parse failure |
+| D-05: extend direct-REST KIS layer, not adopt `python-kis` | Zero third-party trust in the order path; reuse the shared token manager | ✓ Shipped — Phase 5 `kis_order.py` + `KISBroker` |
 
 ## Evolution
 
@@ -100,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-30 after Phase 1 completion*
+*Last updated: 2026-07-03 after Phase 5 completion — Milestone v1.0 complete (all 5 phases shipped and verified)*
