@@ -30,3 +30,17 @@ dist/
 .idea/
 .vscode/
 *.swp
+
+# Local agent/runtime artifacts
+.agents/
+.codex/
+.claude/.gsd-profile
+.claude/agents/
+.claude/commands/
+.claude/gsd-core/
+.claude/gsd-file-manifest.json
+.claude/gsd-install-state.json
+.claude/hooks/
+.claude/package.json
+.claude/scripts/
+.planning/research/.cache/
