@@ -22,10 +22,10 @@ current_phase_name: real-money-readiness-operations
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-30)
+See: .planning/PROJECT.md (updated 2026-07-03)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 05 — real-money-readiness-operations
+**Current focus:** Planning next milestone (v1.0 shipped 2026-07-03)
 
 ## Current Position
 
