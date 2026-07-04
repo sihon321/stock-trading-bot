@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-07-03)
 Phase: Milestone v1.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-07-03 — Milestone v1.0 completed and archived
+Last activity: 2026-07-04 — Completed quick task 260704-her: Add OAuth token authentication support for the Claude (Anthropic) LLM provider
 
 ## Performance Metrics
 
@@ -133,6 +133,12 @@ None yet.
 ### Blockers/Concerns
 
 None yet.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260704-her | Add OAuth token authentication support for the Claude (Anthropic) LLM provider, alongside the existing API-key auth | 2026-07-04 | 36eb806 | [260704-her-add-oauth-token-authentication-support-f](./quick/260704-her-add-oauth-token-authentication-support-f/) |
 
 ## Deferred Items
 
