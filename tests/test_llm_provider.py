@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import subprocess
 import sys
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -127,6 +129,91 @@ def test_build_llm_provider_selects_adapter_from_settings_value() -> None:
     assert openai._temperature == openai_settings.openai_temperature
     assert openai._max_retries == openai_settings.llm_max_retries
     assert openai._retry_backoff_seconds == openai_settings.llm_retry_backoff_seconds
+
+
+def test_build_claude_provider_uses_auth_token_client_with_oauth_beta_header() -> None:
+    from trading_bot.llm_provider import (
+        ANTHROPIC_OAUTH_BETA_HEADER,
+        ClaudeLLMProvider,
+        build_llm_provider,
+    )
+
+    recorded: dict[str, Any] = {}
+
+    class FakeAnthropicSDKClient:
+        def __init__(self, **kwargs: Any) -> None:
+            recorded.update(kwargs)
+            self.messages = SimpleNamespace(create=lambda **_: None)
+
+    settings = make_settings(
+        llm_provider=LLMProviderName.CLAUDE,
+        anthropic_api_key=None,
+        anthropic_auth_token=SecretStr("test-oauth-token"),
+    )
+
+    with patch("anthropic.Anthropic", FakeAnthropicSDKClient):
+        provider = build_llm_provider(settings)
+
+    assert isinstance(provider, ClaudeLLMProvider)
+    assert recorded.get("auth_token") == "test-oauth-token"
+    assert recorded.get("default_headers") == {
+        "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER
+    }
+    assert "api_key" not in recorded
+
+
+def test_build_claude_provider_falls_back_to_api_key_client_when_no_auth_token() -> None:
+    from trading_bot.llm_provider import ClaudeLLMProvider, build_llm_provider
+
+    recorded: dict[str, Any] = {}
+
+    class FakeAnthropicSDKClient:
+        def __init__(self, **kwargs: Any) -> None:
+            recorded.update(kwargs)
+            self.messages = SimpleNamespace(create=lambda **_: None)
+
+    settings = make_settings(
+        llm_provider=LLMProviderName.CLAUDE,
+        anthropic_api_key=SecretStr("test-anthropic-key"),
+        anthropic_auth_token=None,
+    )
+
+    with patch("anthropic.Anthropic", FakeAnthropicSDKClient):
+        provider = build_llm_provider(settings)
+
+    assert isinstance(provider, ClaudeLLMProvider)
+    assert recorded.get("api_key") == "test-anthropic-key"
+    assert "auth_token" not in recorded
+    assert "default_headers" not in recorded
+
+
+def test_build_claude_provider_prefers_auth_token_when_both_set() -> None:
+    from trading_bot.llm_provider import (
+        ANTHROPIC_OAUTH_BETA_HEADER,
+        build_llm_provider,
+    )
+
+    recorded: dict[str, Any] = {}
+
+    class FakeAnthropicSDKClient:
+        def __init__(self, **kwargs: Any) -> None:
+            recorded.update(kwargs)
+            self.messages = SimpleNamespace(create=lambda **_: None)
+
+    settings = make_settings(
+        llm_provider=LLMProviderName.CLAUDE,
+        anthropic_api_key=SecretStr("test-anthropic-key"),
+        anthropic_auth_token=SecretStr("test-oauth-token"),
+    )
+
+    with patch("anthropic.Anthropic", FakeAnthropicSDKClient):
+        build_llm_provider(settings)
+
+    assert recorded.get("auth_token") == "test-oauth-token"
+    assert recorded.get("default_headers") == {
+        "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER
+    }
+    assert "api_key" not in recorded
 
 
 def test_built_adapters_satisfy_llm_provider_protocol() -> None:
