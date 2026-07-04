@@ -21,6 +21,7 @@ SECRET_VALUES = (
     "real-app-secret-secret",
     "anthropic-api-key-secret",
     "openai-api-key-secret",
+    "anthropic-auth-token-secret",
 )
 
 ENV_KEYS = (
@@ -28,6 +29,7 @@ ENV_KEYS = (
     "CONFIRM_REAL_TRADING",
     "LLM_PROVIDER",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
     "ANTHROPIC_MODEL",
     "ANTHROPIC_TEMPERATURE",
@@ -176,6 +178,68 @@ def test_claude_provider_requires_only_anthropic_key(monkeypatch: pytest.MonkeyP
 
     assert settings.llm_provider is LLMProviderName.CLAUDE
     assert settings.active_llm_api_key.get_secret_value() == "anthropic-api-key-secret"
+
+
+def test_claude_provider_accepts_only_anthropic_auth_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch, LLM_PROVIDER="claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "anthropic-auth-token-secret")
+
+    settings = Settings()
+
+    assert settings.llm_provider is LLMProviderName.CLAUDE
+    assert settings.anthropic_api_key is None
+    assert settings.anthropic_auth_token is not None
+    assert (
+        settings.anthropic_auth_token.get_secret_value()
+        == "anthropic-auth-token-secret"
+    )
+
+
+def test_claude_provider_still_accepts_only_anthropic_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch, LLM_PROVIDER="claude")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    settings = Settings()
+
+    assert settings.llm_provider is LLMProviderName.CLAUDE
+    assert settings.anthropic_auth_token is None
+    assert settings.active_llm_api_key.get_secret_value() == "anthropic-api-key-secret"
+
+
+def test_claude_provider_fails_when_neither_credential_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch, LLM_PROVIDER="claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings()
+
+    diagnostic = str(exc_info.value)
+    assert "ANTHROPIC_API_KEY" in diagnostic
+    assert "ANTHROPIC_AUTH_TOKEN" in diagnostic
+    assert_no_secret_leaked(diagnostic)
+
+
+def test_claude_auth_token_does_not_leak_in_repr_or_banner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_base_env(monkeypatch, LLM_PROVIDER="claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "anthropic-auth-token-secret")
+
+    settings = Settings()
+
+    assert_no_secret_leaked(repr(settings), startup_banner(settings))
 
 
 def test_openai_provider_requires_only_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
