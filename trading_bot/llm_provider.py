@@ -41,6 +41,12 @@ class _TransientLLMError(Exception):
     """Internal marker for retryable transient LLM-call failures."""
 
 
+# Beta header required by the Anthropic API when authenticating with an OAuth
+# bearer token (auth_token) instead of an API key. Kept as a single source of
+# truth so tests assert against the same value the client sends.
+ANTHROPIC_OAUTH_BETA_HEADER = "oauth-2025-04-20"
+
+
 EMIT_SIGNAL_TOOL = {
     "name": "emit_signal",
     "description": "Emit one validated trading signal for the rendered candidate.",
@@ -292,9 +298,20 @@ def build_llm_provider(settings: Settings, *, client: Any = None) -> LLMProvider
         if client is None:
             import anthropic
 
-            client = anthropic.Anthropic(
-                api_key=settings.active_llm_api_key.get_secret_value()
-            )
+            if settings.anthropic_auth_token is not None:
+                # OAuth bearer token takes precedence over the API key. Exactly
+                # one credential reaches the SDK; sending both auth headers is
+                # rejected by the API.
+                client = anthropic.Anthropic(
+                    auth_token=settings.anthropic_auth_token.get_secret_value(),
+                    default_headers={
+                        "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER
+                    },
+                )
+            else:
+                client = anthropic.Anthropic(
+                    api_key=settings.active_llm_api_key.get_secret_value()
+                )
         return ClaudeLLMProvider(
             client=client,
             model=settings.anthropic_model,
