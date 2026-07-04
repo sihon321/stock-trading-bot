@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     confirm_real_trading: bool = False
     llm_provider: LLMProviderName = LLMProviderName.CLAUDE
     anthropic_api_key: Optional[SecretStr] = None
+    anthropic_auth_token: Optional[SecretStr] = None
     openai_api_key: Optional[SecretStr] = None
     # Phase 4 LLM provider pins (D-07/D-09). Anthropic temperature is
     # advisory/log-only because Claude 4.6+ rejects sampling parameters; the
@@ -113,7 +114,7 @@ class Settings(BaseSettings):
                 "TRADING_MODE=real requires CONFIRM_REAL_TRADING=yes before "
                 "real trading configuration can start"
             )
-        self._require_selected_llm_key()
+        self._require_selected_llm_credentials()
         self._require_positive_source_policy()
         return self
 
@@ -153,6 +154,28 @@ class Settings(BaseSettings):
         """Return the API key for the selected LLM provider."""
 
         return self._require_selected_llm_key()
+
+    def _require_selected_llm_credentials(self) -> None:
+        """Fail closed when the active provider has no usable credential.
+
+        For CLAUDE, either an API key or an OAuth auth token satisfies the
+        requirement (auth token takes precedence at client construction). For
+        OPENAI, only the API key is accepted. This is the validator hook and
+        must not read ``active_llm_api_key`` on the auth-token-only path.
+        """
+
+        if self.llm_provider is LLMProviderName.CLAUDE:
+            if self.anthropic_api_key is None and self.anthropic_auth_token is None:
+                raise ValueError(
+                    "LLM_PROVIDER=claude requires ANTHROPIC_API_KEY or "
+                    "ANTHROPIC_AUTH_TOKEN for the active provider"
+                )
+            return
+
+        if self.openai_api_key is None:
+            raise ValueError(
+                "LLM_PROVIDER=openai requires OPENAI_API_KEY for the active provider"
+            )
 
     def _require_selected_llm_key(self) -> SecretStr:
         if self.llm_provider is LLMProviderName.CLAUDE:
