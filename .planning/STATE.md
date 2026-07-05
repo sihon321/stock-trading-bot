@@ -6,8 +6,8 @@ current_phase: 0
 status: Awaiting next milestone
 stopped_at: Completed 05-04-PLAN.md
 last_updated: "2026-07-03T02:42:13.424Z"
-last_activity: 2026-07-03
-last_activity_desc: Milestone v1.0 completed and archived
+last_activity: 2026-07-05
+last_activity_desc: "Completed quick task 260705-ezc: Add Codex CLI subprocess LLM provider"
 progress:
   total_phases: 5
   completed_phases: 5
@@ -139,6 +139,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260704-her | Add OAuth token authentication support for the Claude (Anthropic) LLM provider, alongside the existing API-key auth | 2026-07-04 | 36eb806 | [260704-her-add-oauth-token-authentication-support-f](./quick/260704-her-add-oauth-token-authentication-support-f/) |
+| 260705-ezc | Add Codex CLI subprocess LLM provider | 2026-07-05 | a22a615 | [260705-ezc-add-codex-cli-subprocess-llm-provider](./quick/260705-ezc-add-codex-cli-subprocess-llm-provider/) |
 
 ## Deferred Items
 
