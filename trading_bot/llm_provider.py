@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import subprocess
+from typing import Any, Callable
 
 import structlog
 from tenacity import (
@@ -47,6 +48,19 @@ class _TransientLLMError(Exception):
 ANTHROPIC_OAUTH_BETA_HEADER = "oauth-2025-04-20"
 
 
+# Appended to the rendered prompt for the Codex CLI provider. The CLI returns
+# free-form agent text rather than a schema-guaranteed tool call, so we ask for a
+# bare JSON object and re-validate it through ``parse_signal`` (fail-safe).
+CODEX_JSON_INSTRUCTION = (
+    "Respond with ONLY a single JSON object and nothing else: no markdown, no "
+    "code fences, no commentary, no tool calls, and do not modify any files. "
+    'The object must have exactly these keys: "decision" (one of "BUY", "SELL", '
+    '"HOLD"), "confidence" (a number from 0.0 to 1.0), and "reason" (a short '
+    "string). Example: "
+    '{"decision": "HOLD", "confidence": 0.4, "reason": "no confirmed breakout"}'
+)
+
+
 EMIT_SIGNAL_TOOL = {
     "name": "emit_signal",
     "description": "Emit one validated trading signal for the rendered candidate.",
@@ -86,6 +100,57 @@ def _json_default(value: Any) -> Any:
 
 def _serialize_response(value: Any) -> str:
     return json.dumps(value, default=_json_default)
+
+
+def _last_json_object(text: str) -> str:
+    """Return the last top-level ``{...}`` block in ``text`` (string-aware).
+
+    Codex CLI output can wrap the signal in prose or code fences; this scans for
+    a balanced brace span, ignoring braces inside JSON string literals, and
+    returns ``""`` when none is found.
+    """
+
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    best = ""
+    for index, char in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_str = False
+            continue
+        if char == '"':
+            in_str = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                best = text[start : index + 1]
+    return best
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Pull a single JSON object out of CLI stdout or fail safe."""
+
+    stripped = (text or "").strip()
+    for source in (stripped, _last_json_object(stripped)):
+        if not source:
+            continue
+        try:
+            payload = json.loads(source)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise LLMProviderError("codex CLI output did not contain a JSON object")
 
 
 def _log_cycle(
@@ -291,7 +356,116 @@ class OpenAILLMProvider:
         )
 
 
-def build_llm_provider(settings: Settings, *, client: Any = None) -> LLMProvider:
+class CodexCLIProvider:
+    """Codex CLI adapter that shells out to ``codex exec`` via subprocess.
+
+    Unlike the API-backed adapters, this provider runs the locally installed
+    ``codex`` binary (``codex exec [args] "<prompt>"``), captures stdout, and
+    extracts a strict JSON signal from it. The subprocess runner is injectable so
+    tests never spawn a real process. Any transport failure (non-zero exit,
+    timeout, missing binary) is retried and ultimately mapped to a fail-safe
+    :class:`LLMProviderError`; unparseable output never becomes a trade.
+    """
+
+    provider_name = "codex_cli"
+
+    def __init__(
+        self,
+        *,
+        binary: str = "codex",
+        model: str | None = None,
+        temperature: float = 0.0,
+        timeout_seconds: float = 120.0,
+        extra_args: tuple[str, ...] = (),
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+        runner: Callable[..., Any] | None = None,
+    ) -> None:
+        self._binary = binary
+        self._model = model
+        self._temperature = float(temperature)
+        self._timeout_seconds = float(timeout_seconds)
+        self._extra_args = tuple(extra_args)
+        self._max_retries = max(1, int(max_retries))
+        self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+        self._runner = runner or subprocess.run
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return (
+            "CodexCLIProvider("
+            f"provider_name={self.provider_name!r}, model={self._model_label!r})"
+        )
+
+    @property
+    def _model_label(self) -> str:
+        return self._model or f"{self._binary}:default"
+
+    def generate_signal(self, context: DataContext) -> LLMSignal:
+        prompt = self._build_prompt(context)
+        response_text = ""
+        try:
+            response_text = self._call_with_retry(prompt)
+            raw_input_obj = _extract_json_object(response_text)
+            signal = _finalize(raw_input_obj)
+            _log_cycle(
+                provider=self.provider_name,
+                model=self._model_label,
+                temperature=self._temperature,
+                prompt=prompt,
+                response=response_text,
+                outcome=f"parsed:{signal.decision.value}",
+            )
+            return signal
+        except LLMProviderError as exc:
+            _log_cycle(
+                provider=self.provider_name,
+                model=self._model_label,
+                temperature=self._temperature,
+                prompt=prompt,
+                response=response_text or str(exc),
+                outcome=f"error:{exc}",
+            )
+            raise
+
+    def _build_prompt(self, context: DataContext) -> str:
+        return "\n\n".join(
+            (SYSTEM_PROMPT, render_prompt(context), CODEX_JSON_INSTRUCTION)
+        )
+
+    def _build_argv(self, prompt: str) -> list[str]:
+        argv = [self._binary, "exec"]
+        if self._model:
+            argv += ["--model", self._model]
+        argv += list(self._extra_args)
+        argv.append(prompt)
+        return argv
+
+    def _call_with_retry(self, prompt: str) -> str:
+        return _call_provider_with_retry(
+            lambda: self._invoke(prompt),
+            max_retries=self._max_retries,
+            retry_backoff_seconds=self._retry_backoff_seconds,
+        )
+
+    def _invoke(self, prompt: str) -> str:
+        completed = self._runner(
+            self._build_argv(prompt),
+            capture_output=True,
+            text=True,
+            timeout=self._timeout_seconds,
+        )
+        returncode = getattr(completed, "returncode", 0)
+        if returncode != 0:
+            stderr = (getattr(completed, "stderr", "") or "").strip()
+            raise RuntimeError(
+                f"codex CLI exited with status {returncode}: {stderr[:500]}"
+            )
+        return getattr(completed, "stdout", "") or ""
+
+
+def build_llm_provider(
+    settings: Settings, *, client: Any = None, runner: Callable[..., Any] | None = None
+) -> LLMProvider:
     """Build the configured LLM provider, constructing real SDK clients lazily."""
 
     if settings.llm_provider is LLMProviderName.CLAUDE:
@@ -318,6 +492,18 @@ def build_llm_provider(settings: Settings, *, client: Any = None) -> LLMProvider
             temperature=settings.anthropic_temperature,
             max_retries=settings.llm_max_retries,
             retry_backoff_seconds=settings.llm_retry_backoff_seconds,
+        )
+
+    if settings.llm_provider is LLMProviderName.CODEX_CLI:
+        return CodexCLIProvider(
+            binary=settings.codex_cli_binary,
+            model=settings.codex_cli_model,
+            temperature=settings.codex_cli_temperature,
+            timeout_seconds=settings.codex_cli_timeout_seconds,
+            extra_args=settings.codex_cli_extra_args,
+            max_retries=settings.llm_max_retries,
+            retry_backoff_seconds=settings.llm_retry_backoff_seconds,
+            runner=runner,
         )
 
     if client is None:

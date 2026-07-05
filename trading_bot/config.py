@@ -21,6 +21,10 @@ class LLMProviderName(str, Enum):
 
     CLAUDE = "claude"
     OPENAI = "openai"
+    # Codex CLI provider: instead of an HTTP API call, the bot shells out to the
+    # locally installed ``codex`` CLI (``codex exec "<prompt>"``). The CLI holds
+    # its own login/credentials, so no API key is required in this project.
+    CODEX_CLI = "codex_cli"
 
 
 class KisCredentialGroup(BaseModel):
@@ -55,6 +59,15 @@ class Settings(BaseSettings):
     anthropic_temperature: float = 0.0
     openai_model: str = "gpt-4.1"
     openai_temperature: float = 0.0
+    # Codex CLI provider knobs. The bot invokes ``codex_cli_binary exec [args]
+    # <prompt>`` and parses a strict JSON signal from stdout. ``codex_cli_model``
+    # is passed as ``--model`` only when set; temperature is advisory/log-only
+    # because the CLI does not accept a sampling parameter on the command line.
+    codex_cli_binary: str = "codex"
+    codex_cli_model: Optional[str] = None
+    codex_cli_temperature: float = 0.0
+    codex_cli_timeout_seconds: float = 120.0
+    codex_cli_extra_args: Tuple[str, ...] = ()
     llm_max_retries: int = 3
     llm_retry_backoff_seconds: float = 1.0
     kis_mock: KisCredentialGroup
@@ -131,6 +144,7 @@ class Settings(BaseSettings):
             "kis_retry_backoff_seconds": self.kis_retry_backoff_seconds,
             "llm_max_retries": self.llm_max_retries,
             "llm_retry_backoff_seconds": self.llm_retry_backoff_seconds,
+            "codex_cli_timeout_seconds": self.codex_cli_timeout_seconds,
             "naver_news_max_items": self.naver_news_max_items,
             "naver_news_max_chars": self.naver_news_max_chars,
             "order_timeout_seconds": self.order_timeout_seconds,
@@ -170,6 +184,12 @@ class Settings(BaseSettings):
                     "LLM_PROVIDER=claude requires ANTHROPIC_API_KEY or "
                     "ANTHROPIC_AUTH_TOKEN for the active provider"
                 )
+            return
+
+        if self.llm_provider is LLMProviderName.CODEX_CLI:
+            # The Codex CLI authenticates itself (its own login/token store); the
+            # bot never handles a Codex API key, so there is no credential to
+            # require here.
             return
 
         if self.openai_api_key is None:

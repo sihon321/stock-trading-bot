@@ -619,6 +619,215 @@ def test_openai_retries_are_bounded() -> None:
     assert len(fake.calls) == 3
 
 
+class FakeCodexRunner:
+    """Stand-in for ``subprocess.run`` recording argv and returning canned I/O."""
+
+    def __init__(
+        self,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        returncode: int = 0,
+        error: Exception | None = None,
+        fail_times: int = 0,
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._stdout = stdout
+        self._stderr = stderr
+        self._returncode = returncode
+        self._error = error
+        self._fail_times = fail_times
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append({"argv": list(argv), **kwargs})
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise self._error or RuntimeError("transient codex failure")
+        return SimpleNamespace(
+            returncode=self._returncode,
+            stdout=self._stdout,
+            stderr=self._stderr,
+        )
+
+
+def _codex_provider(runner, *, model=None, extra_args=(), max_retries=3):
+    from trading_bot.llm_provider import CodexCLIProvider
+
+    return CodexCLIProvider(
+        binary="codex",
+        model=model,
+        temperature=0.0,
+        timeout_seconds=30.0,
+        extra_args=extra_args,
+        max_retries=max_retries,
+        retry_backoff_seconds=0.0,
+        runner=runner,
+    )
+
+
+def _codex_json(decision="BUY", confidence=0.9, reason="RSI 72 + vol 2x") -> str:
+    return '{"decision": "%s", "confidence": %s, "reason": "%s"}' % (
+        decision,
+        confidence,
+        reason,
+    )
+
+
+def test_build_codex_cli_provider_from_settings() -> None:
+    from trading_bot.llm_provider import CodexCLIProvider, build_llm_provider
+
+    settings = make_settings(
+        llm_provider=LLMProviderName.CODEX_CLI,
+        codex_cli_binary="codex",
+        codex_cli_model="gpt-5-codex",
+        codex_cli_timeout_seconds=45.0,
+        codex_cli_extra_args=("--skip-git-repo-check",),
+    )
+
+    runner = FakeCodexRunner(stdout=_codex_json())
+    provider = build_llm_provider(settings, runner=runner)
+
+    assert isinstance(provider, CodexCLIProvider)
+    assert isinstance(provider, LLMProvider)
+    assert not inspect.iscoroutinefunction(provider.generate_signal)
+    assert provider._model == "gpt-5-codex"
+    assert provider._timeout_seconds == 45.0
+    assert provider._extra_args == ("--skip-git-repo-check",)
+
+
+def test_codex_cli_provider_needs_no_api_key() -> None:
+    from trading_bot.llm_provider import build_llm_provider
+
+    # No anthropic/openai key set: the codex provider validates and builds anyway.
+    settings = make_settings(
+        llm_provider=LLMProviderName.CODEX_CLI,
+        anthropic_api_key=None,
+        anthropic_auth_token=None,
+        openai_api_key=None,
+    )
+
+    provider = build_llm_provider(settings, runner=FakeCodexRunner(stdout=_codex_json()))
+    signal = provider.generate_signal(make_data_context())
+
+    assert signal.decision is Decision.BUY
+
+
+def test_codex_builds_exec_argv_with_model_extra_args_and_prompt_last() -> None:
+    context = make_data_context()
+    runner = FakeCodexRunner(stdout=_codex_json())
+
+    _codex_provider(
+        runner, model="gpt-5-codex", extra_args=("--skip-git-repo-check",)
+    ).generate_signal(context)
+
+    assert len(runner.calls) == 1
+    call = runner.calls[0]
+    argv = call["argv"]
+    assert argv[:2] == ["codex", "exec"]
+    assert argv[2:4] == ["--model", "gpt-5-codex"]
+    assert "--skip-git-repo-check" in argv
+    # The single combined prompt is the final positional argument and carries the
+    # system prompt, the rendered candidate, and the strict JSON instruction.
+    from trading_bot.llm_provider import CODEX_JSON_INSTRUCTION
+
+    assert SYSTEM_PROMPT in argv[-1]
+    assert render_prompt(context) in argv[-1]
+    assert argv[-1].endswith(CODEX_JSON_INSTRUCTION)
+    assert call["timeout"] == 30.0
+    assert call["capture_output"] is True
+    assert call["text"] is True
+
+
+def test_codex_pure_json_stdout_is_revalidated_signal() -> None:
+    runner = FakeCodexRunner(stdout=_codex_json("SELL", 0.85, "breakdown on 2x volume"))
+
+    signal = _codex_provider(runner).generate_signal(make_data_context())
+
+    assert signal == LLMSignal(
+        decision=Decision.SELL,
+        confidence=0.85,
+        reason="breakdown on 2x volume",
+    )
+
+
+def test_codex_extracts_json_from_noisy_output() -> None:
+    noisy = (
+        "Analyzing candidate...\n"
+        "Here is the signal:\n"
+        "```json\n" + _codex_json("HOLD", 0.4, "no confirmed breakout") + "\n```\n"
+        "Done.\n"
+    )
+    runner = FakeCodexRunner(stdout=noisy)
+
+    signal = _codex_provider(runner).generate_signal(make_data_context())
+
+    assert signal == LLMSignal(
+        decision=Decision.HOLD,
+        confidence=0.4,
+        reason="no confirmed breakout",
+    )
+
+
+def test_codex_no_json_output_raises_llm_provider_error() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    runner = FakeCodexRunner(stdout="I could not produce a signal.")
+
+    with pytest.raises(LLMProviderError):
+        _codex_provider(runner).generate_signal(make_data_context())
+
+
+def test_codex_nonzero_exit_raises_llm_provider_error_and_retries() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    runner = FakeCodexRunner(returncode=1, stderr="codex: not logged in")
+
+    with pytest.raises(LLMProviderError):
+        _codex_provider(runner, max_retries=3).generate_signal(make_data_context())
+
+    assert len(runner.calls) == 3
+
+
+def test_codex_transient_failure_then_success_is_bounded() -> None:
+    runner = FakeCodexRunner(
+        stdout=_codex_json(),
+        error=RuntimeError("codex crashed"),
+        fail_times=1,
+    )
+
+    signal = _codex_provider(runner, max_retries=3).generate_signal(make_data_context())
+
+    assert signal.decision is Decision.BUY
+    assert len(runner.calls) == 2
+
+
+def test_codex_malformed_signal_is_revalidated_by_parse_signal() -> None:
+    from trading_bot.llm_provider import LLMProviderError
+
+    runner = FakeCodexRunner(stdout=_codex_json("BUY", 1.5, "over-confident"))
+
+    with pytest.raises(LLMProviderError) as excinfo:
+        _codex_provider(runner).generate_signal(make_data_context())
+
+    assert isinstance(excinfo.value.__cause__, SignalParseError)
+
+
+def test_codex_logs_one_cycle_event() -> None:
+    context = make_data_context()
+    runner = FakeCodexRunner(stdout=_codex_json("HOLD", 0.5, "insufficient signal"))
+
+    with structlog.testing.capture_logs() as logs:
+        _codex_provider(runner, model="gpt-5-codex").generate_signal(context)
+
+    assert len(logs) == 1
+    event = logs[0]
+    assert event["event"] == "llm_signal_cycle"
+    assert event["provider"] == "codex_cli"
+    assert event["model"] == "gpt-5-codex"
+    assert event["prompt_version"] == PROMPT_VERSION
+    assert event["outcome"] == "parsed:HOLD"
+
+
 def test_openai_logs_one_secret_free_cycle_event() -> None:
     context = make_data_context()
     secret = "sk-test-sentinel-secret"
