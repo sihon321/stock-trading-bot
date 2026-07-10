@@ -10,6 +10,7 @@ vendor exception into its caller.
 import dataclasses
 import importlib
 import sys
+import time
 
 import pandas as pd
 import pytest
@@ -217,6 +218,32 @@ def test_vendor_exception_is_normalized_not_raised() -> None:
     # The raw vendor message must not be trusted as a tradeable frame, but the
     # reason should describe the failure category without leaking secrets.
     assert result.health.reason
+
+
+def test_vendor_call_timeout_is_unavailable_not_hanging() -> None:
+    def slow_fetch(*args, **kwargs):
+        time.sleep(1.0)
+        return _frame()
+
+    class _FakeStock:
+        @staticmethod
+        def get_market_ohlcv(*args, **kwargs):
+            return slow_fetch(*args, **kwargs)
+
+    adapter = PykrxOhlcvAdapter(
+        stock_module=_FakeStock(),
+        adjusted=True,
+        request_timeout_seconds=0.05,
+    )
+
+    started = time.monotonic()
+    result = adapter.fetch_daily_ohlcv("005930", TRADING_DATE, lookback_days=90)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert result.frame is None
+    assert result.health.status is SourceStatus.UNAVAILABLE
+    assert "timed out" in result.health.reason
 
 
 def test_fetch_market_ohlcv_normalizes_whole_market_frame() -> None:

@@ -481,9 +481,12 @@ def test_screen_daily_candidates_composes_screener() -> None:
         label="mock",
     )
     settings = Settings(
+        _env_file=None,
         kis_mock=kis,
         kis_real=kis,
         anthropic_api_key="a",
+        screener_min_trading_value=1_000_000_000.0,
+        screener_markets=("KOSPI", "KOSDAQ"),
     )
 
     source = MarketDataSource(

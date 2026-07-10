@@ -426,6 +426,7 @@ def test_phase3_source_policy_fields_accept_environment_overrides(
         SCREENER_MIN_TRADING_VALUE="2000000000",
         SCREENER_MIN_VOLUME_RATIO="1.5",
         SCREENER_EXCLUDED_STATES='["HALTED"]',
+        PYKRX_REQUEST_TIMEOUT_SECONDS="3.5",
         KIS_TOKEN_REFRESH_MARGIN_SECONDS="300",
         KIS_MIN_INTERVAL_SECONDS="1.0",
         KIS_MAX_RETRIES="5",
@@ -443,6 +444,7 @@ def test_phase3_source_policy_fields_accept_environment_overrides(
     assert settings.screener_min_trading_value == 2_000_000_000.0
     assert settings.screener_min_volume_ratio == 1.5
     assert settings.screener_excluded_states == ("HALTED",)
+    assert settings.pykrx_request_timeout_seconds == 3.5
     assert settings.kis_token_refresh_margin_seconds == 300
     assert settings.kis_min_interval_seconds == 1.0
     assert settings.kis_max_retries == 5
@@ -458,6 +460,7 @@ def test_phase3_source_policy_fields_accept_environment_overrides(
         {"SCREENER_MAX_CANDIDATES": "0"},
         {"SCREENER_MIN_TRADING_VALUE": "0"},
         {"SCREENER_MIN_VOLUME_RATIO": "0"},
+        {"PYKRX_REQUEST_TIMEOUT_SECONDS": "0"},
         {"KIS_TOKEN_REFRESH_MARGIN_SECONDS": "-1"},
         {"KIS_MIN_INTERVAL_SECONDS": "-0.5"},
         {"KIS_MAX_RETRIES": "-1"},

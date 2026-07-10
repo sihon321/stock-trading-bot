@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     screener_min_trading_value: float = 1_000_000_000.0
     screener_min_volume_ratio: float = 1.0
     screener_excluded_states: Tuple[str, ...] = ("HALTED", "DELISTING", "ADMIN")
+    # pykrx has no reliable per-call timeout knob, so the adapter wraps vendor
+    # calls and skips one stuck ticker instead of freezing the whole screen.
+    pykrx_request_timeout_seconds: float = 10.0
     # KIS token/rate controls (DATA-03): refresh margin ahead of the runtime-
     # discovered token expiry, a min inter-request interval, and bounded retries.
     kis_token_refresh_margin_seconds: int = 600
@@ -138,6 +141,7 @@ class Settings(BaseSettings):
             "screener_max_candidates": self.screener_max_candidates,
             "screener_min_trading_value": self.screener_min_trading_value,
             "screener_min_volume_ratio": self.screener_min_volume_ratio,
+            "pykrx_request_timeout_seconds": self.pykrx_request_timeout_seconds,
             "kis_token_refresh_margin_seconds": self.kis_token_refresh_margin_seconds,
             "kis_min_interval_seconds": self.kis_min_interval_seconds,
             "kis_max_retries": self.kis_max_retries,

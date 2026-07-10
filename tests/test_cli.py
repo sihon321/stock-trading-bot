@@ -44,6 +44,24 @@ class _DataSource:
         )
 
 
+class _ProgressDataSource:
+    def __init__(self) -> None:
+        self.progress_messages: list[str] = []
+        self.trading_date: str | None = None
+
+    def screen_daily_candidates(
+        self,
+        trading_date: str,
+        *,
+        progress=None,
+    ) -> _ScreenerResult:
+        self.trading_date = trading_date
+        if progress is not None:
+            progress("fetching test market")
+            progress("built 2 screenable rows")
+        return _ScreenerResult(("005930", "000660"))
+
+
 class _Provider:
     def generate_signal(self, context):
         return LLMSignal(
@@ -146,6 +164,61 @@ def test_real_execute_requires_live_confirm() -> None:
     assert "run" in runner.invoke(app, ["--help"]).stdout
     assert "screen" in runner.invoke(app, ["--help"]).stdout
     assert "status" in runner.invoke(app, ["--help"]).stdout
+
+
+def test_screen_command_reports_progress_on_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    import trading_bot.cli as cli
+
+    data_source = _ProgressDataSource()
+
+    monkeypatch.setattr(
+        cli,
+        "build_runtime",
+        lambda *, trading_date: cli._Runtime(
+            settings=make_settings(),
+            token_manager=None,
+            data_source=data_source,
+            llm_provider=_Provider(),
+            broker=_Broker(),
+            audit_conn=sqlite3.connect(":memory:"),
+            notifier=_Notifier(),
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["screen", "--date", "20260709"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ["005930", "000660"]
+    assert "[screen] fetching test market" in result.stderr
+    assert "[screen] selected 2 candidates" in result.stderr
+    assert data_source.trading_date == "20260709"
+
+
+def test_screen_command_can_suppress_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    import trading_bot.cli as cli
+
+    monkeypatch.setattr(
+        cli,
+        "build_runtime",
+        lambda *, trading_date: cli._Runtime(
+            settings=make_settings(),
+            token_manager=None,
+            data_source=_ProgressDataSource(),
+            llm_provider=_Provider(),
+            broker=_Broker(),
+            audit_conn=sqlite3.connect(":memory:"),
+            notifier=_Notifier(),
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["screen", "--date", "20260709", "--no-progress"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ["005930", "000660"]
+    assert result.stderr == ""
 
 
 def test_dry_run_default_no_orders(capsys) -> None:

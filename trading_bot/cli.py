@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dotenv
+dotenv.load_dotenv()
+
 import os
 import sqlite3
 import uuid
@@ -65,6 +68,10 @@ def _validate_ticker(ticker: str) -> str:
     if len(ticker) != 6 or not ticker.isdigit():
         raise typer.BadParameter("ticker must be a 6-digit KRX code")
     return ticker
+
+
+def _screen_progress(message: str) -> None:
+    typer.echo(f"[screen] {message}", err=True)
 
 
 def _execution_config(settings: Settings) -> ExecutionConfig:
@@ -377,13 +384,24 @@ def run_command(
 @app.command("screen")
 def screen_command(
     trading_date: Optional[str] = typer.Option(None, "--date", help="KRX trading date YYYYMMDD."),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Suppress screening progress messages on stderr.",
+    ),
 ) -> None:
     """Preview the screened candidate universe without placing orders."""
 
-    runtime = build_runtime(trading_date=trading_date or _today_kst())
-    candidates = _candidate_tickers(
-        runtime.data_source.screen_daily_candidates(trading_date or _today_kst())
+    resolved_trading_date = trading_date or _today_kst()
+    runtime = build_runtime(trading_date=resolved_trading_date)
+    progress = None if no_progress else _screen_progress
+    result = runtime.data_source.screen_daily_candidates(
+        resolved_trading_date,
+        progress=progress,
     )
+    candidates = _candidate_tickers(result)
+    if progress is not None:
+        progress(f"selected {len(candidates)} candidates")
     for symbol in candidates:
         typer.echo(symbol)
 

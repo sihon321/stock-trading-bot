@@ -222,7 +222,12 @@ class MarketDataSource:
 
     # -- Screener composition (DATA-05) --------------------------------------
 
-    def screen_daily_candidates(self, trading_date: str) -> ScreenerResult:
+    def screen_daily_candidates(
+        self,
+        trading_date: str,
+        *,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> ScreenerResult:
         """Compose the pykrx market adapter with the pure screener (DATA-05, D-13).
 
         Fetches per-ticker screener rows from the OHLCV adapter, then delegates
@@ -233,7 +238,13 @@ class MarketDataSource:
         if self._settings is None:
             raise ValueError("screen_daily_candidates requires Settings")
 
-        rows = self._ohlcv_adapter.fetch_market_rows(trading_date)
+        if progress is None:
+            rows = self._ohlcv_adapter.fetch_market_rows(trading_date)
+        else:
+            rows = self._ohlcv_adapter.fetch_market_rows(
+                trading_date,
+                progress=progress,
+            )
         config = build_screener_config(self._settings)
         return screen_candidates(trading_date, rows, config)
 
@@ -325,7 +336,10 @@ def build_data_source(
     )
 
     if ohlcv_adapter is None:
-        ohlcv_adapter = PykrxOhlcvAdapter(adjusted=settings.ohlcv_adjusted)
+        ohlcv_adapter = PykrxOhlcvAdapter(
+            adjusted=settings.ohlcv_adjusted,
+            request_timeout_seconds=settings.pykrx_request_timeout_seconds,
+        )
 
     if quote_adapter is None:
         raise ValueError(

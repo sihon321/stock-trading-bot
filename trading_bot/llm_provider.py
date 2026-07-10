@@ -452,6 +452,7 @@ class CodexCLIProvider:
             self._build_argv(prompt),
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=self._timeout_seconds,
         )
         returncode = getattr(completed, "returncode", 0)
@@ -472,7 +473,10 @@ def build_llm_provider(
         if client is None:
             import anthropic
 
-            if settings.anthropic_auth_token is not None:
+            if (
+                settings.anthropic_auth_token is not None
+                and settings.anthropic_auth_token.get_secret_value().strip()
+            ):
                 # OAuth bearer token takes precedence over the API key. Exactly
                 # one credential reaches the SDK; sending both auth headers is
                 # rejected by the API.

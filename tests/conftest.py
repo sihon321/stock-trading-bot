@@ -7,6 +7,9 @@ from pydantic import SecretStr
 from trading_bot.config import KisCredentialGroup, Settings
 from trading_bot.domain import DataContext, Money, Ticker
 
+Settings.model_config['env_file'] = None
+
+
 
 def make_data_context(**overrides) -> DataContext:
     values = {
