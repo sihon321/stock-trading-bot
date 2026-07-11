@@ -149,6 +149,7 @@ def _build_broker(
     *,
     token_manager: Optional[KisTokenManager],
     account: Optional[KisOrderAccount] = None,
+    quote_adapter: Any = None,
 ) -> Any:
     if settings.trading_mode is TradingMode.MOCK:
         return MockBroker(cash=Money(10_000_000.0, "KRW"))
@@ -161,10 +162,11 @@ def _build_broker(
             "real KIS broker requires KIS_ACCOUNT_CANO and optional "
             "KIS_ACCOUNT_PRODUCT_CODE in the environment"
         )
+    kwargs: dict[str, Any] = {}
+    if quote_adapter is not None:
+        kwargs["pre_submit_quote_reader"] = quote_adapter.fetch_current_price
     return build_kis_broker(
-        settings,
-        token_manager=token_manager,
-        account=real_account,
+        settings, token_manager=token_manager, account=real_account, **kwargs
     )
 
 
@@ -207,6 +209,7 @@ def build_runtime(
             resolved_settings,
             token_manager=token_manager,
             account=kis_account,
+            quote_adapter=quote_adapter,
         ),
         audit_conn=sqlite_audit.connect(resolved_settings.audit_db_path),
         notifier=build_notifier(resolved_settings),
@@ -431,7 +434,13 @@ def run_cycle(
                 terminal = TickerOutcome(
                     run_id=resolved_run_id, ticker=symbol,
                     outcome_code=outcome_code, reason_code=reason_code,
-                    detail={"correlation_id": correlation_id},
+                    detail={
+                        "correlation_id": correlation_id,
+                        **(
+                            resolved_data_source.cycle_evidence_for(symbol)
+                            if hasattr(resolved_data_source, "cycle_evidence_for") else {}
+                        ),
+                    },
                     final_order_state=outcome_code.value,
                 )
             except Exception as exc:  # noqa: BLE001 - isolate one ticker's failure.

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from tenacity import (
     retry,
@@ -54,6 +56,7 @@ class KisQuoteResult:
 
     price: Optional[Money]
     health: SourceHealth
+    observed_at: Optional[datetime] = None
 
 
 def _unavailable(reason: str) -> KisQuoteResult:
@@ -93,6 +96,7 @@ class KisQuoteAdapter:
         max_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
         timeout_seconds: float = 5.0,
+        clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         if client is None:
             import httpx
@@ -106,6 +110,7 @@ class KisQuoteAdapter:
         self._max_retries = max(1, int(max_retries))
         self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._timeout_seconds = float(timeout_seconds)
+        self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
         self._last_request_at: Optional[float] = None
 
     def __repr__(self) -> str:  # pragma: no cover - trivial redaction
@@ -130,7 +135,13 @@ class KisQuoteAdapter:
         except KisAuthError:
             return _unavailable("KIS auth unavailable for quote")
 
-        return self._parse_price(body)
+        result = self._parse_price(body)
+        if result.price is None:
+            return result
+        observed_at = self._clock()
+        if observed_at.tzinfo is None:
+            return _unavailable("quote observation clock was not timezone-aware")
+        return KisQuoteResult(result.price, result.health, observed_at)
 
     def _fetch_body(self, ticker: str, token: str) -> Any:
         @retry(

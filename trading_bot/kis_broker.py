@@ -18,6 +18,7 @@ from trading_bot.kis_order import (
     KisOrderError,
     snap_to_tick,
 )
+from trading_bot.market_cycle import MarketCyclePolicy, QuoteObservation
 from trading_bot.audit_models import OrderEvent, OrderEventType, sanitize_detail
 
 
@@ -80,6 +81,8 @@ class KISBroker:
         market_clock: Optional[Callable[[], bool]] = None,
         data_fresh: Optional[Callable[[], bool]] = None,
         evidence_sink: Optional[OrderEvidenceSink] = None,
+        pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
+        clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._order_adapter = order_adapter
         self._account = account
@@ -90,6 +93,8 @@ class KISBroker:
         self._data_fresh = data_fresh or _default_data_fresh
         self._last_reconciliation: Optional[OrderReconciliation] = None
         self._evidence_sink = evidence_sink
+        self._pre_submit_quote_reader = pre_submit_quote_reader
+        self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
 
     def set_evidence_sink(self, sink: OrderEvidenceSink) -> None:
         self._evidence_sink = sink
@@ -143,6 +148,39 @@ class KISBroker:
             return existing
 
         submission_id = str(uuid.uuid4())
+        if self._pre_submit_quote_reader is not None:
+            quote = self._pre_submit_quote_reader(order.ticker.value)
+            checked_at = self._clock()
+            observed_at = getattr(quote, "observed_at", None)
+            health = getattr(quote, "health", None)
+            freshness = None
+            if (
+                health is not None
+                and health.status is SourceStatus.AVAILABLE
+                and observed_at is not None
+            ):
+                # Calendar is irrelevant to this pure timestamp predicate.
+                class _UnusedCalendar:
+                    def is_trading_day(self, day): return None
+                    def previous_trading_day(self, day): return None
+                freshness = MarketCyclePolicy(_UnusedCalendar()).quote_freshness(
+                    QuoteObservation(observed_at), checked_at
+                )
+            if freshness is None or not freshness.fresh:
+                self._emit(OrderEvent(
+                    order_intent_id=intent_id, origin_run_id=origin,
+                    observer_run_id=observer, ticker=order.ticker.value,
+                    event_type=OrderEventType.FRESHNESS_BLOCKED,
+                    submission_id=submission_id, side=order.side.value,
+                    requested_qty=order.quantity, broker_status="STALE_QUOTE",
+                    detail={
+                        "reason": freshness.reason if freshness else "quote unavailable",
+                        "age_seconds": freshness.age_seconds if freshness else None,
+                        "checked_at": checked_at.isoformat(),
+                        "observed_at": observed_at.isoformat() if observed_at else None,
+                    },
+                ))
+                raise MarketClosedError("KIS order skipped: pre-submit quote is stale")
         self._emit(OrderEvent(
             order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
             ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ATTEMPTED,
@@ -338,6 +376,7 @@ def build_kis_broker(
     token_manager: Optional[KisTokenManager],
     account: Optional[KisOrderAccount] = None,
     client: Any = None,
+    pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
 ) -> KISBroker:
     """Build a KISBroker from Settings using the caller-owned token manager."""
 
@@ -363,4 +402,5 @@ def build_kis_broker(
     return KISBroker(
         order_adapter=adapter,
         account=account,
+        pre_submit_quote_reader=pre_submit_quote_reader,
     )

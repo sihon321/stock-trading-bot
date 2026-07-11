@@ -184,6 +184,11 @@ class MarketDataSource:
         self._news_adapter = news_adapter
         self._config = config
         self._settings = settings
+        self._cycle_evidence: dict[str, dict[str, Any]] = {}
+
+    def cycle_evidence_for(self, ticker: str) -> Mapping[str, Any]:
+        """Return normalized, invocation-local data/quote timing evidence."""
+        return dict(self._cycle_evidence.get(ticker, {}))
 
     # -- DataSource Protocol -------------------------------------------------
 
@@ -238,6 +243,14 @@ class MarketDataSource:
         blocked = self._guard(symbol, ticker_role, quote.health, audits)
         if blocked is not None:
             return self._no_context(symbol, ticker_role, blocked, audits)
+        self._cycle_evidence[symbol] = {
+            "requested_date": self._config.expected_date,
+            "completed_bar_cutoff": self._config.accepted_latest_date or self._config.expected_date,
+            "actual_last_bar_date": ohlcv.health.observed_date,
+            "initial_quote_observed_at": (
+                quote.observed_at.isoformat() if getattr(quote, "observed_at", None) else None
+            ),
+        }
 
         # 4) Naver news (optional, fail-soft: empty news never blocks context).
         news = self._news_adapter.fetch_news(symbol)
