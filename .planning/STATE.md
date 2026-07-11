@@ -1,21 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 0
-status: Awaiting next milestone
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-07-03T02:42:13.424Z"
-last_activity: 2026-07-05
-last_activity_desc: "Completed quick task 260705-ezc: Add Codex CLI subprocess LLM provider"
+milestone: v1.1
+milestone_name: Mock Soak & Replay Validation
+status: planning
+last_updated: "2026-07-11T05:40:50.908Z"
+last_activity: 2026-07-11
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 21
-  completed_plans: 21
-  percent: 100
-paused_at: null
-current_phase_name: real-money-readiness-operations
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -29,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-03)
 
 ## Current Position
 
-Phase: Milestone v1.0 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-04 — Completed quick task 260704-her: Add OAuth token authentication support for the Claude (Anthropic) LLM provider
+Status: Defining requirements
+Last activity: 2026-07-11 — Milestone v1.1 started
 
 ## Performance Metrics
 

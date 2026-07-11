@@ -16,6 +16,23 @@ account before ever touching real money.
 Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and
 acts on it through KIS — without placing an order the rules don't justify.
 
+## Current Milestone: v1.1 Mock Soak & Replay Validation
+
+**Goal:** Prove, through repeated KIS mock-account operation over days to weeks, that the bot can
+run safely each day and that every order or hold decision can be explained and reproduced.
+
+**Target features:**
+- Runbook and daily-cycle documentation for `bot run`, `bot screen`, and `bot status`, including
+  fixed market-session timing and failure triage.
+- Backtest-lite replay over historical OHLCV through screener, fixture signal, and execution gates
+  before spending real LLM calls.
+- N-day KIS mock-account soak testing that records every cycle to the audit DB and exercises duplicate
+  order, API failure, stale data, and timeout paths.
+- Human-readable decision review reports from SQLite audit history, grouped by date with candidates,
+  LLM decisions, confidence, order outcomes, and no-trade reasons.
+- Data-driven risk policy calibration for confidence threshold, position cap, stop-loss/take-profit,
+  plus a stronger real-money promotion checklist.
+
 ## Requirements
 
 ### Validated
@@ -46,7 +63,14 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 
 ### Active
 
-_None — milestone v1.0 requirements are all validated. New requirements will be added here at the next milestone._
+- [ ] Daily mock-operation runbook defines when and how the operator runs `bot run`, `bot screen`,
+  and `bot status`, and where to look when a cycle fails.
+- [ ] Historical replay can run screener + fixture signal + execution gate without live LLM calls to
+  evaluate whether BUY policy is too strict or too loose.
+- [ ] Mock-account soak workflow supports repeated dry-run/mock execution with audit persistence and
+  observable handling for duplicate orders, API failures, stale data, and timeouts.
+- [ ] Audit history can be summarized into human-readable daily decision reports.
+- [ ] Risk policy and real-money promotion readiness can be reviewed from collected replay/soak data.
 
 ### Out of Scope
 
@@ -113,4 +137,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-03 after Phase 5 completion — Milestone v1.0 complete (all 5 phases shipped and verified)*
+*Last updated: 2026-07-11 after starting Milestone v1.1 — Mock Soak & Replay Validation*
