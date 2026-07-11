@@ -4,17 +4,17 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 06
 current_phase_name: Audit Evidence & Cycle Boundaries
-status: executing
+status: verifying
 stopped_at: Completed 06-03-PLAN.md
-last_updated: "2026-07-11T12:28:05.125Z"
+last_updated: "2026-07-11T12:35:02.216Z"
 last_activity: 2026-07-11
 last_activity_desc: Phase 06 execution started
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 0
+  completed_plans: 4
+  percent: 20
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 
 Phase: 06 (Audit Evidence & Cycle Boundaries) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-11 — Phase 06 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -62,6 +62,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase ?]: Order reconciliation retains origin_run_id and records the later observer_run_id.
 - [Phase 06]: KIS POST acknowledgement uncertainty terminalizes as ambiguous and is never blindly retried.
 - [Phase 06]: Order reconciliation retains origin_run_id and records the later observer_run_id.
+- [Phase 06]: KRX execution requires positively observed trading-day data and the half-open [09:00, 15:20) KST continuous session. — Fail closed outside confirmed continuous trading.
+- [Phase 06]: Daily context uses the immediately preceding confirmed KRX trading day, with unknown provider state failing closed. — Exclude incomplete bars and weekday assumptions.
+- [Phase 06]: KIS orders re-fetch an aware timestamped quote immediately before POST and accept an inclusive maximum age of 10 seconds. — Enforce freshness at the money-moving boundary.
 
 ### Pending Todos
 
@@ -82,10 +85,11 @@ None yet.
 | Phase 06 P01 | 8min | 3 tasks | 6 files |
 | Phase 06 P02 | 12min | 2 tasks | 4 files |
 | Phase 06 P03 | 12min | 2 tasks | 7 files |
+| Phase 06 P04 | 12m | 3 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-07-11T12:27:47.309Z
+Last session: 2026-07-11T12:34:40.795Z
 Stopped at: Completed 06-03-PLAN.md
 Resume file: None
 

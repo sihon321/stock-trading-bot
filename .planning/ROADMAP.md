@@ -24,7 +24,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 
 **Milestone Goal:** Prove through reproducible replay and repeated KIS mock-account operation that daily decisions are safe, explainable, and evidence-backed before any manual real-money promotion is considered.
 
-- [ ] **Phase 6: Audit Evidence & Cycle Boundaries** — Establish complete, correctly attributed evidence for every run, ticker, order path, and executable market window.
+- [x] **Phase 6: Audit Evidence & Cycle Boundaries** — Establish complete, correctly attributed evidence for every run, ticker, order path, and executable market window. (completed 2026-07-11)
 - [ ] **Phase 7: Deterministic Replay Validation** — Exercise the production decision and execution gates against frozen historical scenarios without live dependencies.
 - [ ] **Phase 8: Decision Reports & Operator Runbook** — Make validation evidence reviewable and daily operation repeatable, including failure triage.
 - [ ] **Phase 9: KIS Mock Soak & Fault Drills** — Collect multi-day broker-facing mock evidence and prove recovery behavior under expected faults.
@@ -44,7 +44,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   3. Operator can trace each ticker's order intent through submission and broker reconciliation, or see the exact attributed reason that no order was placed.
   4. Operator can verify the KRX session, completed-bar cutoff, quote freshness, and permitted order window used by each executable cycle.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 **Wave 1**
 
 - [x] 06-01-PLAN.md
@@ -59,7 +59,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 06-04-PLAN.md
+- [x] 06-04-PLAN.md
 
 ### Phase 7: Deterministic Replay Validation
 
@@ -129,7 +129,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 | 3. Data Pipeline | v1.0 | 6/6 | Complete | 2026-07-01 |
 | 4. LLM Agent | v1.0 | 4/4 | Complete | 2026-07-02 |
 | 5. Real-Money Readiness & Operations | v1.0 | 5/5 | Complete | 2026-07-02 |
-| 6. Audit Evidence & Cycle Boundaries | v1.1 | 3/4 | In Progress|  |
+| 6. Audit Evidence & Cycle Boundaries | v1.1 | 4/4 | Complete   | 2026-07-11 |
 | 7. Deterministic Replay Validation | v1.1 | 0/TBD | Not started | - |
 | 8. Decision Reports & Operator Runbook | v1.1 | 0/TBD | Not started | - |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 0/TBD | Not started | - |
