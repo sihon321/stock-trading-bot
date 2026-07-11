@@ -13,6 +13,7 @@ from trading_bot.audit_models import (
     OrderEventType,
     ReasonCode,
     RunKind,
+    RunStatus,
     TickerOutcome,
     TickerOutcomeCode,
 )
@@ -277,4 +278,56 @@ def test_outcome_vocabulary_is_scoped_to_run_kind(tmp_path) -> None:
                 outcome_code=TickerOutcomeCode.NO_TRADE,
                 reason_code=ReasonCode.HOLD_SIGNAL,
             ),
+        )
+
+
+def test_run_lifecycle_recovers_once_and_terminalizes_once(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    conn = sqlite_audit.connect(tmp_path / "audit.db")
+    sqlite_audit.start_run(
+        conn, run_id="abandoned", trading_mode="mock", dry_run=True,
+        run_kind=RunKind.RUN,
+    )
+    assert sqlite_audit.recover_abandoned_runs(
+        conn, recovered_at="2026-07-11T00:00:00+00:00"
+    ) == 1
+    assert sqlite_audit.recover_abandoned_runs(conn) == 0
+    assert conn.execute(
+        "SELECT status, recovered_at, recovery_reason FROM runs WHERE run_id='abandoned'"
+    ).fetchone() == (
+        "INTERRUPTED", "2026-07-11T00:00:00+00:00", "ABANDONED_PROCESS"
+    )
+
+    sqlite_audit.start_run(
+        conn, run_id="current", trading_mode="mock", dry_run=True,
+        run_kind=RunKind.RUN,
+    )
+    sqlite_audit.finish_run(conn, run_id="current", status=RunStatus.COMPLETED)
+    with pytest.raises(ValueError, match="already terminal"):
+        sqlite_audit.finish_run(conn, run_id="current", status=RunStatus.FAILED)
+
+
+def test_parent_run_must_be_existing_uuid_and_child_remains_distinct(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    conn = sqlite_audit.connect(tmp_path / "audit.db")
+    parent = "f4d726b8-687c-4e76-aea6-4429a50b0ac8"
+    child = "a84b9bdf-d10b-476c-a68c-21e1c80631be"
+    sqlite_audit.start_run(conn, run_id=parent, trading_mode="mock", dry_run=True)
+    sqlite_audit.start_run(
+        conn, run_id=child, trading_mode="mock", dry_run=True, parent_run_id=parent
+    )
+    assert conn.execute(
+        "SELECT run_id, parent_run_id FROM runs WHERE run_id=?", (child,)
+    ).fetchone() == (child, parent)
+    with pytest.raises(ValueError, match="UUID"):
+        sqlite_audit.start_run(
+            conn, run_id="next", trading_mode="mock", dry_run=True,
+            parent_run_id="not-a-uuid",
+        )
+    with pytest.raises(ValueError, match="does not exist"):
+        sqlite_audit.start_run(
+            conn, run_id="next", trading_mode="mock", dry_run=True,
+            parent_run_id="1e75125d-2f91-4546-b74d-f064dfcb512d",
         )

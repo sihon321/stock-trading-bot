@@ -266,7 +266,38 @@ def test_ticker_error_isolation() -> None:
         "SELECT ticker FROM decisions ORDER BY id"
     ).fetchall()
     assert rows == [("005930",), ("035420",)]
+    audit_rows = conn.execute(
+        "SELECT ticker, outcome_code, failed_stage FROM ticker_outcomes ORDER BY id"
+    ).fetchall()
+    assert audit_rows == [
+        ("005930", "ORDER_SUPPRESSED", None),
+        ("000660", "EXECUTION_ERROR", "DATA_COLLECTION"),
+        ("035420", "ORDER_SUPPRESSED", None),
+    ]
+    assert conn.execute(
+        "SELECT status FROM runs WHERE run_id='test-run'"
+    ).fetchone() == ("COMPLETED_WITH_ERRORS",)
     assert data_source.contexts == ["005930", "000660", "035420"]
+
+
+def test_run_records_provenance_and_clean_terminal_state() -> None:
+    conn = sqlite3.connect(":memory:")
+    from trading_bot.cli import run_cycle as cli_run_cycle
+
+    result = cli_run_cycle(
+        settings=make_settings(), data_source=_DataSource(("005930",)),
+        llm_provider=_Provider(), broker=_Broker(), audit_conn=conn,
+        notifier=_Notifier(), trading_date="20260702",
+    )
+
+    assert len(result["run_id"]) == 32
+    row = conn.execute(
+        "SELECT run_kind, status, trading_date_kst, target, policy_snapshot, provenance FROM runs"
+    ).fetchone()
+    assert row[:4] == ("RUN", "COMPLETED", "20260702", "mock")
+    assert "execution-v1" in row[4]
+    assert "requested_trading_date" in row[5]
+    assert conn.execute("SELECT COUNT(*) FROM ticker_outcomes").fetchone() == (1,)
 
 
 def test_confidence_persisted_end_to_end() -> None:
