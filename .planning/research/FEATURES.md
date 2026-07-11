@@ -1,187 +1,223 @@
 # Feature Research
 
-**Domain:** Personal LLM-driven automated stock trading bot (Korean equities, KIS + pykrx)
-**Researched:** 2026-06-30
-**Confidence:** MEDIUM (web sources cross-checked against official KIS/pykrx repos and Anthropic structured-output docs; no single authoritative source for "the standard LLM trading bot")
+**Domain:** Operational validation for a personal Korean-market LLM trading bot
+**Milestone:** v1.1 Mock Soak & Replay Validation
+**Researched:** 2026-07-11
+**Confidence:** MEDIUM
 
-> **Safety note for the roadmap consumer:** rows tagged **[SAFETY-CRITICAL]** are the controls that stand between this bot and an unrecoverable real-money loss. For a personal bot that will eventually touch a live KIS account, these are not "table stakes for polish" — they are table stakes for *not losing money to a bug*. Treat them as P1 and do not let an LLM decision path bypass them.
+## Research Boundary
+
+This milestone should prove that the shipped v1.0 system is repeatable, observable, fail-safe, and reviewable. It should not add a new strategy, an always-on scheduler, a realistic portfolio backtester, or automatic real-money promotion.
+
+The two validation modes have different jobs:
+
+- **Backtest-lite replay** proves deterministic policy mechanics using historical daily inputs and frozen fixture signals. It does not prove LLM quality, fill realism, or profitability.
+- **KIS mock-account soak** proves live adapter behavior, operator discipline, order idempotency/reconciliation, persistence, and safe degradation across real trading days. It does not prove live-market slippage or strategy profitability.
+
+That distinction is a table-stakes product behavior. Reports and promotion checks must never merge the two evidence classes or overstate what either one proves.
+
+## Existing Implementation Dependencies
+
+| Existing seam | v1.1 leverage | Gap that must be closed |
+|---|---|---|
+| `cli.run_cycle` is injectable and Typer commands are thin | Reuse one orchestration path for soak and test doubles | Add explicit run lifecycle/status and persist ticker errors instead of returning them only in memory |
+| `screen_daily_candidates(trading_date)` accepts an explicit date | Good base for point-in-time replay | Historical market rows must be frozen/as-of; replay must not fetch a live KIS quote or news |
+| CLI defaults `expected_date` to today's KST date | Freshness is explicit in the data layer | A tradable intraday cycle may not yet have today's completed daily bar; define the session/cutoff contract instead of equating run date with latest allowed OHLCV date |
+| `screen_candidates` has deterministic score ordering and ticker tie-break | Enables byte-stable replay results | Persist the full candidate funnel, including exclusions, not only final decisions |
+| `execute_signal_cycle` is deterministic and adapter-free | Reuse the exact confidence/risk/sizing/dry-run gates in replay | Capture policy version/snapshot so old decisions remain reproducible after settings change |
+| SQLite has `runs` and `decisions`, run/correlation/order IDs | Good report base | Add trading date, run kind, completion status, end time, policy/fixture provenance, error rows/events, and preferably broker reconciliation fields |
+| `TRADING_MODE=mock` currently constructs in-memory `MockBroker` | Useful for unit tests and offline replay | This is not a KIS 모의투자 soak. Add an explicit KIS-paper broker path using mock credentials/domain/TR IDs while keeping real mode impossible without existing confirmation gates |
+| `_daily_loss_state()` currently starts at zero each invocation | Existing kill-switch API can be reused | Soak/reporting need broker/audit-derived daily realized loss; otherwise the daily loss control is not being operationally exercised |
+| `DataContext` contains compact current inputs only | Keeps LLM boundary small | Replay fixtures need separate provenance: as-of timestamp/date, input hash, fixture ID, and code/prompt/policy versions |
 
 ## Feature Landscape
 
-### Table Stakes (Without These the Bot Is Unsafe or Useless)
+### Table Stakes (v1.1 Must Have)
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| **Daily universe screening** (pykrx volume/momentum/market-cap filter) | A fixed ticker list goes stale; the bot must surface candidates dynamically | MEDIUM | `pykrx` `get_market_ohlcv` / `get_market_fundamental_by_ticker` / market-cap. Respect KRX ~1s/request delay — it blocks bursts. |
-| **Daily OHLCV + technical indicators** | LLM needs price history context; indicators (MA, RSI, etc.) are standard inputs | MEDIUM | pykrx for daily bars; compute indicators locally (don't ask the LLM to compute math). |
-| **Real-time / latest price via KIS** | Sizing and stop checks need the current price, not yesterday's close | MEDIUM | KIS REST quote. Auth `svr=vps` (mock) vs `prod` (real). |
-| **Per-ticker news (Naver Finance)** | Sentiment/catalyst context is a core differentiator of an LLM approach | MEDIUM | Scraping is brittle (HTML changes); isolate behind an interface and fail soft if it breaks. |
-| **Strict JSON LLM signal** `{decision, confidence, reason}` | Execution parses programmatically; markdown/prose breaks the pipeline | MEDIUM | Use provider structured-output (Anthropic `output_format: json_schema`; OpenAI `response_format json_schema`) + Pydantic validation. |
-| **Fail-safe on unparseable LLM output** **[SAFETY-CRITICAL]** | An unparseable signal must NEVER fall through to a trade | LOW | Parse error → log → HOLD/no-op. Default-deny. |
-| **Confidence gating** (BUY requires `confidence >= 0.8`) **[SAFETY-CRITICAL]** | Bounds action to high-conviction signals; rejects low-confidence/HOLD | LOW | Pure rule check after parse. Cheap, high-value. |
-| **% -of-capital position sizing with max-position cap** **[SAFETY-CRITICAL]** | Bounds single-trade risk; scales with account; prevents all-in | MEDIUM | Fixed-fractional is the professional default (industry caps risk at ~1–2%/trade; your % is a config knob). |
-| **Rules-based stop-loss / take-profit, independent of LLM** **[SAFETY-CRITICAL]** | The LLM may never say SELL in time; a deterministic net must exit | MEDIUM | Must run every cycle on held positions regardless of LLM output. |
-| **Dry-run mode** | Validate full logic, log the would-be order, place nothing | LOW | Single boolean gate at the execution boundary. |
-| **Mock-account-first (모의투자)** **[SAFETY-CRITICAL]** | Validate end-to-end with zero capital risk before real money | LOW | Config flag `svr=vps`; real-money promotion is a deliberate gated step. Note: mock has *lower* REST rate limits. |
-| **Order placement via KIS** | The whole point — turn a signal into a fill | MEDIUM | Needs access token (~24h TTL, 1 issue/min) + hashkey per order. |
-| **Per-cycle audit log** (data context + LLM signal + order outcome) **[SAFETY-CRITICAL]** | Without it you can't tell why the bot did what it did; debugging blind | LOW | Append-only JSONL per cycle (`signal_log.jsonl` pattern). This IS the decision audit trail. |
-| **Manual trigger** (run one full cycle on demand) | Keeps the operator in the loop while logic is unproven | LOW | A CLI entrypoint; no scheduler for v1. |
+| Feature | Why Expected | Complexity | Acceptance-testable behavior |
+|---|---|---:|---|
+| **Canonical run lifecycle record** | A soak day cannot pass if the process started but silently died or skipped persistence | MEDIUM | Every invocation writes `STARTED`, then exactly one terminal state (`COMPLETED`, `COMPLETED_WITH_ERRORS`, `FAILED`, `REFUSED`), with KST trading date, UTC timestamps, run kind, mode, dry-run/execute state, candidate/attempt/success/error counts, and non-secret policy version |
+| **Persist every terminal ticker outcome** | Reports and failure rates are wrong if exceptions exist only in CLI memory | MEDIUM | Success, HOLD, skip, parse failure, stale-data block, timeout, API error, duplicate suppression, and order ambiguity each produce a queryable row/event linked by `run_id` and `correlation_id`; no attempted ticker disappears from SQLite |
+| **KRX session and data-cutoff contract** | Fixed clock times are unsafe unless every input has a declared as-of rule | MEDIUM | Each run binds `session_date`, `decision_at`, latest allowed completed daily bar, quote maximum age, and allowed order window; preflight rejects a future/incomplete daily bar, an unexpectedly old bar, or an order attempt outside the configured window |
+| **Operator daily-cycle runbook** | Manual operation is only safe if timing, preflight, postflight, and triage are unambiguous | LOW | Runbook names KST market-session windows; documents `status → screen → run → report`; distinguishes dry-run, in-memory mock, KIS paper execution, and real mode; includes stop conditions, rerun rules, DB/log locations, broker reconciliation, and incident escalation |
+| **Executable preflight/postflight checks** | Documentation alone cannot detect wrong mode, stale data, missing account state, or an unfinished prior run | MEDIUM | Preflight fails closed on non-trading day/date mismatch, wrong broker/environment binding, missing credentials/account, stale required data, unresolved prior ambiguous order, or unavailable audit DB; postflight verifies run terminal state and broker-vs-audit order/position consistency |
+| **Point-in-time backtest-lite replay** | Historical replay must not use information that was unavailable at the decision date | HIGH | Given an explicit date range and frozen historical rows, each date uses trailing data only, respects indicator warm-up, performs no trade during warm-up, screens the as-of universe, and never calls KIS, Naver, or an LLM |
+| **Versioned fixture-signal input** | Replay must be cheap, deterministic, and independent of provider drift/cost | MEDIUM | Fixture schema contains date, ticker, strict signal JSON, fixture-set version, and input provenance; missing/invalid fixtures fail to HOLD or a clearly reported replay error; the same fixture set and policy produce identical ordered decisions and hashes |
+| **Production-gate parity in replay** | A separate replay rule implementation would validate the wrong system | MEDIUM | Replay invokes the shipped parser, confidence gates, risk precedence, sizing, and dry-run boundary; tests prove no broker mutation and no network/LLM calls; replay records would-be order and no-trade reason |
+| **Replay manifest and summary** | Results need enough provenance to reproduce and compare | MEDIUM | Every replay records date range, eligible KRX dates, fixture/data hashes, code revision, policy snapshot/version, initial cash/positions, counts by decision/final action/no-trade reason, and deterministic output ID |
+| **Explicit KIS-paper broker path** | In-memory `MockBroker` cannot validate KIS authentication, rate limits, POST ambiguity, readback, or reconciliation | HIGH | Operator can choose KIS 모의투자 without enabling real credentials/domain/TR IDs; startup banner names both `broker=kis-paper` and `trading_mode=mock`; real endpoint use remains blocked by existing confirmation controls |
+| **N-eligible-day soak campaign** | Merely running several times is not evidence of operational stability | HIGH | A campaign manifest defines target eligible KRX days, policy/code version, allowed broker, required daily steps, and pass criteria; progress counts completed eligible days, not weekends/holidays; any safety-invariant breach resets or invalidates the clean-day streak |
+| **Soak invariants and failure budget** | Promotion requires objective criteria, not a subjective “looked fine” judgment | MEDIUM | Zero real-endpoint attempts, unjustified orders, duplicate orders, blind POST retries, missing terminal outcomes, or unreconciled ambiguous orders are allowed; availability failures may be tolerated only within a declared budget and must fail safe to no new order |
+| **Fault-path drills** | Rare safety paths may never occur naturally during an N-day soak | HIGH | Deterministic tests/drills cover stale OHLCV/quote, LLM timeout/malformed output, KIS read timeout, ambiguous order POST, duplicate rerun, partial fill, notification failure, audit write failure, and interrupted run; each has an expected persisted outcome and broker-mutation assertion |
+| **Daily decision report from SQLite** | Human review needs one compact, reproducible explanation of what happened | MEDIUM | `report --date` renders deterministic Markdown/text from canonical DB data, grouped by run and ticker, with candidate funnel, signal/confidence, final action, risk override, would-be/order/fill outcome, errors, no-trade reason, and unresolved anomalies |
+| **Campaign/period report** | One-day reports cannot establish soak readiness | MEDIUM | `report --from/--to` shows eligible/completed/missed days, run success rate, ticker outcome counts, confidence bands, no-trade reasons, API/timeout/error rates, duplicate suppression, reconciliation exceptions, and current clean-day streak |
+| **Policy snapshot and comparison** | Threshold changes otherwise make historical evidence irreproducible | MEDIUM | Every run/replay stores normalized non-secret values for buy/sell confidence, cash fraction, position cap, stop-loss, take-profit, and daily-loss threshold plus a policy ID/hash; reports compare named policies without mutating history |
+| **Risk calibration worksheet, not auto-tuning** | Small samples and uncalibrated LLM self-scores do not justify autonomous optimization | HIGH | For frozen evidence, compare a small predeclared grid of policy candidates and report trade coverage, rejected/accepted counts, exposure/order-size distribution, risk-trigger counts, and forward outcome bands where available; no candidate is automatically activated |
+| **Real-money promotion checklist** | Paper success alone does not establish live fill quality or profitability | MEDIUM | Promotion remains manual and requires clean soak criteria, zero unresolved severity-high incidents, reviewed daily/period reports, policy freeze, rollback/kill procedure, secret/config check, tiny-size live pilot plan, and explicit acknowledgement of paper-fill limitations |
 
-### Differentiators (Competitive Advantage / High-Value Add)
+### Differentiators (High Value, Not Required for Core v1.1)
 
 | Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| **LLM reasoning as a sanity-check layer over rule signals** | Research consensus: LLMs work best *evaluating/vetoing* signals, not as the sole generator. A rules pre-filter + LLM veto is more robust than LLM-only. | MEDIUM | Optional evolution: have rules nominate candidates, LLM confirm/reject. |
-| **Daily-loss / drawdown limit + kill switch** **[SAFETY-CRITICAL differentiator]** | Hard stop on the *day* (e.g. halt all trading after −X% realized). Caps a bad day, not just a bad trade. | MEDIUM | Industry standard (~10% daily drawdown). Strongly recommended even for v1 — small lift, big protection. |
-| **Idempotent order execution** (dedup key / client order id) **[SAFETY-CRITICAL differentiator]** | Prevents a retry or double-run from placing the same order twice | MEDIUM | Track placed orders for the cycle; reconcile against KIS before re-placing. |
-| **Position reconciliation** (sync held positions from KIS each cycle) | Source of truth is the broker, not local state; survives crashes/restarts | MEDIUM | Query KIS balances at cycle start; drives stop/take-profit checks. |
-| **Telegram (or similar) notifications** | Personal bot you don't babysit — push decisions/orders/errors to your phone | LOW | Counters the #1 retail failure: "fire and forget." Cheap, high quality-of-life. |
-| **Reproducibility of LLM decisions** | Log model id, prompt version, temperature, raw input + raw output so a decision can be re-examined | LOW–MEDIUM | Pin model + prompt version; `temperature=0` reduces (not eliminates) drift. Store the exact prompt with the log. |
-| **Switchable LLM provider behind one interface** (Claude/OpenAI) | Avoid vendor lock-in; swap via config | MEDIUM | Adapter pattern; one `LLMProvider` interface, two impls. (LiteLLM exists but a thin hand-rolled adapter is fine for 2 providers.) |
-| **Paper-trading / backtest harness** | Validate a strategy on history before trusting it live | HIGH | The official KIS repo ships a `backtester`; pykrx gives history. High value but high effort — defer past v1. |
-| **Cost / token tracking per cycle** | LLM calls cost money; visibility prevents surprise bills | LOW | Log token usage per call. |
+|---|---|---:|---|
+| **Replay/soak parity diff** | Shows whether the same date/ticker/policy reached different final actions and why | HIGH | Compare decision path and gate reason, not P&L; differences should be attributable to fixture vs live inputs, broker state, or adapter outcome |
+| **Tamper-evident provenance chain** | Makes a result defensible months later | MEDIUM | Hash normalized input fixture, policy, prompt/model metadata where relevant, and rendered report; useful for personal audit without enterprise infrastructure |
+| **Candidate-funnel quality report** | Explains “why no trades?” before changing risk thresholds | MEDIUM | Counts universe → data-valid → screener survivor → LLM BUY/SELL/HOLD → execution-qualified → ordered; separates screener strictness from confidence-gate strictness |
+| **One-command evidence bundle** | Simplifies incident review and promotion review | MEDIUM | Export report plus redacted run manifest, policy snapshot, relevant structured logs, and reconciliation rows; exclude secrets and raw untrusted news by default |
+| **Metamorphic safety tests** | Proves invariants across broad generated inputs | HIGH | Examples: lowering confidence cannot create a BUY; reducing cash cannot increase quantity; dry-run never mutates broker; risk SELL cannot be overridden by LLM BUY |
+| **Shadow policy comparison** | Evaluates candidate thresholds without changing mock orders | MEDIUM | Current policy remains authoritative; alternative policies produce counterfactual would-be actions only and are clearly labeled |
 
-### Anti-Features (Deliberately NOT Building for Personal v1)
+### Anti-Features (Explicitly Do Not Build in v1.1)
 
 | Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| **Always-on intraday polling loop** | "Real-time" feels powerful | Multiplies LLM cost, hits KIS rate limits (20 req/s, lower on mock), and removes the human from the loop while logic is unproven | Manual-trigger one cycle; add a scheduled daily run only after validation |
-| **Ensemble / multi-LLM consensus** | More models = more confidence | 2× cost/latency, ambiguous tie-breaking, hard to debug which model was "right" | Single switchable provider; revisit ensemble only if single-provider proves unreliable |
-| **Multi-market (US/global)** | Broader opportunity | KIS + pykrx are KR-specific; doubles data/auth/calendar complexity | KR-only by design |
-| **Portfolio optimization / multi-strategy allocation** | "Optimal" capital allocation | Mean-variance/optimizers need data and assumptions you don't have yet; over-engineering for one signal | Single-signal execution with a max-position cap |
-| **LLM as the sole signal source with no rule floor** | Simplest mental model | Research says LLMs are weak as pure generators and non-deterministic; one hallucinated high-confidence BUY = real loss | Rules own the hard safety floor (sizing, stops, gating); LLM only *proposes* within those bounds |
-| **Letting the LLM set position size or stop levels** | "Let the smart model decide everything" | Hands the safety-critical math to a non-deterministic component | Sizing & stops are deterministic rules; LLM output is confined to decision + confidence + reason |
-| **Auto-promotion mock → real money** | Convenience | Removes the deliberate human gate before risking capital | Real-money is a manual, explicit config change after mock validation |
+|---|---|---|---|
+| **Full portfolio backtester with P&L claims** | Appears to prove strategy quality | Requires realistic fills, fees, slippage, corporate actions, point-in-time universe, cash/position lifecycle, and intraday ordering; daily OHLCV cannot resolve stop-vs-target order within a bar | Backtest-lite only for screener/gate mechanics and sensitivity counts |
+| **Historical replay with live LLM calls** | Seems closer to production reasoning | Model knowledge can leak future events, provider/model drift destroys reproducibility, and cost/latency obscure gate validation | Frozen strict fixture signals; separately assess live LLM behavior during forward soak |
+| **Treat `confidence=0.8` as 80% win probability** | Makes threshold selection feel statistical | LLM self-confidence is not calibrated; small soak samples cannot establish reliability | Treat confidence as ordinal evidence; show score bands and empirical outcomes with sample counts and uncertainty |
+| **Automatic threshold/stop optimization** | Promises objective best settings | Encourages overfitting and silent policy drift; stop/take optimization on daily bars is especially ambiguous | Predeclared manual comparison, holdout/forward evidence, policy versioning, human approval |
+| **Auto-promotion from mock to real** | Removes operator friction | Paper fills differ from live execution and mock success cannot prove profitability or market impact | Explicit checklist, policy freeze, manual confirmation, tiny-size live pilot |
+| **Always-on scheduler or intraday polling** | Makes the bot feel automated | Expands failure surface before manual daily operation is proven and conflicts with current milestone scope | Keep manual KST runbook; revisit only after a clean soak |
+| **Strategy expansion during soak** | More signals might produce more data | Invalidates the baseline and makes defects/calibration changes impossible to attribute | Freeze strategy/prompt/policy per campaign; restart evidence after material changes |
+| **Web dashboard first** | Attractive visibility | Adds auth, hosting, and UI scope while SQLite-to-Markdown/CSV meets personal review needs | Deterministic CLI reports and optional CSV export |
+| **Store raw prompts/news/API payloads in SQLite reports** | Maximum forensic detail | Increases secret, personal-data, prompt-injection, and retention risk; duplicates structured logs | Store bounded structured fields, hashes, versions, health statuses, and correlation IDs; keep redacted logs separate |
+| **Count weekends, retries, or multiple same-day runs as soak days** | Reaches N faster | Measures invocations rather than independent market-day operation | Count one reviewed, terminal, eligible KRX day per campaign day; retain extra runs as diagnostics |
+| **Use in-memory `MockBroker` results as KIS soak evidence** | Easy and already available | Does not exercise KIS transport, credentials, rate limits, order ambiguity, fills, or broker truth | Label it offline simulation; require the explicit KIS-paper path for broker soak |
 
 ## Feature Dependencies
 
-```
-[KIS auth: token + hashkey]
-    └──requires──> [Real-time price]
-    └──requires──> [Order placement]
-                       └──requires──> [Idempotency / dedup]
-                       └──requires──> [Position reconciliation]
-                                          └──requires──> [Rules stop-loss/take-profit]
+```text
+[Audit schema + migration + run lifecycle]
+    ├──requires──> [Persist every ticker terminal outcome]
+    ├──enables───> [Daily/period reports]
+    ├──enables───> [Soak campaign scoring]
+    └──enables───> [Promotion evidence]
 
-[pykrx OHLCV + indicators] ──feeds──> [Daily universe screening]
-                            └──feeds──> [LLM context]
-[Naver news scrape] ──────────────────> [LLM context]
-[Real-time price] ────────────────────> [LLM context] & [Position sizing] & [Stop/TP checks]
+[Policy snapshot/version]
+    ├──enables───> [Deterministic replay]
+    ├──enables───> [Calibration comparison]
+    └──enables───> [Replay/soak parity diff]
 
-[LLM context]
-    └──> [Strict JSON signal]
-            └──requires──> [Fail-safe parse]
-                              └──> [Confidence gating]
-                                     └──> [Position sizing + max cap]
-                                            └──> [Dry-run gate] ──> [Order placement]
+[Frozen point-in-time data + fixture signals]
+    └──requires──> [Replay runner using production parser/risk/execution gates]
+                         └──enables───> [Replay manifest + sensitivity report]
 
-[Per-cycle audit log] ──enhances──> EVERYTHING (must wrap the whole cycle)
-[Daily-loss limit / kill switch] ──gates──> [Order placement]  (veto power)
-[Telegram notify] ──enhances──> [Audit log]  (push, don't pull)
+[Explicit KIS-paper broker path]
+    └──requires──> [Preflight + reconciliation + ambiguity handling]
+                         └──enables───> [N-day soak campaign]
+                                              └──enables───> [Promotion checklist]
 
-[LLM-as-sanity-check] ──conflicts──> [LLM-as-sole-generator]  (pick one philosophy)
+[Fault-path drills] ──complements──> [Natural N-day soak]
+[KRX session/data-cutoff contract] ──requires-before──> [Fixed daily runbook timing]
+[In-memory MockBroker] ──conflicts-as-evidence-with──> [KIS-paper soak claim]
+[Strategy/prompt changes mid-campaign] ──invalidate──> [Clean comparable soak streak]
 ```
 
 ### Dependency Notes
 
-- **Order placement requires KIS auth (token + hashkey):** every order needs a valid access token (24h TTL, 1 issuance/min — cache and refresh it) and a per-order hashkey. Token management is foundational infra, not a feature afterthought.
-- **Stop-loss/take-profit requires position reconciliation:** you can only protect positions you know you hold; reconcile from KIS at cycle start so stops survive restarts.
-- **Idempotency requires order placement + reconciliation:** dedup is "did I already place this?" — answerable only by tracking placed orders and/or querying KIS fills.
-- **Confidence gating + sizing + dry-run form the execution gauntlet:** every order passes parse → confidence → sizing/cap → dry-run gate → daily-loss veto, in that order. None may be skippable by an LLM path.
-- **Audit log wraps everything:** it's a cross-cutting concern, not a leaf feature — instrument from cycle start.
-- **LLM-as-sanity-check conflicts with LLM-as-sole-generator:** these are two architectures; v1 is LLM-as-generator-within-rule-bounds, with the sanity-check pattern as a documented evolution path.
+- **Audit foundation comes first.** Reports, soak pass/fail, and calibration all become misleading if failed attempts are absent or runs have no terminal state.
+- **Replay and soak should share policy/execution code, not data adapters.** Replay must be network-free and point-in-time; soak must use live KIS paper adapters and broker state.
+- **KIS paper is a separate broker choice from in-memory mock.** Keep both, but label them unambiguously in startup output, audit rows, and reports.
+- **Fault drills do not need to wait N days.** Build deterministic injected failures before the natural soak so expected safe outcomes are known in advance.
+- **Calibration depends on immutable evidence.** A material code, prompt, model, data, or policy change starts a new cohort/campaign; do not blend incompatible runs.
+- **Forward outcome labels are optional for operational readiness.** They are required before making claims about confidence quality or risk-return, but not to prove fail-safe mechanics.
 
-## MVP Definition
+## Recommended v1.1 Scope
 
-### Launch With (v1) — mock account only
+### Launch With (P1)
 
-- [ ] **KIS auth + token caching** — nothing works without it
-- [ ] **pykrx OHLCV + local indicators** — LLM input
-- [ ] **Daily universe screening** — produces candidates
-- [ ] **KIS real-time price** — sizing & stop inputs
-- [ ] **Naver news scrape (fail-soft)** — the LLM-edge input
-- [ ] **Switchable LLM provider with strict JSON + Pydantic validation** — the decision
-- [ ] **Fail-safe on parse error → HOLD** **[SAFETY]**
-- [ ] **Confidence gating (BUY ≥ 0.8)** **[SAFETY]**
-- [ ] **% -of-capital sizing + max-position cap** **[SAFETY]**
-- [ ] **Rules stop-loss/take-profit independent of LLM** **[SAFETY]**
-- [ ] **Position reconciliation from KIS** — feeds stops/sizing
-- [ ] **Dry-run mode** **[SAFETY]**
-- [ ] **Order placement on mock (모의투자)** **[SAFETY-gated]**
-- [ ] **Per-cycle audit log (JSONL)** **[SAFETY]**
-- [ ] **Manual trigger CLI**
+- [ ] Audit schema migration with run lifecycle, run kind, trading date, policy provenance, and persisted error/no-trade outcomes
+- [ ] Deterministic daily and period CLI reports
+- [ ] KRX session/data-cutoff contract covering completed daily bars, quote freshness, and order window
+- [ ] KST manual runbook plus executable preflight/postflight checks
+- [ ] Offline point-in-time replay with frozen fixture signals and zero network/LLM calls
+- [ ] Explicit, safely bound KIS-paper broker path distinct from `MockBroker`
+- [ ] N-eligible-day soak campaign manifest, invariants, clean-streak accounting, and broker reconciliation
+- [ ] Deterministic fault-path drills for duplicate, timeout, stale-data, API ambiguity, partial-fill, interruption, and persistence failure
+- [ ] Versioned policy comparison and manual promotion checklist
 
-### Add After Validation (v1.x) — gates real-money
+### Add After Core Evidence Works (P2)
 
-- [ ] **Idempotent order execution** — trigger: before any real-money run
-- [ ] **Daily-loss limit / kill switch** — trigger: before real-money run (strongly consider in v1)
-- [ ] **Telegram notifications** — trigger: once you stop watching the terminal
-- [ ] **Reproducibility metadata in logs** (model id, prompt version, raw I/O) — trigger: first "why did it do that?" investigation
-- [ ] **Scheduled daily run** — trigger: after manual cycles prove stable
+- [ ] Candidate-funnel report and shadow-policy comparison
+- [ ] Replay/soak decision-path parity diff
+- [ ] One-command redacted evidence bundle
+- [ ] Forward outcome labeling and confidence-band reliability view after enough observations exist
 
-### Future Consideration (v2+)
+### Defer Beyond v1.1 (P3)
 
-- [ ] **Backtest / paper-trading harness** — defer: high effort; validate concept on mock first
-- [ ] **LLM-as-sanity-check architecture** (rules nominate, LLM vetoes) — defer: requires a working rule signal to layer on
-- [ ] **Cost/token tracking dashboard** — defer: nice-to-have once volume grows
-- [ ] **Ensemble LLMs** — defer: only if single provider proves unreliable
+- [ ] Full portfolio/P&L backtester with transaction-cost and fill models
+- [ ] Automated calibration or policy optimizer
+- [ ] Web dashboard
+- [ ] Scheduler/always-on loop
+- [ ] Real-money automation beyond a separately approved tiny-size pilot
 
 ## Feature Prioritization Matrix
 
-| Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| KIS auth + token caching | HIGH | MEDIUM | P1 |
-| Strict JSON signal + Pydantic validation | HIGH | MEDIUM | P1 |
-| Fail-safe parse → HOLD | HIGH | LOW | P1 |
-| Confidence gating | HIGH | LOW | P1 |
-| % sizing + max-position cap | HIGH | MEDIUM | P1 |
-| Rules stop-loss/take-profit | HIGH | MEDIUM | P1 |
-| Dry-run mode | HIGH | LOW | P1 |
-| Mock-account-first | HIGH | LOW | P1 |
-| Per-cycle audit log | HIGH | LOW | P1 |
-| pykrx OHLCV + screening | HIGH | MEDIUM | P1 |
-| Real-time price | HIGH | MEDIUM | P1 |
-| Naver news scrape | MEDIUM | MEDIUM | P1 |
-| Switchable LLM provider | MEDIUM | MEDIUM | P1 |
-| Manual trigger | HIGH | LOW | P1 |
-| Position reconciliation | HIGH | MEDIUM | P1/P2 |
-| Daily-loss limit / kill switch | HIGH | MEDIUM | P2 |
-| Idempotent execution | HIGH | MEDIUM | P2 |
-| Telegram notifications | MEDIUM | LOW | P2 |
-| Reproducibility metadata | MEDIUM | LOW–MEDIUM | P2 |
-| Backtest harness | MEDIUM | HIGH | P3 |
-| LLM-as-sanity-check layer | MEDIUM | MEDIUM | P3 |
-| Ensemble LLMs | LOW | HIGH | P3 |
+| Feature | Safety/Operator Value | Implementation Cost | Priority |
+|---|---:|---:|---:|
+| Audit completeness + run lifecycle | HIGH | MEDIUM | P1 |
+| KRX session/data-cutoff contract | HIGH | MEDIUM | P1 |
+| Daily-cycle runbook + checks | HIGH | MEDIUM | P1 |
+| Point-in-time fixture replay | HIGH | HIGH | P1 |
+| Explicit KIS-paper broker path | HIGH | HIGH | P1 |
+| N-day soak campaign + invariants | HIGH | HIGH | P1 |
+| Fault-path drills | HIGH | HIGH | P1 |
+| Daily/period reports | HIGH | MEDIUM | P1 |
+| Policy snapshot + manual comparison | HIGH | MEDIUM | P1 |
+| Promotion checklist | HIGH | LOW | P1 |
+| Candidate funnel | MEDIUM | MEDIUM | P2 |
+| Replay/soak parity diff | MEDIUM | HIGH | P2 |
+| Evidence bundle | MEDIUM | MEDIUM | P2 |
+| Full P&L backtester | LOW for this milestone | HIGH | P3 |
+| Dashboard/scheduler | LOW for this milestone | HIGH | P3 |
 
-**Priority key:** P1 = must have for v1 launch · P2 = add before real money / once unattended · P3 = future
+## Acceptance Behavior Catalog
 
-## Competitor / Reference Feature Analysis
+These behaviors are suitable for downstream requirements and UAT:
 
-| Feature | Official KIS `open-trading-api` | Multi-agent LLM bots (TradingAgents / LLM-TradeBot) | Our Approach |
-|---------|-------------------------------|------------------------------------------------------|--------------|
-| Signal source | rule/strategy builder | multi-agent LLM debate (bull/bear) | single LLM, strict JSON, within rule bounds |
-| Structured output | n/a | Pydantic models, `signal_log.jsonl` | Pydantic + JSONL audit log (adopt this pattern) |
-| Risk layer | helper functions | "Risk Audit with veto power" | deterministic rules own sizing/stops/gating |
-| Backtesting | ships a backtester | backtested approaches common | defer to v2; reuse KIS backtester later |
-| Mock environment | `svr=vps` 모의투자 | n/a | mock-first, gated promotion |
-| Provider lock-in | KIS-only (fine) | usually single-vendor | switchable Claude/OpenAI adapter |
+1. **Network isolation:** replay fails the test if KIS, Naver, Anthropic/OpenAI, or Codex subprocess adapters are invoked.
+2. **Determinism:** two replays with identical data, fixtures, initial state, and policy produce the same ordered decisions, reasons, quantities, and result hash.
+3. **Point-in-time discipline:** a date D replay cannot read bars, universe membership, labels, or fixtures first available after D's declared decision cutoff.
+4. **Session cutoff:** an operational run cannot use an incomplete future daily bar or place an order outside its declared KRX window; its audit record distinguishes session date from latest completed OHLCV date.
+5. **Warm-up safety:** insufficient trailing bars cause a recorded skip/HOLD and never an order.
+6. **Gate parity:** threshold boundary values, sizing, risk override, and daily-loss behavior match production execution tests exactly.
+7. **Mode binding:** KIS paper execution can never select the real domain, app credentials, account, or order TR ID; startup and audit identify the selected broker/environment.
+8. **No blind retry:** an ambiguous KIS order POST leads to reconciliation; rerunning the same intent cannot submit a duplicate.
+9. **Fail-safe degradation:** stale data, malformed signals, timeouts, unavailable account truth, and audit persistence failures produce no new order.
+10. **Audit completeness:** `attempted_tickers = terminal_decision_rows + terminal_error/skip_rows` for every completed run.
+11. **Report reproducibility:** report output for an unchanged DB and options is stable and totals reconcile to source rows.
+12. **Soak day eligibility:** only one reviewed terminal campaign result per open KRX day advances the clean streak.
+13. **Campaign invalidation:** a safety-invariant breach or material unversioned change prevents promotion and resets/ends the clean cohort.
+14. **Calibration restraint:** comparison output includes observation counts and coverage; it cannot write active settings or claim self-confidence is a probability.
+15. **Promotion restraint:** passing replay and soak never toggles real mode; real promotion still requires deliberate external configuration and confirmation.
 
 ## Sources
 
-- [Top Trading Algo Bots / Bookmap](https://bookmap.com/blog/top-trading-algo-bots-automating-your-trading-strategy) — modular bot feature breakdown (MEDIUM)
-- [7 Risk Management Strategies for Algorithmic Trading / Nurp](https://nurp.com/algorithmic-trading-blog/7-risk-management-strategies-for-algorithmic-trading/) — fixed-fractional sizing, stops, limits (MEDIUM)
-- [AI Trading Bot Risk Management Guide / 3commas](https://3commas.io/blog/ai-trading-bot-risk-management-guide) — daily drawdown, circuit breakers, fire-and-forget failure mode (MEDIUM)
-- [TradingAgents — Multi-Agent LLM Financial Framework / GitHub](https://github.com/tauricresearch/tradingagents) — risk-audit veto, structured agents (MEDIUM)
-- [LLM-TradeBot / GitHub](https://github.com/EthanAlgoX/LLM-TradeBot) — JSONL signal log, reason field audit trail (MEDIUM)
-- [Using LLMs as a sanity check in trading pipelines / BlackHatWorld](https://www.blackhatworld.com/seo/using-llms-as-a-sanity-check-in-crypto-trading-pipelines-what-actually-helps.1815069/) — LLM best as evaluator not generator (LOW)
-- [koreainvestment/open-trading-api / GitHub](https://github.com/koreainvestment/open-trading-api) — official KIS sample code, examples_llm, backtester, mock vs prod (MEDIUM)
-- [python-kis / Soju06 / GitHub](https://github.com/Soju06/python-kis) — community KIS library (MEDIUM)
-- [KIS API throttling / hky035](https://hky035.github.io/web/kis-api-throttling/) — 20 req/s rate limit, websocket 41 tickers/session (MEDIUM)
-- [TG's Programming Blog — KIS rate-limit solutions](https://tgparkk.github.io/robotrader/2025/10/09/robotrader-1-70stocks-problem.html) — token TTL ~24h, mock lower limits (MEDIUM)
-- [pykrx / sharebook-kr / GitHub](https://github.com/sharebook-kr/pykrx) — OHLCV, fundamental (PER/PBR), market cap, ticker list; 1s delay advised (MEDIUM)
-- [Anthropic Structured Outputs / Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) — `output_format json_schema`, grammar-constrained generation, Pydantic (MEDIUM, official)
-- [LiteLLM Tutorial](https://tutorials.technology/tutorials/litellm-tutorial-python-2026.html) — adapter/gateway pattern for swappable providers (LOW)
+### Primary / Official
+
+- [FINRA Regulatory Notice 15-09 — algorithm testing, pilot deployment, heightened monitoring, reconciliation, and records](https://www.finra.org/rules-guidance/notices/15-09) — MEDIUM confidence after cross-check
+- [FCA multi-firm review of algorithmic trading controls — simulated stress testing and calibrated pre/post-trade controls](https://www.fca.org.uk/publications/multi-firm-reviews/algorithmic-trading-controls-high-level-observations) — MEDIUM confidence after cross-check
+- [SEC Rule 613 Consolidated Audit Trail — lifecycle linkage, identifiers, and synchronized timestamps](https://www.sec.gov/about/divisions-offices/division-trading-markets/rule-613-consolidated-audit-trail) — MEDIUM confidence after cross-check
+- [17 CFR §38.552 — sequential source records and analyzable transaction history](https://www.law.cornell.edu/cfr/text/17/38.552) — MEDIUM confidence after cross-check
+- [Korea Investment & Securities official Open Trading API repository — separate paper environment and official backtester](https://github.com/koreainvestment/open-trading-api) — MEDIUM confidence
+- [IBKR official paper-trading limitations — simulator behavior can differ from exchange behavior](https://www.interactivebrokers.com/campus/glossary-terms/paper-trading-account/) — MEDIUM confidence; used only as cross-broker evidence of simulation limits
+- [QuantConnect point-in-time precomputed prediction guidance — trailing-only inputs and frozen prediction reproducibility](https://www.quantconnect.com/docs/v2/writing-algorithms/importing-data/streaming-data/precomputed-ml-predictions) — MEDIUM confidence
+- [QuantConnect live/backtest reconciliation — lookahead, data normalization, timing, and corporate-action divergence](https://www.quantconnect.com/docs/v2/writing-algorithms/live-trading/reconciliation) — MEDIUM confidence
+- [QuantConnect warm-up guidance — prepare indicators and prohibit trades during warm-up](https://www.quantconnect.com/docs/v2/writing-algorithms/historical-data/warm-up-periods) — MEDIUM confidence
+- [scikit-learn probability calibration guide — reliability interpretation and disjoint calibration data](https://scikit-learn.org/stable/modules/calibration.html) — MEDIUM confidence
+
+### Project Evidence
+
+- `.planning/PROJECT.md`, `.planning/MILESTONES.md`, `.planning/STATE.md`
+- `trading_bot/cli.py`, `trading_bot/sqlite_audit.py`, `trading_bot/execution.py`, `trading_bot/screener.py`, `trading_bot/data_source.py`, `trading_bot/domain.py`
+
+## Confidence Notes and Open Questions
+
+- **HIGH confidence in code dependencies:** conclusions about current SQLite fields, exception persistence, explicit trading dates, deterministic execution, and `MockBroker` selection come directly from the repository.
+- **MEDIUM confidence in ecosystem recommendations:** GSD confidence classification for cross-checked websearch evidence is MEDIUM even when the underlying pages are official.
+- Confirm exact KIS mock-account order restrictions, rate limits, supported order types, and reconciliation endpoints against the authenticated KIS developer portal during implementation; public repository evidence is not sufficient for exact operational limits.
+- Choose the operational session contract before fixing runbook clock times. The current `expected_date=today` behavior must be reconciled with when a completed pykrx daily bar is actually available and when KIS accepts the intended order type.
+- Define N and the allowed availability-failure budget during requirements. Recommendation: use consecutive eligible KRX days and zero tolerance for safety-invariant breaches, but do not invent a statistically meaningful profitability claim from a short personal soak.
+- Decide the forward outcome definition before any confidence calibration claim (for example, fixed D+1/D+5 close return or barrier event). Keep this out of the operational pass gate unless enough independent observations are collected.
 
 ---
-*Feature research for: personal LLM-driven KR-market stock trading bot*
-*Researched: 2026-06-30*
+*Feature research for: Stock Trading Bot v1.1 Mock Soak & Replay Validation*
+*Researched: 2026-07-11*

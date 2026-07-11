@@ -1,20 +1,18 @@
 # Stack Research
 
-**Domain:** Korean-market, LLM-driven automated stock trading bot (personal use, Python)
-**Researched:** 2026-06-30
-**Confidence:** HIGH
+**Domain:** v1.1 operational confidence for an existing Korean-market LLM trading bot
+**Researched:** 2026-07-11
+**Confidence:** HIGH for local integration and dependency recommendations; MEDIUM for ecosystem comparisons
 
 ## Executive Summary
 
-The bot is a Python project with three pipelines (data → LLM signal → KIS execution). The 2025/2026 standard stack is settled and uncontroversial for most layers:
+**Recommendation: add no runtime dependency for v1.1.** The shipped stack already contains every capability this milestone needs. Reuse Python standard-library `sqlite3`, `csv`, `json`, `statistics`, `datetime`, `zoneinfo`, `pathlib`, and `hashlib`; the pinned `typer==0.26.8` CLI; existing pandas/pykrx data frames; and `pytest==8.4.2`. Build small project modules for replay, reporting, policy metrics, and soak orchestration instead of adopting a backtesting or analytics framework.
 
-- **KIS access:** Use the actively maintained community library **`python-kis`** (Soju06) for both real-time prices and order execution. It supports the KIS mock (모의투자) account natively, manages AppKey/SecretKey tokens for you, and wraps the websocket. Do NOT use `mojito2` (unmaintained since 2023, no mock support documented). Calling the KIS REST API directly is a viable fallback but adds significant boilerplate (token issuance/refresh, hashkey, tr_id juggling, domain switching) for no benefit at this scale.
-- **Daily data:** **`pykrx`** for OHLCV + screening fundamentals. It does NOT compute indicators, so pair it with a TA library.
-- **Indicators:** **`ta`** (pure-Python, no C dependency) is the pragmatic default — `TA-Lib` carries a painful C-library install, and mainline `pandas-ta` has gone yearly-maintenance and now requires Python 3.12+.
-- **LLM:** Official **`anthropic`** and **`openai`** SDKs, switchable via config. Enforce the strict JSON contract with **forced tool use + `strict: true`** (Anthropic) and **`responses.parse` / `chat.completions.parse` with a Pydantic model** (OpenAI) — both validate against a Pydantic `TradeSignal` model and guarantee schema conformance, which is exactly what the "fail-safe on unparseable output" requirement needs.
-- **Config/secrets:** **`pydantic-settings`** + a `.env` file (gitignored). **Scheduling:** a plain CLI (`typer`) for v1 — no scheduler, matching the manual-trigger decision. **Persistence:** **SQLite** via stdlib `sqlite3` for the per-cycle audit log; **logging:** stdlib `logging` with `structlog` for structured JSON lines.
+The architectural change is additive, not a stack migration. Historical replay should inject point-in-time OHLCV rows and fixture signals into the existing pure screener and `execute_signal_cycle()` rules. It must never instantiate an LLM provider or KIS network adapter. Reports should query the existing SQLite audit store and render stable plain text through `typer.echo`, with optional CSV/JSON export from the standard library. Calibration should calculate descriptive threshold-grid metrics from replay/soak observations; it should recommend candidate settings but never mutate production settings or promote real trading automatically.
 
-The only judgment call is the indicator library; everything else is a clear "use X because Y."
+The current two-table audit schema needs evolution before it can prove a soak. Today it records run headers and successful per-ticker decisions, but ticker exceptions are only returned/notified, and a run has no terminal status, completion timestamp, source (`live`, `mock_soak`, `replay`), replay date, or policy snapshot. Add those fields plus durable per-ticker error/outcome records using forward-only, idempotent migrations. This is a data-model gap, not a reason to replace SQLite.
+
+Keep the manual operator posture. A runbook is documentation plus deterministic CLI behavior; it does not justify APScheduler, cron integration, a daemon, a task queue, a notebook stack, or a dashboard. The v1.1 confidence claim should come from repeatable fixtures, explicit dates/clocks, persisted outcomes, and reviewable reports.
 
 ## Recommended Stack
 
@@ -22,147 +20,209 @@ The only judgment call is the indicator library; everything else is a clear "use
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Python | 3.12+ | Runtime | Required by `pykrx` (>=3.10) and `python-kis` (3.10–3.13); 3.12 keeps the door open for mainline `pandas-ta` if ever needed. Use 3.12 (not 3.13) for the widest library compatibility. |
-| `python-kis` | 2.1.6 (2025-10-13) | KIS real-time prices + order execution | Only actively maintained community KIS library. Native mock (모의투자) account support, automatic AppKey/SecretKey token issuance + refresh, websocket with auto-reconnect, type hints, English method names. Eliminates ~all KIS REST boilerplate. |
-| `pykrx` | 1.2.8 (2026-05-04) | Daily OHLCV + screening fundamentals | De-facto standard for KRX daily data. `get_market_ohlcv`, ticker lists, PER/PBR/EPS/DIV, market cap, investor-type trading value, short-selling. Actively maintained. Scrapes KRX/Naver public data — no API key. |
-| `ta` | 0.11.0 | Technical indicators (RSI, MACD, MAs, Bollinger) | Pure-Python on pandas, MIT, **no C dependency** → trivial `pip install`. `pykrx` returns raw OHLCV only, so an indicator lib is mandatory. Stable and sufficient for standard indicators. |
-| `anthropic` | 0.40+ (current major) | Claude LLM provider | Official SDK. Forced tool use + `strict: true` gives a hard schema guarantee for the `{decision,confidence,reason}` contract. Default model `claude-opus-4-8`. |
-| `openai` | 2.44.0 (2026-06) | OpenAI LLM provider | Official SDK. `responses.parse` / `chat.completions.parse` with a Pydantic model returns a validated object — schema-conformant JSON guaranteed. |
-| `pydantic` | 2.x | Data models + LLM output validation | The `TradeSignal` model is the single source of truth: it defines the JSON schema sent to both LLMs AND validates their responses. A `ValidationError` IS the "fail-safe, no trade" signal. |
-| `pydantic-settings` | 2.14.2 (2026-06-19) | Config + secrets | `BaseSettings` + `SettingsConfigDict(env_file=".env")` loads typed config and secrets (KIS appkey/secret, LLM keys, account no, provider toggle) from env/`.env` with validation. |
+| Python | `>=3.10` (current project constraint) | Replay engine, report/calibration logic, KST handling | The standard library supplies SQLite access, CSV/JSON output, descriptive statistics, paths, hashing, and `zoneinfo`. Keep the existing compatibility floor; v1.1 needs no newer language feature. |
+| SQLite via `sqlite3` | stdlib; runtime SQLite varies by Python build | Canonical run, decision, error, replay, and policy evidence | Existing store is already WAL-enabled and keyed by `run_id`. The expected personal-bot volume is small, read-mostly, and single-operator; SQL `GROUP BY`, filtered aggregates, indexes, and joins are sufficient. |
+| Typer | `0.26.8` pinned locally | `bot replay`, `bot report`, and soak/readiness command surface | It is already the composition root and its `CliRunner` is already used in tests. Typed options and explicit exit codes cover dates, fixture paths, output formats, and fail-closed validation. |
+| Existing pure domain core | current repository | Deterministic screener, execution gate, sizing, risk precedence | `screen_candidates()`, `evaluate_signal_action()`, `evaluate_position_risk()`, and `execute_signal_cycle()` already accept explicit values/config. Replaying these exact functions avoids a second implementation that could disagree with live behavior. |
+| pytest | `8.4.2` pinned locally | Fixture replay and failure-matrix verification | Built-in fixtures, `tmp_path`, `monkeypatch`, and parametrization cover all required scenarios. No test plugin is needed. |
 
-### Supporting Libraries
+### Standard-Library Additions (No Installation)
 
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| `typer` | 0.12+ | CLI entrypoint | v1 manual trigger: `bot run`, `bot run --dry-run`, `bot screen`. Built on Click, type-hint driven, minimal. |
-| `structlog` | 24.x+ | Structured logging | Emit each cycle's data context, LLM signal, and order outcome as structured JSON log lines for review (a hard requirement). Wraps stdlib `logging`. |
-| `httpx` | 0.27+ | Naver Finance news scraping | Modern requests-compatible client with timeouts/retries; HTTP/2. Use for fetching Naver Finance per-ticker news pages. |
-| `beautifulsoup4` | 4.12+ | HTML parsing | Parse scraped Naver Finance news HTML. Pair with `lxml` parser for speed. |
-| `lxml` | 5.x | Fast HTML/XML parser backend | `BeautifulSoup(html, "lxml")` — faster and more lenient than the stdlib parser. |
-| `tenacity` | 8.x+ | Retry/backoff | Wrap flaky network calls (Naver scrape, KIS REST, LLM calls) with exponential backoff. |
-| `pandas` | 2.x | DataFrames | `pykrx` returns DataFrames; `ta` consumes/produces them. Transitive dependency you'll use directly. |
-| `sqlite3` | stdlib | Per-cycle audit persistence | Log every cycle (timestamp, ticker, data snapshot, LLM signal JSON, order result) to a local SQLite DB. Zero-ops, queryable, ships with Python. |
+| Module | Purpose | When to Use |
+|--------|---------|-------------|
+| `dataclasses` / `typing` | Frozen replay cases, report rows, policy snapshots, result protocols | Define explicit inputs/outputs for replay and reporting; do not pass loose dictionaries across the domain boundary. |
+| `datetime` + `zoneinfo.ZoneInfo("Asia/Seoul")` | Trading-date windows and daily report grouping | Persist canonical UTC ISO-8601 timestamps, then convert to KST in Python before deriving the report date. Never depend on host local time. |
+| `csv` | Fixture ingestion and report export | Use for human-reviewable OHLCV/signal fixtures and spreadsheet-friendly audit exports. Validate headers/types before use. |
+| `json` | Fixture manifest, policy snapshot, machine-readable report | Use sorted keys and stable separators when hashing/serializing replay inputs. Reject unknown schema versions and malformed values. |
+| `statistics` | Median/quantile-like descriptive summaries | Use for small calibration summaries. Explicitly implement or document percentile convention; avoid pretending descriptive metrics are predictive validation. |
+| `hashlib` | Replay provenance | Hash canonical fixture contents plus policy/config snapshot so reruns can prove identical inputs. |
+| `pathlib` | Fixture/output paths | Pair with Typer path validation; keep replay inputs read-only and outputs explicit. |
+| `sqlite3.Row` | Named report query rows | Set `row_factory` on reporting connections to prevent fragile positional-column logic. |
+
+### Existing Libraries to Reuse
+
+| Library | Version | Purpose in v1.1 | Integration Point |
+|---------|---------|-----------------|-------------------|
+| pandas | existing transitive dependency of `pykrx`/`ta` | OHLCV fixture DataFrames and rolling indicator inputs | Use only at the existing data/indicator boundary. Do not use pandas as the audit-report database layer. |
+| pykrx | `1.2.8` pinned | Optional fixture acquisition outside deterministic replay | Fetch and freeze historical data in a separate preparation step; replay itself reads frozen fixtures and performs no network calls. |
+| structlog | `25.5.0` pinned | Correlated operational diagnostics | Keep detailed network/LLM diagnostics in logs, linked by `correlation_id`; persist reportable status/reason fields in SQLite. |
+| Pydantic | `2.13.4` pinned | Validate any new settings/fixture manifest model | Use for external/config boundaries where it is already standard. Keep hot replay row transforms as simple typed data unless validation adds value. |
 
 ### Development Tools
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| `uv` | Dependency + venv management | Fast, modern installer/resolver; `uv add`, `uv run`. Replaces pip+venv+pip-tools. (pip + `venv` is the conservative fallback.) |
-| `ruff` | Lint + format | One tool for both; near-instant. |
-| `pytest` | Test runner | Standard. See Testing notes below. |
-| `respx` or `pytest-httpx` | Mock httpx in tests | Mock Naver scrape + KIS REST responses deterministically. |
-| `mypy` | Static type checking | The stack is heavily typed (pydantic, typer, python-kis) — mypy catches signal-shape mistakes early. |
+| `pytest==8.4.2` | Unit, integration, replay-golden, and CLI tests | Use explicit fixtures and parameter matrices. Keep live KIS soak checks separately marked/manual because they are nondeterministic external integration tests. |
+| `typer.testing.CliRunner` | CLI contract tests | Assert exit code, stdout, and stderr independently for `replay`, `report`, and readiness commands. |
+| `tmp_path` + in-memory SQLite | Isolated test artifacts | Use a real temporary DB when migration/reopen/WAL behavior matters; use `:memory:` for pure query/writer tests. |
+
+## Required Project Modules and Integration Points
+
+These are local modules, not packages to install.
+
+| Module/Change | Responsibility | Reuses |
+|---------------|----------------|--------|
+| `trading_bot/replay.py` | Load a versioned fixture manifest, iterate dates in stable order, run screener and fixture signal through execution/risk gates, emit typed replay outcomes | `screen_candidates`, `execute_signal_cycle`, `MockBroker`, existing config builders |
+| `trading_bot/reporting.py` | Read-only audit queries, KST grouping, plain-text/CSV/JSON renderers | `sqlite3`, `csv`, `json`, `zoneinfo`, `typer.echo` |
+| `trading_bot/calibration.py` | Compare observed outcomes across explicit policy candidates and produce evidence/recommendations | `statistics`, existing `ExecutionConfig`/`RiskConfig`; no settings writes |
+| `trading_bot/soak.py` or a thin CLI service | Record planned run identity, execute one bounded mock cycle, finalize run status, evaluate checklist counters | Existing `run_cycle`, notifier, audit connection; no scheduler |
+| `trading_bot/sqlite_audit.py` extensions | Forward-only schema migration, run finalization, per-ticker outcomes/errors, replay/policy metadata, report queries | Existing DB and correlation IDs |
+| `trading_bot/cli.py` commands | Parse/validate operator inputs and delegate to services | Existing Typer app; keep domain/report logic out of command functions |
+
+### Audit Schema Evolution
+
+Prefer an idempotent migration mechanism (`schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`) over continuing to grow one `CREATE TABLE IF NOT EXISTS` script. Recommended additive data:
+
+| Storage | Additions | Why |
+|---------|-----------|-----|
+| `runs` | `completed_at`, `status`, `run_kind`, `trading_date`, `error_count`, `policy_snapshot_json`, `input_fingerprint` | Distinguishes incomplete/failed/successful runs, replay from soak/live, and the exact policy/input used. |
+| `outcomes` (preferred new table) | one row per attempted ticker: status, stage, reason/error type, candidate rank/score where applicable, final action/order fields, timestamps | Current `decisions` omits ticker failures, so soak reports cannot calculate attempted vs completed/error rates. A unified outcome table avoids overloading valid decisions with exceptions. |
+| `decisions` | Keep for validated execution decisions; optionally add FK to outcome | Preserve v1.0 compatibility and existing reports/tests. Do not rewrite historical rows. |
+| Indexes | `(run_kind, started_at)`, `(status, started_at)`, outcome `(run_id, ticker)`, decision `(created_at, final_action)` | Supports bounded daily and readiness queries without an analytics database. |
+
+Use parameterized SQL only. Reporting should open the DB read-only where practical and must not run migrations implicitly during a report command; migration belongs at controlled application startup or an explicit schema initializer.
+
+## Deterministic Replay Contract
+
+1. A replay case names a schema version, fixture ID, KRX trading date, ordered OHLCV/screener rows, fixture signal(s), starting cash/positions, and a complete execution/risk/screener policy snapshot.
+2. Normalize rows and process dates/tickers in explicit stable order. The screener already tie-breaks by ticker; preserve that ordering downstream.
+3. Use frozen historical inputs only. No pykrx, KIS, Naver, LLM, wall clock, random UUID, or notification call is allowed inside replay evaluation.
+4. Inject `run_id`, `trading_date`, and timestamps (or a clock callable). Do not add `freezegun` to hide implicit time reads; remove those reads from replayable code.
+5. Run fixture signals through the real parser and execution core. Do not construct an already-qualified action, because that would bypass strict JSON, confidence, risk, sizing, and no-trade reasons.
+6. Default replay to simulation with `MockBroker`; prohibit a real broker type at the service boundary, not merely in the CLI.
+7. Persist/emit an input fingerprint and policy snapshot. The same fixture + policy must produce the same selected tickers, actions, quantities, reasons, and ending mock state.
+
+## Report Formatting Recommendation
+
+Default to stable plain text from a pure renderer, printed with `typer.echo`. Provide `--format text|json|csv` and `--output PATH` only if needed by the requirement. Text output should include a run/day summary followed by deterministic rows ordered by KST date, start time, run ID, candidate rank, and ticker.
+
+Do not optimize for terminal decoration. Stable, diffable output is more valuable during soak review than color, live tables, or auto-sized columns. If terminal readability later becomes a demonstrated problem, Rich can be added as presentation-only without changing report queries or models.
+
+## Risk Calibration Stack
+
+Use a bounded policy grid implemented with `itertools.product` over approved candidate values for:
+
+- BUY/SELL confidence threshold
+- cash fraction and max-position cap
+- stop-loss and take-profit percentages
+
+For each policy snapshot, rerun the identical frozen cases and report counts/rates such as qualified BUYs, no-trades by reason, risk exits, order intents, rejected/errored outcomes, turnover proxy, max position exposure, and—only when later prices are part of the fixture—clearly defined forward-return/drawdown summaries. Preserve raw counts beside percentages and enforce minimum sample-size warnings. Calibration output is advisory: promotion remains a human checklist decision.
+
+Do not use an optimizer or statistical-learning library in v1.1. The data volume and milestone goal support transparent threshold sweeps, not fitted policy claims.
+
+## Test Strategy
+
+### Fixture Layout
+
+```text
+tests/fixtures/replay/
+  manifest-v1.json
+  20260701-market.csv
+  20260701-signals.json
+  20260702-market.csv
+  20260702-signals.json
+```
+
+Small inline fixtures are preferable for unit tests; file fixtures should cover loader/schema/provenance and end-to-end replay. Keep source fixtures immutable and write generated outputs under `tmp_path`.
+
+### Required Test Layers
+
+| Layer | Cases | Technique |
+|-------|-------|-----------|
+| Pure replay unit | stable ordering, confidence boundary (`0.799...`, `0.8`), sizing floor, risk precedence, stop/take boundaries | `pytest.mark.parametrize`; direct pure-function calls |
+| Fixture validation | missing columns, duplicate ticker/date, non-finite prices, stale date, unknown schema version, malformed signal | Temp fixture files; assert fail-closed result and no order |
+| Replay determinism | identical fixture/policy run twice yields identical domain output and fingerprint | Inject run ID/clock; compare normalized results, not generated timestamps |
+| Audit migration | upgrade a v1.0-shaped DB, reopen it, rerun migration, preserve old rows | `tmp_path` SQLite file; assert migration idempotence and indexes |
+| Reporting | UTC timestamps crossing KST midnight, incomplete runs, ticker errors, no decisions, mixed dry/execute runs | Seed SQLite rows; golden text plus parsed JSON/CSV assertions |
+| Soak failure matrix | duplicate/reconciled order, API 4xx/5xx, timeout, stale OHLCV/quote, malformed signal, notifier failure, interrupted run | Existing fakes plus parameterized fault doubles; assert durable terminal status/reason |
+| CLI contract | invalid date/path/format, default safe mode, requested range, nonzero exit on incomplete evidence | Existing `CliRunner`; assert stdout/stderr and exit codes |
+| Manual KIS mock soak | real token/account integration and KIS reconciliation behavior | Explicit opt-in marker and credentials; never part of default offline test suite |
+
+Avoid snapshotting volatile banners, UUIDs, or timestamps. Golden files are appropriate only for normalized report/replay output with an intentional update process.
 
 ## Installation
 
+No v1.1 package addition is recommended.
+
 ```bash
-# With uv (recommended)
-uv init && uv venv --python 3.12
-uv add python-kis pykrx ta anthropic openai pydantic pydantic-settings \
-       typer structlog httpx beautifulsoup4 lxml tenacity pandas
-uv add --dev ruff pytest pytest-httpx mypy
+# Existing environment is sufficient.
+python -m pytest
 
-# Or with pip
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install python-kis pykrx ta anthropic openai pydantic pydantic-settings \
-            typer structlog httpx beautifulsoup4 lxml tenacity pandas
-pip install -U ruff pytest pytest-httpx mypy
+# If the project environment uses uv, sync the existing lock/manifest only.
+uv sync
 ```
 
-## Strict JSON LLM Contract — How to Enforce It
-
-The `{"decision","confidence","reason"}` contract is the spine of the project. Define it once as a Pydantic model and reuse it for both providers:
-
-```python
-from enum import Enum
-from pydantic import BaseModel, Field
-
-class Decision(str, Enum):
-    BUY = "BUY"; SELL = "SELL"; HOLD = "HOLD"
-
-class TradeSignal(BaseModel):
-    decision: Decision
-    confidence: float = Field(ge=0.0, le=1.0)
-    reason: str
-```
-
-**Anthropic (Claude) — forced tool use is the strongest guarantee:**
-- Define one tool whose `input_schema` is the `TradeSignal` schema, set `strict: true` on the tool (schema must have `additionalProperties: false` + `required`), and force it with `tool_choice={"type": "tool", "name": "emit_signal"}`. The `tool_use.input` is then guaranteed to validate.
-- Alternative: `output_config={"format": {"type": "json_schema", "schema": ...}}`, or `client.messages.parse(output_format=TradeSignal)`.
-- Default model `claude-opus-4-8` (cost-sensitive: `claude-sonnet-4-6`).
-- NOTE for 4.6+ models: assistant-message prefill and `budget_tokens` both return 400 — do not use the old "prefill `{` to force JSON" trick; use tool use / structured outputs instead.
-
-**OpenAI — Pydantic-parsed structured outputs:**
-- `client.responses.parse(model=..., input=..., text_format=TradeSignal)` (Responses API) or `client.chat.completions.parse(..., response_format=TradeSignal)` returns a validated `TradeSignal` instance directly.
-- Equivalent raw form: `response_format={"type": "json_schema", "json_schema": {"strict": True, "schema": ...}}`.
-
-**Fail-safe wiring:** wrap the provider call so that any `pydantic.ValidationError`, refusal, or empty/parse failure maps to "no trade." A switchable `LLMProvider` protocol with two implementations keeps the one-active-provider constraint clean.
+Do not add optional packages preemptively. If dependencies are later reorganized, move `pytest==8.4.2` from runtime `dependencies` to a development extra/group; that cleanup is sensible but not required to deliver v1.1.
 
 ## Alternatives Considered
 
 | Recommended | Alternative | When to Use Alternative |
 |-------------|-------------|-------------------------|
-| `python-kis` | Direct KIS REST/websocket (`httpx`) | If you need a KIS endpoint the wrapper doesn't cover, or want zero third-party trust in the order path. Costs you token/hashkey/tr_id/domain boilerplate. |
-| `python-kis` | `mojito2` | Effectively never — unmaintained since 2023, no documented mock support. |
-| `python-kis` | `pjueon/pykis` | Another KIS wrapper; viable, but `python-kis` (Soju06) has broader websocket + mock coverage and more recent activity. Re-evaluate only if `python-kis` stalls. |
-| `ta` | `pandas-ta-classic` | If you need many more indicators / candlestick patterns (253) than `ta` offers, and still want no C dependency. |
-| `ta` | `TA-Lib` | If you need battle-tested C-speed indicators at scale and can absorb the native-library install. Overkill for one personal bot. |
-| SQLite | CSV files | If you only ever append and never query; SQLite is barely more effort and far more useful for review. |
-| `typer` CLI | APScheduler / cron | Deferred — v1 is manual-trigger by decision. Add when promoting to an always-on loop. |
-| `structlog` | stdlib `logging` only | Fine if you don't need machine-parseable lines; structured logs make the required per-cycle audit far easier to query later. |
+| stdlib `sqlite3` queries | DuckDB | Only after audit/replay history becomes large analytical data (for example Parquet collections or joins that are measurably awkward/slow in SQLite). |
+| plain Typer text + CSV/JSON | Rich/Textual | Add Rich only when operators demonstrably need wrapped/colorized tables. Textual is inappropriate unless the product intentionally becomes an interactive TUI. |
+| explicit clock/date injection | freezegun | Use only if legacy code with pervasive direct clock reads cannot be safely refactored. New replay code should accept time explicitly. |
+| pytest fixtures/parametrization | Hypothesis | Add later for property-based invariants once concrete replay cases are stable and there is a specific state-space bug class to explore. |
+| existing pandas at data boundary | Polars | Consider only if measured replay throughput is blocked by pandas. It would duplicate the existing pykrx/ta DataFrame ecosystem today. |
+| transparent policy grid | NumPy/SciPy optimizer | Use only for a later, statistically designed research milestone with enough independent observations and explicit overfitting controls. |
+| local replay harness | backtrader/vectorbt/zipline | Use in a future full portfolio backtest requiring fills, commissions, corporate actions, benchmark analytics, or multi-strategy accounting. v1.1 explicitly needs backtest-lite gate replay. |
+| manual bounded cycle | APScheduler/Celery/Prefect | Add only if the product scope changes to unattended scheduling or distributed workflows. Current milestone retains operator-triggered cycles. |
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `mojito2` | Last release v0.1.6 (2023-02-23), unmaintained, no mock-account support documented. The order path must be on maintained code. | `python-kis` |
-| `TA-Lib` (as default) | Requires installing a separate C library (`brew install ta-lib` / manual build); a recurring source of CI/install failures. | `ta` (pure-Python) |
-| Mainline `pandas-ta` | v0.4.71b0 now requires Python 3.12+, classified "inactive"/yearly-maintenance (Snyk); riskier base for a long-lived project. | `ta`, or `pandas-ta-classic` fork if you need breadth |
-| Assistant-prefill JSON forcing | Returns HTTP 400 on Claude 4.6+ models; the old "prefill `{`" pattern is dead. | Forced tool use + `strict: true` (Anthropic); `parse()` (OpenAI) |
-| `requests` (sync, no retries by default) | Fine but dated; `httpx` gives timeouts/HTTP-2/async path for free. | `httpx` |
-| Hardcoded keys / `os.getenv` sprawl | Untyped, easy to leak, no validation. | `pydantic-settings` + gitignored `.env` |
-| `tiktoken` for Anthropic token counts | OpenAI's tokenizer; undercounts Claude tokens. | Anthropic `count_tokens` endpoint (only if you need counts) |
-
-## Naver Finance Scraping — Notes
-
-- Fetch with `httpx` (set a realistic `User-Agent`, sane timeouts), parse with `beautifulsoup4` + `lxml`, and wrap in `tenacity` retry with backoff.
-- **Rate-limit yourself:** add a small delay between per-ticker requests and cap concurrency — this is a personal tool hitting a public site; be a polite client. Check `robots.txt` and avoid hammering. There is no official Naver Finance news API, so scraping is the documented source per PROJECT.md, but treat the HTML structure as unstable and isolate parsing behind one adapter module so a layout change is a one-file fix.
-- Treat scraped text as **untrusted input** before it reaches the LLM prompt (it is third-party web content) — keep it clearly delimited in the prompt and never let it carry instructions.
+| A second execution/risk implementation inside replay | It can validate itself while disagreeing with production—the most dangerous false confidence. | Call the existing pure screener, parser, execution, and risk functions. |
+| Live pykrx/KIS/LLM calls during deterministic replay | Vendor revisions, market state, latency, cost, and model nondeterminism make results irreproducible. | Acquire once, validate, freeze, version, and hash fixtures. |
+| A full backtesting framework | Adds fill models, event engines, portfolio abstractions, and semantics outside the milestone; integration may bypass current gates. | Small replay service around existing functions and `MockBroker`. |
+| Rich as a mandatory report dependency | Presentation does not solve missing outcome/status data and makes golden output less stable. | Plain text plus stdlib CSV/JSON. |
+| DuckDB/Postgres | Additional storage/migration/operations burden without a concurrency or scale requirement. | Evolve the existing SQLite schema and indexes. |
+| freezegun | Masks implicit clock coupling and is unnecessary because CLI already accepts explicit trading dates in key paths. | Inject date/time/run IDs into replay and report services. |
+| Jupyter notebooks as the canonical calibration path | Harder to test, reproduce, review, and invoke from the operational CLI. | Pure calibration module with deterministic CLI output; notebooks may consume exported data later. |
+| Automatic policy writes or real-money promotion | A favorable replay can be overfit or incomplete and must not bypass the deliberate safety gate. | Emit an evidence report and human checklist; require explicit config review/change. |
+| CSV as the canonical audit store | Weak relational integrity and awkward updates/grouping for run/outcome status. | SQLite as source of truth; CSV only as fixture/export format. |
+| Test-only custom KIS behavior in production modules | Risks shipping fault injection into the order path. | Protocol-compatible fakes/fault doubles under tests; manual mock-account probes through real adapters. |
 
 ## Stack Patterns by Variant
 
-**If promoting to an always-on / intraday loop (post-v1):**
-- Add `APScheduler` (in-process) or system `cron` calling the existing `typer` CLI.
-- Because v1 already centralizes a cycle behind one CLI command, this is additive — no rearchitecture.
+**Offline replay / calibration:**
+- Frozen fixture inputs, `MockBroker`, injected clock/run ID, notifications disabled.
+- No network-capable collaborator may be constructed.
 
-**If adding the LLM-ensemble option later (currently out of scope):**
-- The `LLMProvider` protocol already abstracts providers; an ensemble is a third implementation that fans out to both and reconciles, not a stack change.
+**Daily mock soak:**
+- Existing real market/LLM adapters as configured, mock trading mode, bounded single cycle, durable start/finalize records.
+- Record every attempted ticker including failures; reconcile duplicate/ambiguous orders through the existing KIS logic.
 
-**If you outgrow SQLite for the audit log:**
-- Move to DuckDB (analytical queries on cycle history) or Postgres (concurrency) — keep the same write-once-per-cycle schema.
+**Audit review:**
+- Read-only SQLite connection, explicit KST report window, deterministic text/CSV/JSON renderer.
+- Report incomplete runs and missing evidence prominently instead of silently excluding them.
+
+**Real-money readiness:**
+- Query completed mock soak and replay evidence against explicit checklist thresholds.
+- Output pass/fail/insufficient-evidence per criterion; never switch `TRADING_MODE` or credentials.
 
 ## Version Compatibility
 
-| Package A | Compatible With | Notes |
-|-----------|-----------------|-------|
-| `python-kis@2.1.6` | Python 3.10–3.13 | Use 3.12 to also satisfy any future mainline `pandas-ta`. |
-| `pykrx@1.2.8` | Python >=3.10, pandas 2.x | Returns pandas DataFrames consumed by `ta`. |
-| `ta@0.11.0` | pandas 2.x, numpy 1.x/2.x | Pure-Python; no native build step. |
-| `pydantic@2.x` | `pydantic-settings@2.14.2`, `anthropic`, `openai` (both pydantic-v2 based) | One shared pydantic v2 across the whole project — avoid mixing v1. |
-| `anthropic@0.40+` | Claude 4.6+ models | Adaptive thinking only; no `budget_tokens`, no assistant prefill (both 400). |
-| `openai@2.44.0` | Responses API + `parse()` helpers | Pydantic-v2 models for `text_format` / `response_format`. |
+| Package/Runtime | Compatible With | Notes |
+|-----------------|-----------------|-------|
+| Python `>=3.10` | `zoneinfo`, dataclass slots if desired, current project APIs | Keep code on the declared floor. The local shell interpreter observed during research was Python 3.14.3 with SQLite 3.51.3, but deployed SQLite features must not assume that exact build. |
+| SQLite | Basic joins, aggregates, indexes, ISO text timestamps | Restrict core queries/migrations to widely available SQLite features under Python 3.10 builds. Test the actual runtime via `sqlite3.sqlite_version`; do not require recent JSON/window extensions unless explicitly guarded. |
+| Typer `0.26.8` | Existing `app.command` and `CliRunner` patterns | Add commands to the current app; avoid a parallel CLI framework. |
+| pytest `8.4.2` | Python `>=3.10` project floor | Existing tests already use `tmp_path`, `monkeypatch`, parametrization, and `CliRunner`; continue those conventions. |
+| pandas / pykrx / ta | Existing OHLCV/indicator pipeline | Freeze fixture schema at the project adapter boundary, not as pickled DataFrames, to avoid library-version-dependent serialization. |
+| Existing audit DB | Additive v1.1 migration | Preserve v1.0 `runs` and `decisions`; migrations must be idempotent and tested from a v1.0 fixture DB. |
 
 ## Sources
 
-- pypi.org/project/python-kis (v2.1.6, 2025-10-13) — version, mock support, websocket, auth — HIGH
-- pypi.org/project/mojito2 (v0.1.6, 2023-02-23) — confirmed unmaintained, no mock — MEDIUM
-- pypi.org/project/pykrx + github.com/sharebook-kr/pykrx (v1.2.8, 2026-05-04) — functions, no indicators — HIGH
-- pypi.org/project/pandas-ta, pypi.org/project/ta, Snyk advisor — indicator-lib maintenance/deps — HIGH
-- claude-api skill (Anthropic SDK reference, cached 2026) — forced tool use + strict JSON, model IDs (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`), 4.6+ prefill/budget_tokens 400 — HIGH
-- pypi.org/project/openai (v2.44.0, 2026-06) — `responses.parse` / `chat.completions.parse` structured outputs — HIGH
-- pypi.org/project/pydantic-settings (v2.14.2, 2026-06-19) — BaseSettings/.env loading, secret-manager extras — HIGH
+- Local `pyproject.toml`, `.planning/PROJECT.md`, `.planning/MILESTONES.md`, `.planning/ROADMAP.md` — shipped stack, pinned versions, milestone scope — **HIGH**
+- Local `trading_bot/cli.py` and `tests/test_cli.py` — Typer command composition, explicit trading date, injectable collaborators, existing `CliRunner` practice — **HIGH**
+- Local `trading_bot/sqlite_audit.py` and `tests/test_sqlite_audit.py` — two-table schema, WAL, persisted fields, and current failure-evidence gap — **HIGH**
+- Local `trading_bot/execution.py`, `risk.py`, `screener.py`, and `mock_broker.py` — pure deterministic seams and production-rule reuse — **HIGH**
+- [Python `sqlite3` documentation](https://docs.python.org/3/library/sqlite3.html) — parameterized SQL, transactions, row factories, in-memory/disk connections — **MEDIUM** (official source via websearch seam)
+- [Python `csv` documentation](https://docs.python.org/3/library/csv.html), [JSON documentation](https://docs.python.org/3/library/json.html), [statistics documentation](https://docs.python.org/3/library/statistics.html), and [zoneinfo documentation](https://docs.python.org/3/library/zoneinfo.html) — no-dependency export, summaries, and KST conversion — **MEDIUM**
+- [SQLite date/time documentation](https://www.sqlite.org/lang_datefunc.html) — available SQL date functions and portability considerations — **MEDIUM**
+- [pytest fixtures](https://docs.pytest.org/en/stable/explanation/fixtures.html), [parametrization](https://docs.pytest.org/en/stable/how-to/parametrize.html), and [monkeypatch guidance](https://docs.pytest.org/en/stable/how-to/monkeypatch.html) — deterministic fixture and fault-injection patterns — **MEDIUM**
+- [Typer testing documentation](https://typer.tiangolo.com/tutorial/testing/) — `CliRunner`, exit-code, stdout, and stderr testing — **MEDIUM**
 
 ---
-*Stack research for: Korean-market LLM trading bot (Python)*
-*Researched: 2026-06-30*
+*Stack research for: Stock Trading Bot v1.1 Mock Soak & Replay Validation*
+*Researched: 2026-07-11*

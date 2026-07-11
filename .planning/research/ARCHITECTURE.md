@@ -1,333 +1,459 @@
 # Architecture Research
 
-**Domain:** Personal, Korean-market, LLM-driven automated stock trading bot (Python, three pipelines: data / LLM agent / execution)
-**Researched:** 2026-06-30
-**Confidence:** HIGH (structure/pattern recommendations are standard and directly grounded in the PROJECT.md spec; external-API specifics — KIS token lifetime, pykrx surface — verified at MEDIUM)
+**Domain:** Operational validation architecture for a personal KR-market trading bot
+**Researched:** 2026-07-11
+**Confidence:** HIGH for codebase integration; MEDIUM for replay methodology
+
+## Recommendation
+
+Build v1.1 as an **observability and validation layer around the existing decision core**, not as a second trading engine. Extract the per-ticker application workflow currently embedded in `cli.run_cycle` into a reusable `CycleService`, then give live runs, historical replay, and mock-soak runs different adapters for data, signals, brokers, clocks, and audit destinations.
+
+Keep these safety-critical modules unchanged unless a failing characterization test proves a defect:
+
+- `execution.py`: parse → risk precedence → confidence gate → sizing → dry-run/order boundary.
+- `risk.py`: stop-loss, take-profit, and daily-loss rules.
+- `kis_broker.py` and `kis_order.py`: query-before-POST reconciliation and KIS order transport.
+- `mock_broker.py`: deterministic in-memory simulation.
+- provider adapters and strict signal parsing.
+
+The v1.1 architecture should add evidence, not authority. Replay and calibration may recommend policy changes, but they must never mutate runtime settings or enable real trading. The existing real-money confirmation gate remains the only promotion mechanism.
+
+## Existing Seams That Matter
+
+| Existing component | Current behavior | v1.1 implication |
+|---|---|---|
+| `cli.run_cycle` | Builds collaborators, screens, loops tickers, invokes the LLM cycle, writes decisions, isolates ticker failures, and notifies. | Extract orchestration without changing behavior; all v1.0 CLI tests become characterization tests. |
+| `execute_signal_cycle` | Pure deterministic decision logic except for the injected `Broker`; dry-run gate is immediately before `place_order`. | Reuse unchanged in live, replay, and soak. This is the primary parity seam. |
+| `MarketDataSource` | Combines historical OHLCV, indicators, current KIS quote, and news; stale required data fails closed. | Keep for live/soak. Replay needs a point-in-time adapter because a historical epoch must not request today's KIS quote or news. |
+| `screen_candidates` | Pure screening transform over supplied rows and explicit date. | Reuse directly in replay with historical rows cut off at each epoch. |
+| `MockBroker` | Deterministic in-memory portfolio and fills. | Reuse across all replay epochs in one experiment; do not recreate it per date. |
+| `KISBroker` | Reconciles existing orders before POST and reads fills afterward; supports whichever KIS domain/TR-ID profile is supplied. | Reuse unchanged for KIS mock soak via an explicit mock-only factory. |
+| `sqlite_audit` | Stores run headers and successful decision events; ticker exceptions are only returned/notified, not persisted. | Add versioned migrations and attempt/outcome evidence before reporting or soak. |
+| `DataContext` | Defined in `trading_bot/domain.py`, not in the requested but absent `trading_bot/data_context.py`. | Replay builds the existing domain object; do not introduce a duplicate context schema. |
 
 ## Standard Architecture
 
-This is a **layered pipeline-and-ports** design. The PROJECT.md already names the three pipelines; the load-bearing architectural decision is to put a **stable interface (port)** in front of each swappable external dependency — LLM provider, broker, data source — so that Claude↔OpenAI and mock↔real are config switches, not code rewrites. A single **orchestrator** runs one evaluation cycle by talking only to those interfaces.
-
 ### System Overview
 
+```text
+┌───────────────────────────────────────────────────────────────────────┐
+│ Operator surfaces                                                     │
+│ bot run/status/screen │ bot replay │ bot soak │ bot report/calibrate │
+└──────────────┬────────┴──────┬─────┴─────┬────┴──────────┬────────────┘
+               │               │           │               │
+┌──────────────▼───────────────▼───────────▼───────────────▼────────────┐
+│ Application services                                                  │
+│ CycleService │ ReplayService │ SoakService │ Report/Calibration       │
+└──────┬──────────────┬───────────────┬───────────────┬─────────────────┘
+       │              │               │               │
+┌──────▼──────────────▼───────────────▼───────────────▼─────────────────┐
+│ Stable domain/core                                                    │
+│ screen_candidates → signal parser → risk → execution → order intent  │
+└──────┬──────────────┬───────────────┬───────────────┬─────────────────┘
+       │              │               │               │
+┌──────▼───────┐ ┌────▼─────────┐ ┌──▼───────────┐ ┌─▼────────────────┐
+│ Data adapters │ │ Signal ports │ │ Broker ports │ │ Audit repository │
+│ live/replay   │ │ LLM/fixture  │ │ memory/KIS   │ │ SQLite + queries │
+└──────────────┘ └──────────────┘ └──────────────┘ └──────────────────┘
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     ENTRYPOINT / CLI                             │
-│        `run-cycle` (manual trigger) → loads Config               │
-└───────────────────────────────┬─────────────────────────────────┘
-                                 │ injects concrete impls (per config)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      ORCHESTRATOR (one cycle)                    │
-│   screen → collect → build context → prompt → parse →           │
-│   risk-check → execute → log     (depends only on PORTS below)   │
-└───┬───────────────┬───────────────────┬───────────────┬─────────┘
-    │               │                   │               │
-    ▼ PORT          ▼ PORT              ▼ PORT          ▼ STATE
-┌─────────┐  ┌──────────────┐   ┌──────────────┐  ┌──────────────┐
-│DataSource│  │ LLMProvider  │   │   Broker     │  │ StateStore   │
-│(Protocol)│  │ (Protocol)   │   │ (Protocol)   │  │ + Logger     │
-└────┬────┘   └──────┬───────┘   └──────┬───────┘  └──────┬───────┘
-     │ adapters       │ adapters         │ adapters         │
- ┌───┴────┐      ┌────┴─────┐       ┌────┴──────┐     ┌─────┴─────┐
- │ pykrx  │      │ Claude   │       │ MockKIS   │     │ SQLite /  │
- │ KIS RT │      │ OpenAI   │       │ RealKIS   │     │ JSONL     │
- │ Naver  │      │          │       │ (KISClient│     │ files     │
- │ scrape │      │          │       │  + token) │     │           │
- └────────┘      └──────────┘       └───────────┘     └───────────┘
-                                          │
-                                    ┌─────┴──────┐
-                                    │ KIS session │  token cache (24h,
-                                    │ /token mgr  │  refresh w/ buffer)
-                                    └─────────────┘
-```
+
+This is a small modular monolith. Do not add a message broker, workflow engine, scheduler, web dashboard, or full event-sourced trading platform for v1.1.
 
 ### Component Responsibilities
 
-| Component | Responsibility | Typical Implementation |
-|-----------|----------------|------------------------|
-| **CLI / entrypoint** | Parse the manual trigger, load config, wire concrete adapters, invoke one cycle. | `argparse`/`typer`; a small `build_orchestrator(config)` factory (composition root). |
-| **Orchestrator (strategy runner)** | Run the seven-step cycle in order; owns the control flow; depends only on the ports. | A `TradingCycle.run()` method; pure orchestration, no vendor SDK imports. |
-| **DataSource port + adapters** | Provide market data: daily OHLCV + indicators (pykrx), real-time price (KIS), per-ticker news (Naver scrape), and the screening universe. | `DataSource` Protocol; `PykrxSource`, `KISPriceSource`, `NaverNewsSource`. Usually 2-3 distinct ports (daily, realtime, news) rather than one god-interface. |
-| **Screener** | Select candidate tickers from the market (volume/momentum/fundamentals via pykrx). | A function/class consuming the daily DataSource; returns a ticker list. |
-| **Context builder** | Assemble the typed **DataContext** (one ticker's facts) that gets serialized into the prompt. | A `DataContext` pydantic model + a builder that merges OHLCV/indicators/price/news. |
-| **LLMProvider port + adapters** | Take a DataContext, return a raw **TradingSignal** dict; enforce "strict JSON, no markdown" at the provider boundary. | `LLMProvider` Protocol with `.generate_signal(context) -> dict`; `ClaudeProvider`, `OpenAIProvider`. |
-| **Signal validator** | Parse + validate the LLM output against the strict schema; **fail-safe (HOLD/no-trade) on any error**. | A pydantic `TradingSignal` model + `parse_signal()` that never raises into a trade. |
-| **Risk engine** | Apply the rules the LLM does **not** own: confidence gate, position sizing (% of capital, max cap), stop-loss/take-profit net, holdings checks. | Pure functions over signal + current positions + config thresholds. |
-| **Broker port + adapters** | Place/cancel orders, read positions and balance. Mock vs real is one swap here. | `Broker` Protocol; `MockBroker` (in-memory/SQLite paper account), `KISBroker` (real). |
-| **KIS session/token manager** | Issue/cache/refresh the KIS access token; sign order requests (hashkey). | A `KISClient` owning token cache + HTTP; shared by `KISPriceSource` and `KISBroker`. |
-| **StateStore** | Persist positions (in dry-run/mock), cooldowns, last-run metadata. | SQLite (recommended) or JSON files. |
-| **Logger / audit** | Append every cycle's data context, signal, and order outcome for later review. | Structured JSONL per cycle + standard `logging`. |
-| **Config** | Provider selection, mock-vs-real, thresholds, secrets. | pydantic-settings; `.env` + a typed `Settings` object. |
+| Component | Status | Responsibility | Must not own |
+|---|---|---|---|
+| `CycleService` | **New** | Execute one explicit universe/date using injected data, signal, broker, policy, audit, clock, and notifier collaborators. Return a typed run result. | CLI parsing, concrete KIS construction, historical loops, report formatting. |
+| `RunSpec` / `RunResult` | **New** | Immutable run metadata: run kind, trading date, execution target, campaign/experiment ID, policy snapshot, outcomes. | Secrets or mutable settings. |
+| `ReplayService` | **New** | Iterate epochs chronologically, create point-in-time candidates/contexts, call `CycleService`, preserve simulated portfolio state, and calculate forward outcomes. | Live LLM, KIS quote/order calls, automatic calibration. |
+| `ReplayDataSource` | **New adapter** | Expose only data available at an epoch; reuse `screen_candidates` and indicator transforms. | Future bars, current quotes, scraped current news. |
+| `FixtureSignalProvider` | **New adapter** | Return deterministic strict signals from a versioned fixture/scenario keyed by date+ticker. | Network access or model calls. |
+| `SoakService` | **New** | Run one manually triggered KIS mock cycle, attach campaign/scenario metadata, enforce mock-only invariants, and summarize evidence across days. | Scheduling or real credentials. |
+| `KISMockBrokerFactory` | **New composition helper** | Build existing `KISBroker` with `settings.kis_mock`, mock account, shared token manager, and mock TR IDs. | Changes to `KISBroker.place_order`. |
+| `FaultScenario` decorators | **New test adapters** | Deterministically inject timeout, stale data, unavailable query, and ambiguous order outcomes around data/order ports. | Production activation by free-form environment strings. |
+| `AuditRepository` | **New interface/module** | Own schema migration, run lifecycle, attempt/outcome writes, and read queries. | Business decisions or report prose. |
+| `DailyReportService` | **New** | Query immutable audit evidence and render text/Markdown/JSON daily reports. | Writes to audit facts. |
+| `CalibrationService` | **New** | Run parameter grids over replay evidence and compare safety/coverage metrics; emit recommendations with sample sizes. | Editing `.env`, `Settings`, or promotion state. |
+| Runbook/checklist docs | **New docs** | Fixed KST timing, commands, expected output, failure triage, evidence requirements, promotion checklist. | Executable policy. |
+| `cli.py` | **Modified** | Remain composition root; delegate to services; add command groups. | Per-ticker business workflow after extraction. |
+| `sqlite_audit.py` | **Modified** | Become a compatibility facade over migrations/repository during transition. | Report formatting. |
+| `config.py` | **Minimally modified** | Add replay DB/report paths and typed soak options if needed. | A generic switch that can silently redirect real orders. |
+| `execution.py`, `mock_broker.py`, `kis_broker.py`, `screener.py` | **Unchanged** | Continue as validated core/adapters. | v1.1 experiment-specific conditionals. |
 
 ## Recommended Project Structure
 
-```
-stock_trading_bot/
-├── pyproject.toml
-├── .env.example                  # appkey/secret, ANTHROPIC/OPENAI keys, account no.
-├── src/stock_trading_bot/
-│   ├── __init__.py
-│   ├── config.py                 # pydantic-settings Settings; provider/mode/thresholds
-│   ├── cli.py                    # `run-cycle`, `--dry-run`; composition root
-│   ├── orchestrator.py           # TradingCycle.run() — the seven steps
-│   │
-│   ├── ports/                    # the swappable seams (Protocols / ABCs only)
-│   │   ├── data_source.py        #   DailyData, RealtimePrice, NewsSource protocols
-│   │   ├── llm_provider.py       #   LLMProvider protocol
-│   │   └── broker.py             #   Broker protocol
-│   │
-│   ├── data/                     # DataSource adapters
-│   │   ├── pykrx_source.py       #   OHLCV + indicators + screening universe
-│   │   ├── kis_price.py          #   real-time price (uses kis/client.py)
-│   │   ├── naver_news.py         #   Naver Finance per-ticker scrape
-│   │   └── screener.py           #   candidate selection
-│   │
-│   ├── context/
-│   │   ├── models.py             #   DataContext pydantic model (LLM input schema)
-│   │   └── builder.py            #   merge sources → DataContext
-│   │
-│   ├── llm/                      # LLMProvider adapters + the contract
-│   │   ├── claude_provider.py
-│   │   ├── openai_provider.py
-│   │   ├── prompt.py             #   system/user prompt templates
-│   │   └── signal.py             #   TradingSignal model + parse_signal() FAIL-SAFE
-│   │
-│   ├── execution/
-│   │   ├── risk.py               #   confidence gate, sizing, stop-loss/take-profit
-│   │   └── executor.py           #   signal → order via Broker
-│   │
-│   ├── broker/                   # Broker adapters
-│   │   ├── mock_broker.py        #   paper account (mock-first)
-│   │   └── kis_broker.py         #   real KIS orders
-│   │
-│   ├── kis/                      # shared KIS HTTP + auth (used by price + broker)
-│   │   ├── client.py             #   KISClient: base URL, headers, request
-│   │   └── token.py              #   token issue/cache/refresh + hashkey
-│   │
-│   ├── state/
-│   │   ├── store.py              #   positions, cooldowns, last-run (SQLite)
-│   │   └── audit.py              #   JSONL cycle log (context+signal+outcome)
-│   │
-│   └── domain/                   # shared dataclasses/enums (Decision, Order, Position)
-│       └── models.py
-└── tests/
-    ├── test_signal_parsing.py    #   the fail-safe path — highest-value tests
-    ├── test_risk.py
-    └── test_mock_broker.py
+```text
+trading_bot/
+├── cli.py                         # Typer composition root only
+├── application/
+│   ├── cycle_service.py           # extracted v1.0 orchestration
+│   ├── run_models.py              # RunSpec, RunResult, RunKind, ExecutionTarget
+│   ├── replay_service.py          # chronological epoch loop
+│   ├── soak_service.py            # one mock-only operational run
+│   ├── reporting.py               # read models + renderers
+│   └── calibration.py             # advisory parameter-grid analysis
+├── replay/
+│   ├── data_source.py             # point-in-time historical adapter
+│   ├── fixture_provider.py        # deterministic signal adapter
+│   ├── outcomes.py                # forward return/MFE/MAE calculations
+│   └── fixtures/                  # versioned, reviewable signal scenarios
+├── audit/
+│   ├── migrations.py              # ordered transactional migrations
+│   ├── repository.py              # writes and read queries
+│   └── models.py                  # persisted run/attempt/read models
+├── testing/
+│   └── fault_adapters.py          # explicit synthetic soak scenarios
+├── execution.py                   # unchanged safety core
+├── risk.py                        # unchanged safety rules
+├── screener.py                    # unchanged pure screener
+├── mock_broker.py                 # unchanged simulation broker
+└── kis_broker.py                  # unchanged reconciled KIS broker
+
+docs/
+├── RUNBOOK.md                     # daily KST operating procedure
+└── REAL_MONEY_PROMOTION.md        # evidence-based manual checklist
+
+tests/
+├── test_cycle_service.py
+├── test_replay.py
+├── test_soak.py
+├── test_audit_migrations.py
+├── test_reporting.py
+└── test_calibration.py
 ```
 
-### Structure Rationale
+If introducing `application/` in one step causes excessive import churn, place the new modules directly under `trading_bot/` first. The component boundaries matter more than the package nesting.
 
-- **`ports/`:** isolates the three interface seams in one place so the swap points are obvious and reviewable. The orchestrator imports from `ports/`, never from `llm/`, `broker/`, or `data/` directly.
-- **`kis/` separate from `broker/` and `data/`:** the KIS token/hashkey machinery is shared by both real-time price reads and order placement. Putting `KISClient` in its own module avoids duplicating auth in two adapters and keeps the token cache single-owner.
-- **`llm/signal.py` separate from `llm/*_provider.py`:** validation/fail-safe is provider-agnostic and security-critical — it must run on *every* signal regardless of which LLM produced it, so it lives outside the adapters.
-- **`execution/risk.py` as pure functions:** the rules-based safety net (confidence gate, sizing, stop-loss/take-profit) must be independent of the LLM and trivially unit-testable; keeping it side-effect-free makes that easy.
-- **`context/models.py` and `llm/signal.py` as the two schema files:** the DataContext (LLM input) and TradingSignal (LLM output) are the two contracts at the LLM boundary; co-locating each with its pipeline stage makes the boundary explicit.
+## Data Model Evolution
+
+The current two-table schema cannot prove soak completeness: a selected ticker that fails during context construction never gets a `decisions` row, and `runs` has no completion state. Reporting would therefore undercount failures and overstate coverage.
+
+Use ordered, transactional, additive migrations tracked with `PRAGMA user_version`. Preserve existing rows and existing `write_decision` behavior during migration.
+
+### Recommended additions
+
+| Record | Purpose | Key fields |
+|---|---|---|
+| Extended `runs` | Identify and close every invocation. | `run_kind`, `trading_date`, `execution_target`, `campaign_id`, `experiment_id`, `policy_snapshot_json`, `fixture_version`, `completed_at`, `status`, `error_count`. |
+| New `run_attempts` | Persist every selected ticker before context/LLM/execution work starts. | `run_id`, `ticker`, `stage`, `status`, `error_code`, sanitized `error_detail`, `started_at`, `completed_at`, latency fields, optional `decision_id`. |
+| Existing `decisions` | Preserve authoritative decision/order facts. | Existing fields plus optional stable `attempt_id`; avoid embedding raw prompts/news. |
+| New `replay_outcomes` | Store labels used for evaluation, separate from decisions. | `decision_id`, horizon, forward return, MFE, MAE, simulated fill/exit reason. |
+| New `calibration_runs` | Record what parameter grid and evidence window produced a recommendation. | immutable parameter JSON, source experiment IDs, sample count, metrics JSON, recommendation JSON, created_at. |
+
+Do not put all data into `decisions`. Attempts, decisions, and later-observed outcomes have different lifecycles and confidence levels. In particular, a replay outcome is not known at decision time and must never be available to the replay signal/context path.
+
+Routine reports should open a separate query-only connection with a busy timeout. For an exportable report bundle, first create a consistent SQLite snapshot using `sqlite3.Connection.backup`; do not copy only the main `.db` file while WAL is active.
 
 ## Architectural Patterns
 
-### Pattern 1: Port/Adapter (Hexagonal) for every external dependency
+### 1. Functional Core, Imperative Shell
 
-**What:** Define an abstract interface (Python `Protocol` or ABC) for each external system; concrete adapters implement it; the orchestrator depends only on the interface.
-**When to use:** Any dependency that has a "swap" axis — here: LLM (Claude/OpenAI) and broker/data (mock/real).
-**Trade-offs:** A little upfront indirection; in exchange, switching providers is a config + factory change, and every adapter is independently mockable in tests. For a 2×2 swap matrix (2 LLMs × mock/real broker) this pays for itself immediately.
+**What:** Keep screening, signal parsing, risk evaluation, thresholding, sizing, and replay metrics pure. Keep KIS, pykrx, SQLite, clocks, files, and notifications in adapters/application services.
 
-**Example:**
+**Why here:** v1.0 already follows this pattern. v1.1 should increase reuse of the proven core instead of adding `if replay` or `if soak` branches inside it.
+
 ```python
-# ports/llm_provider.py
-from typing import Protocol
-from ..context.models import DataContext
-
-class LLMProvider(Protocol):
-    def generate_signal(self, context: DataContext) -> dict:
-        """Return a raw signal dict. MUST be strict JSON; no markdown.
-        Validation happens downstream in llm/signal.py — adapters do not trade."""
-        ...
+spec = RunSpec(kind=RunKind.REPLAY, trading_date=epoch, execute=True)
+result = cycle_service.run(
+    spec,
+    data_source=replay_data.at(epoch),
+    signal_provider=fixture_provider,
+    broker=portfolio_broker,
+    audit=replay_audit,
+)
 ```
 
-### Pattern 2: Composition root / factory selects implementations from config
+### 2. Point-in-Time Replay by Construction
 
-**What:** A single `build_orchestrator(config)` reads `config.llm_provider` and `config.mode` and constructs the right adapters once, at startup. No `if provider == "claude"` scattered through the code.
-**When to use:** Always, once you have ports. It's the only place that knows concrete classes.
-**Trade-offs:** None meaningful for this size; it centralizes wiring.
+**What:** Advance one explicit epoch at a time. A replay adapter may read bars whose availability timestamp is at or before the epoch only. Screening, rolling indicators, joins, and outcome labels use separate views.
 
-**Example:**
-```python
-# cli.py (composition root)
-def build_orchestrator(cfg: Settings) -> TradingCycle:
-    llm = {"claude": ClaudeProvider, "openai": OpenAIProvider}[cfg.llm_provider](cfg)
-    broker = MockBroker(cfg) if cfg.mode == "mock" or cfg.dry_run else KISBroker(kis_client)
-    return TradingCycle(data=..., llm=llm, broker=broker, risk=RiskEngine(cfg), audit=...)
+**Rules:**
+
+- Sort and validate epochs once; reject duplicates and non-monotonic input.
+- Feed the screener rows for date `D` and indicator windows ending at `D` (or the last data actually available at the chosen decision time).
+- Compute labels from `D+1...` only after the decision has been persisted.
+- Never use current KIS prices, current Naver news, or a live LLM in backtest-lite replay.
+- Record fixture version, code version, policy snapshot, date range, and data fingerprint.
+- Keep one `MockBroker` for the experiment so positions/cash carry forward.
+
+A full event queue is unnecessary for daily OHLCV backtest-lite. A deterministic chronological loop gives the important property without creating a second platform.
+
+### 3. Explicit Execution Target, Not Implicit “Mock”
+
+The current `TradingMode.MOCK` path constructs the in-memory `MockBroker`. That is safe, but it is not a KIS mock-account soak. Distinguish evidence sources explicitly:
+
+| Target | Data | Signal | Broker | Orders possible |
+|---|---|---|---|---|
+| `DRY_RUN` | Live or replay | LLM or fixture | Any injected broker | No; core dry-run gate blocks POST. |
+| `SIMULATED` | Replay/live fixture | Fixture | `MockBroker` | In-memory only. |
+| `KIS_MOCK` | Live | Configured LLM or fixture scenario | Existing `KISBroker` using mock credentials/TR IDs | KIS mock only. |
+| `KIS_REAL` | Live | Configured LLM | Existing real KIS composition | Existing confirmation gates only. |
+
+For v1.1, expose `KIS_MOCK` only through `bot soak run` (or an equally explicit command), assert `TradingMode.MOCK`, and reject real domains/TR profiles before constructing the service. Leave `bot run` broker resolution unchanged until soak evidence justifies consolidation.
+
+### 4. Append Evidence, Then Render
+
+Persist structured facts first; reports are pure projections. A report renderer must not infer “no error” from a missing row. It should derive counts from `run_attempts`, join decisions when present, and show incomplete runs prominently.
+
+### 5. Calibration as a One-Way Advisory Boundary
+
+Calibration reads replay/soak snapshots and emits a candidate policy plus evidence. The operator reviews it and changes configuration in a separate deliberate action.
+
+```text
+Audit snapshot → parameter grid replay → metrics → recommendation artifact
+                                                    │
+                                                    └── human review only
+Settings / real-money gate ←──────────────────────────── no automatic write
 ```
 
-### Pattern 3: Parse-don't-trust at the LLM boundary (fail-safe validation)
+Evaluate confidence threshold, position cap, stop-loss, and take-profit together only after the replay ledger preserves cash and positions across epochs. Report sample size, no-trade rate, turnover, max drawdown, adverse/favorable excursion, rejected-order/error rate, and sensitivity around the proposed value. Do not optimize only for return.
 
-**What:** Treat LLM output as untrusted. Validate against a strict pydantic model; on **any** parse/validation failure return a HOLD/no-trade signal rather than raising into the execution path.
-**When to use:** Always, for the signal. This is the single most important safety boundary in the system.
-**Trade-offs:** None — a malformed signal must never reach the broker.
+## Data Flow Changes
 
-**Example:**
-```python
-# llm/signal.py
-from pydantic import BaseModel, ValidationError, field_validator
+### Existing live flow after extraction
 
-class TradingSignal(BaseModel):
-    decision: Literal["BUY", "SELL", "HOLD"]
-    confidence: float
-    reason: str
-
-def parse_signal(raw: str | dict) -> TradingSignal:
-    try:
-        data = raw if isinstance(raw, dict) else json.loads(raw)
-        return TradingSignal.model_validate(data)
-    except (json.JSONDecodeError, ValidationError):
-        return TradingSignal(decision="HOLD", confidence=0.0, reason="parse_failed")
-```
-Provider-native structured output (Anthropic `output_config.format`/`messages.parse()`, OpenAI `response_format` json_schema) makes the LLM *emit* valid JSON, but the pydantic re-validation must still run — the fail-safe is the guarantee, the provider feature is an optimization.
-
-### Pattern 4: Single owner for KIS token/session (cache + refresh)
-
-**What:** One `KISClient` issues the access token, caches it with its expiry, refreshes within a buffer, and signs orders (hashkey). Both the price DataSource and the Broker adapter borrow this one client.
-**When to use:** Whenever an external API has a rate-limited, time-boxed token (KIS tokens are ~24h-lived and token issuance is rate-limited — re-issuing per request will get throttled).
-**Trade-offs:** Slight statefulness in an otherwise stateless cycle; necessary and standard.
-
-## Data Flow
-
-### One Evaluation Cycle (the request flow)
-
-```
-[manual trigger: run-cycle]
-        ↓
-1. SCREEN     screener (pykrx) → candidate ticker list
-        ↓
-2. COLLECT    for each ticker: pykrx OHLCV+indicators, KIS realtime price, Naver news
-        ↓
-3. CONTEXT    builder → DataContext (typed, per ticker)
-        ↓
-4. PROMPT     LLMProvider.generate_signal(context) → raw JSON   [Claude OR OpenAI]
-        ↓
-5. PARSE      parse_signal(raw) → TradingSignal   [FAIL-SAFE: bad output ⇒ HOLD]
-        ↓
-6. RISK-CHECK risk engine: confidence gate (BUY needs ≥0.8), sizing (% cap + max),
-              holdings/cooldown check, stop-loss/take-profit net (LLM-independent)
-        ↓                              │ rejected → log "no-trade" reason, next ticker
-        ↓ approved
-7. EXECUTE    executor → Broker.place_order()   [MockBroker OR KISBroker; dry-run logs only]
-        ↓
-8. LOG        audit.write(context, signal, decision, order_outcome)  → JSONL + StateStore
-        ↓
-   next ticker → repeat 2–8
+```text
+bot run
+  → existing runtime factory
+  → CycleService.run(RunKind.LIVE)
+  → screen/build DataContext → live LLM → execute_signal_cycle
+  → existing broker → audit run_attempt + decision → notification
 ```
 
-### State Management
+Behavior remains the same; only orchestration moves out of `cli.py` and failures gain durable attempt records.
 
+### Historical replay flow
+
+```text
+bot replay --from D1 --to DN --fixture baseline-v1
+  → open separate replay DB
+  → create experiment + policy/fixture/data fingerprints
+  → for D1...DN in ascending order
+      → ReplayDataSource.at(D)
+      → screen_candidates(D, rows_available_at_D)
+      → build DataContext from point-in-time bars
+      → FixtureSignalProvider(date, ticker)
+      → unchanged execute_signal_cycle(dry_run=False, broker=shared MockBroker)
+      → persist attempt + decision
+      → after decision: compute/store forward outcome in separate table
+  → aggregate experiment metrics/report
 ```
-StateStore (SQLite)              Audit log (JSONL, append-only)
-  positions   ─── read by ───▶ risk engine / executor
-  cooldowns   ─── read/write ─▶ risk engine (skip recently-traded tickers)
-  last_run    ─── written by ─▶ orchestrator
-                                 every cycle appends: {ts, ticker, context,
-                                 signal, risk_decision, order_result}
+
+`dry_run=False` is correct inside replay because the injected broker is in-memory and must mutate to model portfolio state. Safety comes from construction: replay service must reject any non-`MockBroker`/simulation broker and must not import KIS factories.
+
+### KIS mock soak flow
+
+```text
+bot soak run --campaign C [--scenario normal]
+  → assert TradingMode.MOCK + mock domain + mock TR profile + mock account
+  → build live data/provider + existing KISBroker against KIS mock
+  → CycleService.run(RunKind.SOAK, ExecutionTarget.KIS_MOCK)
+  → persist every attempt, reconciliation, timing, and failure stage
+  → render one-run summary; later `bot report soak --campaign C`
 ```
-State that must persist between manual runs: **open positions** (especially in mock/dry-run, where there's no real broker to ask), **cooldowns**, and **last-run metadata**. In real mode, positions/balance are authoritative from `Broker.get_positions()`/`get_balance()`; the StateStore still holds cooldowns and the audit trail.
 
-### Key Data Flows
+Duplicate-order evidence should come from repeating a controlled mock order and observing `KISBroker` query-before-POST reconciliation. API failure, stale data, and timeout scenarios should use explicit fault adapters in offline/integration tests unless the external mock API naturally produces them; synthetic evidence must be labeled `synthetic` and never presented as KIS-observed evidence.
 
-1. **DataContext (input contract):** sources → builder → one typed object per ticker → serialized into the prompt. Keeping it a pydantic model means the prompt is built from validated data, and the exact context is logged verbatim.
-2. **TradingSignal (output contract):** LLM → `parse_signal` → validated signal → risk engine. The signal never reaches the broker without passing both validation and the rules-based gate.
-3. **Token flow:** `KISClient` ← (cache hit / refresh) → KIS auth endpoint; both `KISPriceSource` and `KISBroker` call through the same client so the token is issued once per validity window.
+### Reporting and promotion flow
 
-## Scaling Considerations
+```text
+operational/replay DB → query-only repository or backup snapshot
+  → daily report / soak report / calibration report
+  → immutable Markdown + JSON output
+  → operator completes promotion checklist
+  → separate explicit config change (existing real gate remains intact)
+```
 
-This is a **single-user, manual-trigger** tool; "scale" means cycle breadth and future automation, not concurrent users.
+## Audit Report Contract
 
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| v1: a handful of candidate tickers, manual run | Synchronous loop is fine. SQLite + JSONL files. No queue, no scheduler. |
-| Wider universe (50–200 tickers/cycle) | Parallelize the COLLECT step (async or thread pool) and **batch/limit LLM calls** (cost + KIS rate limits). The port boundaries already let you do this without touching orchestration logic. Respect KIS mock-account rate limits — they are lower than live. |
-| Automation / intraday (explicitly out of scope for v1) | Add a scheduler in front of the existing `run-cycle` entrypoint; the orchestrator does not change. This is why the trigger is kept separate from the cycle. |
+A daily report should show, at minimum:
 
-### Scaling Priorities
+1. Date, run IDs, run kind, execution target, mode, dry-run flag, completion status.
+2. Candidate count and every candidate attempt, including pre-decision failures.
+3. Parsed decision, confidence, final action, risk override, and no-trade reason.
+4. Requested/filled quantity, broker order ID, and reconciliation outcome.
+5. Errors grouped by stage (`screen`, `context`, `signal`, `risk`, `order-query`, `order-post`, `fill-readback`, `audit`, `notify`).
+6. Policy and fixture versions used.
+7. Explicit completeness warnings for open/incomplete runs or missing attempts.
 
-1. **First bottleneck:** LLM latency/cost and KIS rate limits as the ticker count grows → batch contexts, cap candidates in the screener, and parallelize data collection (not the LLM calls).
-2. **Second bottleneck:** Naver scraping fragility/throttling → cache news per ticker per day; treat news as best-effort (a missing news section should degrade the context, not crash the cycle).
+Render both Markdown for the operator and JSON for tests/future tooling. The renderer should accept typed read models, not execute ad hoc SQL inline in Typer callbacks.
+
+## Runbook and Promotion Checklist Boundary
+
+The runbook is a first-class deliverable but remains documentation:
+
+- Fixed Asia/Seoul timing and what “data for date D” means before/after market close.
+- Exact `screen`, `status`, dry-run, KIS mock soak, report, and backup commands.
+- Expected success markers and where the audit DB/log/report files live.
+- Stage-based triage for authentication, throttling, stale/missing data, LLM timeout, ambiguous order result, notification failure, and SQLite lock/disk errors.
+- “Stop and do not rerun order POST” guidance for ambiguous KIS execution; reconcile first.
+
+The promotion checklist consumes evidence but does not alter code paths. Require a minimum completed-soak window, zero unresolved ambiguous orders, duplicate prevention evidence, failure-scenario evidence, report completeness, reviewed calibration sensitivity, backup/restore test, secret/log review, and an explicit rollback procedure. Any threshold/count should be a roadmap/product decision, not hard-coded by architecture research.
+
+## Suggested Build Order
+
+### Phase 1 — Audit completeness and cycle extraction
+
+1. Add characterization tests around current `cli.run_cycle`, real confirmation, dry-run, ticker isolation, and broker selection.
+2. Add transactional schema migrations and `run_attempts`; backfill compatibility for existing databases.
+3. Extract `CycleService` and typed run models while keeping `bot run/screen/status` behavior unchanged.
+4. Persist run completion/failure state in `finally` paths.
+
+**Why first:** Replay, soak, and reports all depend on complete, stable run evidence. This phase has no reason to touch KIS order semantics.
+
+### Phase 2 — Deterministic replay foundation
+
+1. Add fixture signal provider and point-in-time replay data adapter.
+2. Reuse pure screener/indicator/execution functions with a shared `MockBroker`.
+3. Use a separate replay DB and store experiment provenance/outcomes.
+4. Add no-look-ahead, determinism, and “no external calls” tests.
+
+**Why second:** It validates policy plumbing cheaply before spending LLM calls or exercising KIS mock orders.
+
+### Phase 3 — Reporting and runbook baseline
+
+1. Add repository read models and daily/replay Markdown+JSON renderers.
+2. Document daily commands, KST timing, backups, and failure-stage triage.
+3. Test reports against complete, partial, failed, old-schema, and empty databases.
+
+**Why here:** Operators need understandable evidence before a multi-day soak begins; building reports after soak risks collecting unusable data.
+
+### Phase 4 — KIS mock soak and fault evidence
+
+1. Add explicit mock-only KIS broker composition and soak command.
+2. Add campaign metadata and N-day aggregation without adding a scheduler.
+3. Exercise normal, duplicate/reconciliation, API unavailable, stale data, timeout, and partial/ambiguous fill paths.
+4. Keep synthetic and externally observed scenarios distinguishable.
+
+**Why after reporting:** Each soak day becomes immediately reviewable, and schema gaps appear before weeks of operation.
+
+### Phase 5 — Risk calibration and promotion readiness
+
+1. Add parameter-grid replay and sensitivity metrics.
+2. Produce advisory recommendations tied to immutable evidence IDs.
+3. Strengthen the real-money promotion checklist and rollback steps.
+4. Do not modify the real broker/order path; any later policy change is a separate reviewed change with regression tests.
+
+**Why last:** Calibration without enough replay/soak observations is false precision.
+
+## Risk Boundaries and Invariants
+
+| Boundary | Required invariant | Verification |
+|---|---|---|
+| Replay ↔ external systems | Replay cannot construct KIS, pykrx-current, news-current, or live LLM adapters. | Import/spy tests asserting zero network calls; type/factory allowlist. |
+| Replay time | No datum with availability after epoch D reaches screening/context/signal. | Future-row perturbation test: changing D+1 onward cannot change decision at D. |
+| Replay broker | Portfolio mutation is allowed only in the in-memory simulator. | Reject KIS broker types; test carried cash/positions across epochs. |
+| Soak credentials | Soak accepts mock domain, mock TR profile, and mock account only. | Constructor assertions before token/order adapter creation. |
+| Real execution | Existing `TradingMode.REAL` + confirmation + CLI live confirmation remain required. | Preserve existing tests; add negative tests from every new command. |
+| Fault injection | Fault scenarios cannot be enabled accidentally in normal live/real composition. | Separate test module/factory and explicit enum; no permissive string dispatch. |
+| Calibration | Analysis cannot write settings or invoke a broker. | Read-only repository and filesystem output only; dependency tests. |
+| Audit | Every selected ticker gets an attempt terminal state, even if no decision exists. | Count equality and crash/exception tests. |
+| Reporting | Missing evidence is displayed as unknown/incomplete, never inferred as success. | Golden reports for partial runs. |
+| Sensitive data | Audit/report stores no secrets, raw auth headers, or unsanitized third-party content. | Schema and redaction tests. |
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Letting the LLM decide trade mechanics
+### Forking the execution rules for replay
 
-**What people do:** Trust the LLM's `decision` directly to size and place orders.
-**Why it's wrong:** A hallucinated/over-confident signal can place a trade the rules don't justify; the LLM has no view of capital limits or stop-loss state.
-**Do this instead:** The LLM only *proposes* (`decision`, `confidence`, `reason`). The **risk engine** owns the confidence gate, sizing, max-position cap, and the LLM-independent stop-loss/take-profit. Keep `execution/risk.py` separate and pure.
+**Why wrong:** A replay-only threshold/sizing implementation can pass while production behaves differently.
+**Instead:** Call the unchanged `execute_signal_cycle` with different adapters.
 
-### Anti-Pattern 2: Parsing LLM output by string-matching / regex (or trusting it)
+### Reusing `MarketDataSource` unchanged for historical dates
 
-**What people do:** `if "BUY" in response:` or `json.loads(response)` straight into execution.
-**Why it's wrong:** Markdown fences, extra prose, or a malformed object silently produce wrong trades or crashes mid-cycle.
-**Do this instead:** Single `parse_signal()` with a strict pydantic schema that returns HOLD on any failure. Validation is a boundary, not scattered checks.
+**Why wrong:** It fetches a current KIS quote and current news, creating temporal leakage.
+**Instead:** A replay-specific point-in-time data adapter builds the same `DataContext` contract.
 
-### Anti-Pattern 3: Duplicating KIS auth in each adapter / re-issuing tokens per call
+### Treating `TradingMode.MOCK` as proof of KIS mock usage
 
-**What people do:** Each of price-fetch and order-place issues its own token inline.
-**Why it's wrong:** Token issuance is rate-limited (you'll get throttled), and two token caches drift.
-**Do this instead:** One `KISClient` owns issue/cache/refresh; price and broker adapters share it.
+**Why wrong:** Current CLI mock mode constructs `MockBroker`; no KIS mock order is sent.
+**Instead:** Record `execution_target` separately and expose an explicit mock-only soak path.
 
-### Anti-Pattern 4: Branching on provider/mode throughout the codebase
+### Recording only decisions
 
-**What people do:** `if config.provider == "claude"` / `if config.mode == "real"` sprinkled across modules.
-**Why it's wrong:** Every new branch is a place the swap can break; testing combinatorially explodes.
-**Do this instead:** Resolve concrete implementations once in the composition root; everything downstream sees only the port.
+**Why wrong:** Context/LLM/order failures disappear from SQLite and reports overstate success.
+**Instead:** Persist an attempt before each ticker pipeline and finalize its stage/status.
 
-### Anti-Pattern 5: No dry-run path distinct from mock
+### Auto-tuning production settings
 
-**What people do:** Conflate "mock account" with "dry run."
-**Why it's wrong:** They're different safety levels — mock places real orders against the KIS paper account; dry-run places nothing and just logs the would-be order.
-**Do this instead:** `dry_run` short-circuits inside the executor (log the intended order, skip `Broker.place_order`), independent of which Broker adapter is wired.
+**Why wrong:** It turns noisy historical evidence into execution authority and can optimize to leakage or small samples.
+**Instead:** Produce a reviewed recommendation artifact with sensitivity and sample-size warnings.
+
+### Copying a WAL database file directly
+
+**Why wrong:** The `.db` file alone may omit committed pages still represented in `-wal`.
+**Instead:** Use SQLite's online backup API for a consistent report/export snapshot.
+
+## Scaling Considerations
+
+| Scale | Architecture adjustment |
+|---|---|
+| Personal bot, tens of tickers/day | SQLite WAL, synchronous services, one process, explicit CLI commands. Recommended v1.1 target. |
+| Multi-year daily replay | Batch commits per epoch/transaction, indexes on run kind/date/campaign/ticker, optional Parquet only for large immutable market datasets. Keep audit facts in SQLite. |
+| Multiple concurrent operators/processes | Add connection timeouts and short transactions first. Move audit persistence to Postgres only if measured lock contention appears. |
+| Intraday/high-frequency future | Revisit event-driven clock/feed/execution simulation and transaction-cost models; out of scope for this milestone. |
+
+The first likely bottleneck is pykrx historical retrieval and repeated indicator calculation, not SQLite. Cache immutable raw market data by source/date/fingerprint before changing database technology.
 
 ## Integration Points
 
-### External Services
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| **KIS Open API (한국투자증권)** | REST via shared `KISClient`; token cached ~24h with refresh buffer; orders need a hashkey. Real-time price + order placement both go through it. | Mock (모의투자) and live are different base URLs/credentials → select in config. Mock rate limits are lower than live. (MEDIUM confidence on exact token TTL — confirm against the KIS developer portal during Phase 1.) |
-| **pykrx** | Library call; daily OHLCV (`get_market_ohlcv`), fundamentals (`get_market_fundamental`), market cap/volume (`get_market_cap`), ticker lists — used for screening + daily data. | KRX scraping under the hood; treat as daily, cache per run. |
-| **Naver Finance (네이버 금융)** | HTML scraping per ticker; best-effort. | Fragile by nature — must degrade gracefully (missing news ⇒ context note, not a crash) and be cached per ticker/day. |
-| **Anthropic (Claude) / OpenAI** | Behind `LLMProvider`; both support native strict-JSON / structured-output modes. | One active at a time via config. Re-validate output with pydantic regardless of native mode. |
-
-### Internal Boundaries
+### Internal boundaries
 
 | Boundary | Communication | Notes |
-|----------|---------------|-------|
-| Orchestrator ↔ DataSource/LLM/Broker | Direct method calls through `ports/` Protocols | The three swap seams; orchestrator never imports an adapter. |
-| LLM adapter ↔ Signal validator | Adapter returns raw dict; `parse_signal` validates | Fail-safe lives here, outside the adapter. |
-| Risk engine ↔ StateStore/Broker | Reads positions/cooldowns; pure decision out | No side effects in risk; executor performs the action. |
-| Price source & Broker ↔ KISClient | Shared client instance | Single token/session owner. |
+|---|---|---|
+| Typer ↔ application services | Typed command options → `RunSpec` | Keep callbacks thin and testable. |
+| CycleService ↔ execution | Existing direct function call | Preserve the exact config/risk/dry-run inputs. |
+| ReplayService ↔ CycleService | One explicit epoch/universe at a time | Shared simulation broker across epochs. |
+| SoakService ↔ KISBroker factory | Mock-only typed factory | Validate all mock bindings atomically. |
+| Services ↔ audit | Repository methods | No inline schema SQL outside audit package. |
+| Report/calibration ↔ audit | Query-only read models or backup snapshot | Never share a long write transaction. |
+| Docs ↔ CLI | Document tested commands/help output | Add doc tests or smoke scripts for command drift. |
 
-## Suggested Build Order (dependency-driven)
+### External services
 
-This ordering lets you reach a safe, end-to-end mock cycle before any LLM or real-money risk, and front-loads the highest-risk seams.
+| Service | v1.1 use | Boundary |
+|---|---|---|
+| pykrx | Historical daily data and replay rows | Cache/fingerprint; enforce point-in-time cutoff. |
+| KIS quote API | Live/soak context only | Existing fail-closed freshness behavior. |
+| KIS mock order API | Soak only | Existing reconciliation, no blind POST retry. |
+| Anthropic/OpenAI | Normal live/soak only when explicitly selected | Replay uses fixture provider; strict schema remains. |
+| Naver Finance | Live/soak optional news only | Exclude from historical replay unless point-in-time archives exist. |
+| SQLite | Operational and replay evidence | Separate DB paths; migration/versioning; backup snapshots. |
 
-1. **Domain models + Config + ports skeleton** — `domain/models.py`, `config.py`, empty `ports/*` Protocols. Everything depends on these.
-2. **Broker port + MockBroker + StateStore** — a working paper account *first*. This is the precondition for testing execution without risk (the downstream consumer's "broker + mock account before LLM execution" note).
-3. **Risk engine** (`execution/risk.py`) + **signal model & fail-safe parser** (`llm/signal.py`) — pure, unit-testable, no external calls. Build and test these against hand-written signals before any real LLM. Highest-value tests live here.
-4. **Executor** wiring (signal → risk → MockBroker) + **dry-run path** + **audit log** — now you can run a full execution pipeline with fake signals end-to-end.
-5. **DataSource adapters** — pykrx (daily + screener) first, then Naver news (best-effort), then KIS real-time price. **KISClient/token manager** lands here (shared by price; reused by the real broker later).
-6. **Context builder + DataContext model** — assemble real data into the typed context.
-7. **LLMProvider: one adapter first (e.g. Claude), then OpenAI** — plug into the already-tested parse→risk→execute chain. Because the seam exists, adding the second provider is an adapter + a config value.
-8. **KISBroker (real)** — implemented last, behind the same Broker port, validated against mock parity before being selected in config. Real-money promotion is the final, gated config switch.
+## Confidence Assessment
 
-**Why this order:** ports and domain models unblock everything; the mock broker + risk engine + fail-safe parser form a fully testable execution core with zero external dependencies and zero financial risk; data and LLM adapters attach to that proven core; the real broker is the last and most gated piece. Each interface seam (Broker, LLMProvider, DataSource) is introduced as a Protocol *before* its first concrete adapter, so no step requires rewriting an earlier one.
+| Area | Confidence | Basis |
+|---|---|---|
+| Existing integration seams | HIGH | Direct inspection of CLI, execution, data, broker, screener, audit, and tests. |
+| New/modified component boundaries | HIGH | Follow existing ports/adapters and dependency injection patterns. |
+| Audit migration/report strategy | HIGH | Codebase need plus official SQLite/Python behavior; provider seam confidence classified MEDIUM, cross-checked with primary docs. |
+| Replay point-in-time architecture | MEDIUM | Strong general pattern and code fit; exact pykrx historical availability/corporate-action behavior needs phase-specific validation. |
+| Risk metrics/calibration thresholds | MEDIUM | Architecture is clear, but acceptable sample sizes and promotion thresholds are product/risk decisions. |
+
+## Open Questions for Phase Research
+
+- Define the precise replay decision timestamp: previous close, same-day post-close, or next-session pre-open. This determines legal OHLCV windows and fill assumptions.
+- Verify pykrx's handling of delisted symbols, adjusted prices, corporate actions, and historical universe membership before interpreting replay performance.
+- Decide whether fixture signals are fixed globally, generated from deterministic technical rules, or supplied as per-date/per-ticker files. Store the choice as a versioned artifact.
+- Define the KIS mock account identifiers and whether its daily order query reliably exposes duplicate/partial-fill evidence across separate invocations.
+- Set minimum soak duration, acceptable unresolved error count, and calibration sample-size gates during requirements planning.
 
 ## Sources
 
-- `.planning/PROJECT.md` — the three-pipeline spec, strict-JSON contract, mock-first/dry-run/stop-loss safety posture (HIGH; project's own decisions).
-- KIS Developers portal & community references — token issuance/lifetime, hashkey for orders, mock rate limits (MEDIUM; confirm exact TTL during Phase 1). https://apiportal.koreainvestment.com/apiservice , https://github.com/koreainvestment/open-trading-api
-- pykrx (sharebook-kr) README/PyPI — OHLCV / fundamental / market-cap functions and market coverage for screening (MEDIUM). https://github.com/sharebook-kr/pykrx , https://pypi.org/project/pykrx/
-- Anthropic Claude API skill (structured outputs / `messages.parse()` / strict tool use) and OpenAI Structured Outputs — provider-native strict-JSON modes behind the LLMProvider port (MEDIUM-HIGH for the provider-agnostic validation pattern).
-- Port/Adapter + composition-root + Strategy pattern (standard ccxt-style broker abstraction and provider abstraction in trading bots) (MEDIUM; well-established pattern).
+### Codebase (HIGH)
+
+- `.planning/PROJECT.md`, `.planning/MILESTONES.md`, `.planning/ROADMAP.md`
+- `trading_bot/cli.py`, `execution.py`, `sqlite_audit.py`, `mock_broker.py`, `kis_broker.py`, `screener.py`, `data_source.py`, `domain.py`
+- `tests/test_cli.py`, `tests/test_sqlite_audit.py`, and KIS order/config tests located through code search
+
+### External (MEDIUM; fetched through research seam fallback and cross-checked)
+
+- [SQLite `PRAGMA user_version`](https://www.sqlite.org/pragma.html#pragma_user_version) — application-owned schema version integer.
+- [SQLite write-ahead logging](https://www.sqlite.org/wal.html) — concurrent read/write behavior, read-only considerations, and WAL lifecycle.
+- [SQLite Online Backup API](https://www.sqlite.org/backup.html) — consistent database snapshots.
+- [Python `sqlite3.Connection.backup`](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup) — backup while other clients access the database.
+- [Event-Driven Backtesting with Python](https://www.quantstart.com/articles/Event-Driven-Backtesting-with-Python-Part-I/) — adapter reuse and chronological data delivery to reduce look-ahead bias.
+- [Look-Ahead-Freedom as Temporal Non-Interference](https://arxiv.org/abs/2607.04958) — availability cutoffs and causal joins/resampling; recent preprint, used as supporting rather than sole authority.
 
 ---
-*Architecture research for: Korean-market LLM-driven trading bot (three-pipeline, mock-first, Python)*
-*Researched: 2026-06-30*
+*Architecture research for: Stock Trading Bot v1.1 Mock Soak & Replay Validation*
+*Researched: 2026-07-11*
