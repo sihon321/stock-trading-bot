@@ -11,6 +11,7 @@ from trading_bot.market_cycle import (
     MarketSession,
     QuoteObservation,
 )
+from trading_bot.data_source import ObservedKRXCalendar
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -97,3 +98,38 @@ def test_future_and_naive_quote_timestamps_fail_closed():
     assert not policy.quote_freshness(
         QuoteObservation(datetime(2026, 7, 13, 10, 0)), checked
     ).fresh
+
+
+def test_observed_calendar_distinguishes_closure_from_provider_failure():
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            reason = ("empty OHLCV frame" if day == "20260712"
+                      else "pykrx market fetch failed: TimeoutError")
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(source="pykrx", status=SourceStatus.UNAVAILABLE, reason=reason),
+            )
+
+    calendar = ObservedKRXCalendar(Adapter())
+    assert calendar.is_trading_day(date(2026, 7, 12)) is False
+    assert calendar.is_trading_day(date(2026, 7, 13)) is None
+
+
+def test_observed_calendar_resolves_immediately_previous_confirmed_day():
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            available = day == "20260710"
+            return OhlcvResult(
+                frame=object() if available else None,
+                health=SourceHealth(
+                    source="pykrx",
+                    status=SourceStatus.AVAILABLE if available else SourceStatus.UNAVAILABLE,
+                    reason="ok" if available else "empty OHLCV frame",
+                ),
+            )
+
+    assert ObservedKRXCalendar(Adapter()).previous_trading_day(date(2026, 7, 13)) == date(2026, 7, 10)
