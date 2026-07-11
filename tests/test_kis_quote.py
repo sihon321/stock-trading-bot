@@ -11,6 +11,8 @@ KIS calls. No order endpoint/hashkey/broker logic is introduced.
 
 import dataclasses
 import inspect
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -138,6 +140,17 @@ def test_valid_response_returns_money_krw() -> None:
     assert result.price == Money(70500.0, "KRW")
     # Token reuse: adapter asked the shared manager, did not issue itself.
     assert token_manager.calls == 1
+
+
+def test_successful_quote_carries_aware_observation_time_only_on_success() -> None:
+    observed = datetime(2026, 7, 13, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    adapter = KisQuoteAdapter(
+        token_manager=_FakeTokenManager(), domain=DOMAIN, tr_id=TR_ID,
+        client=_FakeClient([_response(), _response(body={"rt_cd": "0", "output": {}})]),
+        min_interval_seconds=0.0, clock=lambda: observed,
+    )
+    assert adapter.fetch_current_price("005930").observed_at == observed
+    assert adapter.fetch_current_price("005930").observed_at is None
 
 
 def test_request_uses_endpoint_tr_id_and_ticker_mapping() -> None:

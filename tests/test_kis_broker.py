@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from conftest import make_settings
@@ -102,6 +105,36 @@ def test_order_post_not_retried() -> None:
         broker.place_order(_order(quantity=1, price=70_000))
 
     assert adapter.post_attempts == 1
+
+
+@pytest.mark.parametrize(("age", "allowed"), [(10.0, True), (10.001, False)])
+def test_pre_submit_quote_is_refetched_and_ten_seconds_is_inclusive(age, allowed) -> None:
+    from trading_bot.kis_broker import KISBroker, MarketClosedError
+    from trading_bot.kis_quote import KisQuoteResult
+
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    calls = []
+
+    def quote_reader(ticker):
+        calls.append(ticker)
+        return KisQuoteResult(
+            Money(70_000, "KRW"),
+            SourceHealth(source="kis_quote", status=SourceStatus.AVAILABLE, reason="ok"),
+            now - timedelta(seconds=age),
+        )
+
+    adapter = _FakeOrderAdapter()
+    broker = KISBroker(
+        order_adapter=adapter, account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True, pre_submit_quote_reader=quote_reader, clock=lambda: now,
+    )
+    if allowed:
+        broker.place_order(_order(quantity=1))
+    else:
+        with pytest.raises(MarketClosedError, match="stale"):
+            broker.place_order(_order(quantity=1))
+    assert calls == ["005930"]
+    assert adapter.post_attempts == int(allowed)
 
 
 def test_append_only_evidence_has_stable_intent_and_distinct_submission() -> None:
