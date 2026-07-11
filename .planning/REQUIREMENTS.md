@@ -9,10 +9,10 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ### Evidence & Audit
 
-- [ ] **EVID-01**: Operator can see every run recorded with a terminal lifecycle state, KST trading date, run kind, execution target, policy snapshot, and input provenance.
-- [ ] **EVID-02**: Operator can trace every attempted ticker to one terminal outcome, including HOLD, skip, malformed signal, stale-data block, provider/API error, duplicate suppression, fill status, and ambiguous submission.
-- [ ] **EVID-03**: Operator can verify that order intent, submission, broker reconciliation, and no-trade reasons are attributed to the correct ticker and run.
-- [ ] **EVID-04**: Operator can verify the KRX session, completed-bar cutoff, quote freshness, and order window used for each executable cycle.
+- [x] **EVID-01**: Operator can see every run recorded with a terminal lifecycle state, KST trading date, run kind, execution target, policy snapshot, and input provenance.
+- [x] **EVID-02**: Operator can trace every attempted ticker to one terminal outcome, including HOLD, skip, malformed signal, stale-data block, provider/API error, duplicate suppression, fill status, and ambiguous submission.
+- [x] **EVID-03**: Operator can verify that order intent, submission, broker reconciliation, and no-trade reasons are attributed to the correct ticker and run.
+- [x] **EVID-04**: Operator can verify the KRX session, completed-bar cutoff, quote freshness, and order window used for each executable cycle.
 
 ### Deterministic Replay
 
@@ -71,32 +71,33 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EVID-01 | Unmapped | Pending |
-| EVID-02 | Unmapped | Pending |
-| EVID-03 | Unmapped | Pending |
-| EVID-04 | Unmapped | Pending |
-| REPLAY-01 | Unmapped | Pending |
-| REPLAY-02 | Unmapped | Pending |
-| REPLAY-03 | Unmapped | Pending |
-| REPLAY-04 | Unmapped | Pending |
-| REP-01 | Unmapped | Pending |
-| REP-02 | Unmapped | Pending |
-| RUN-01 | Unmapped | Pending |
-| RUN-02 | Unmapped | Pending |
-| SOAK-01 | Unmapped | Pending |
-| SOAK-02 | Unmapped | Pending |
-| SOAK-03 | Unmapped | Pending |
-| SOAK-04 | Unmapped | Pending |
-| CAL-01 | Unmapped | Pending |
-| CAL-02 | Unmapped | Pending |
-| CAL-03 | Unmapped | Pending |
-| CAL-04 | Unmapped | Pending |
+| EVID-01 | Phase 6 | Complete |
+| EVID-02 | Phase 6 | Complete |
+| EVID-03 | Phase 6 | Complete |
+| EVID-04 | Phase 6 | Complete |
+| REPLAY-01 | Phase 7 | Pending |
+| REPLAY-02 | Phase 7 | Pending |
+| REPLAY-03 | Phase 7 | Pending |
+| REPLAY-04 | Phase 7 | Pending |
+| REP-01 | Phase 8 | Pending |
+| REP-02 | Phase 8 | Pending |
+| RUN-01 | Phase 8 | Pending |
+| RUN-02 | Phase 8 | Pending |
+| SOAK-01 | Phase 9 | Pending |
+| SOAK-02 | Phase 9 | Pending |
+| SOAK-03 | Phase 9 | Pending |
+| SOAK-04 | Phase 9 | Pending |
+| CAL-01 | Phase 10 | Pending |
+| CAL-02 | Phase 10 | Pending |
+| CAL-03 | Phase 10 | Pending |
+| CAL-04 | Phase 10 | Pending |
 
 **Coverage:**
+
 - v1.1 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20
+- Mapped to phases: 20
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-07-11*
-*Last updated: 2026-07-11 after initial v1.1 definition*
+*Last updated: 2026-07-11 after v1.1 roadmap creation*
