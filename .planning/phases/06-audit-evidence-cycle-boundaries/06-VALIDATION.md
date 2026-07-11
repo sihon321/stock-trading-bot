@@ -48,6 +48,9 @@ created: 2026-07-11
 | 06-04-01 | 06-04 | 4 | EVID-01, EVID-04 | T-06-TIME, T-06-LOOK | Authoritative KRX day/session and preceding completed-bar cutoff fail closed | boundary/integration | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_market_cycle.py tests/test_cli.py tests/test_data_source.py` | ✅ extend | ⬜ pending |
 | 06-04-02 | 06-04 | 4 | EVID-03, EVID-04 | T-06-STALE | Immediate pre-submit quote refresh enforces the inclusive 10-second maximum | boundary/integration | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_market_cycle.py tests/test_kis_quote.py tests/test_kis_broker.py tests/test_cli.py` | ✅ extend | ⬜ pending |
 | 06-04-03 | 06-04 | 4 | EVID-01, EVID-02, EVID-03, EVID-04 | T-06-AUDIT, T-06-RETRY, T-06-TIME | Full regression gate covers all evidence chains and safety boundaries | regression | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q` | ✅ extend | ⬜ pending |
+| 06-05-01 | 06-05 | 5 | EVID-02 | T-06-OMIT-GAP | Selected, rejected, and failed screen attempts persist exactly once without duplicate selected rows | integration | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_cli.py tests/test_screener.py tests/test_sqlite_audit.py` | ✅ extend | ⬜ pending |
+| 06-05-02 | 06-05 | 5 | EVID-04 | T-06-STALE-GAP, T-06-INFO-GAP, T-06-RETRY-GAP | Successful and blocked real/mock pre-submit freshness decisions are durable and gate mutation | boundary/integration | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_market_cycle.py tests/test_kis_quote.py tests/test_kis_broker.py tests/test_mock_broker.py tests/test_cli.py tests/test_sqlite_audit.py` | ✅ extend | ⬜ pending |
+| 06-05-03 | 06-05 | 5 | EVID-02, EVID-04 | T-06-OMIT-GAP, T-06-STALE-GAP | Both verification blockers are directly disconfirmed and the full suite stays green | regression | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q` | ✅ extend | ⬜ pending |
 
 ---
 
@@ -99,6 +102,8 @@ All Phase 6 behaviors have automated verification. Exact KRX boundaries must be 
 | CONTEXT | D-14 | Previous completed day bar and three date facts | 06-01, 06-04 | COVERED | Data-source cutoff wiring |
 | CONTEXT | D-15 | Immediate quote refresh; max age 10 seconds | 06-01, 06-04 | COVERED | Initial and pre-submit observations |
 | CONTEXT | D-16 | Unknown day/session fails closed with policy evidence | 06-01, 06-04 | COVERED | Stable timing-policy version |
+| VERIFICATION | EVID-02-screen-rejections | Rejected/failed screen events persist exactly once without duplicating selected tickers | 06-05 | COVERED | SQLite-backed gap test |
+| VERIFICATION | EVID-04-successful-quote-evidence | Successful freshness facts are durable and executable mock orders share the immediate refresh gate | 06-05 | COVERED | Real/mock pass and block tests |
 
 Excluded without gaps: replay (Phase 7), reporting/runbook (Phase 8), KIS mock soak/fault drills (Phase 9), and calibration/promotion (Phase 10).
 
