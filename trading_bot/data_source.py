@@ -22,6 +22,7 @@ scheduling, backtesting, or portfolio optimization — those remain later phases
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 from trading_bot.data_models import (
@@ -61,6 +62,46 @@ class NoContextError(RuntimeError):
             f"no tradeable context for {result.ticker}: action={result.action.value}"
         )
         self.result = result
+
+
+class ObservedKRXCalendar:
+    """Invocation-local calendar backed by observed KRX market data.
+
+    Empty whole-market data positively identifies a closure. Transport or
+    provider failures remain unknown, so they can never authorize execution.
+    """
+
+    def __init__(self, ohlcv_adapter: Any, *, market: str = "KOSPI", max_lookback_days: int = 14):
+        self._adapter = ohlcv_adapter
+        self._market = market
+        self._max_lookback_days = max_lookback_days
+        self._cache: dict[date, bool | None] = {}
+
+    def is_trading_day(self, day: date) -> bool | None:
+        if day in self._cache:
+            return self._cache[day]
+        result = self._adapter.fetch_market_ohlcv(
+            day.strftime("%Y%m%d"), market=self._market, min_rows=1
+        )
+        if result.health.status is SourceStatus.AVAILABLE and result.frame is not None:
+            state: bool | None = True
+        elif "empty" in result.health.reason.lower() or "no ohlcv" in result.health.reason.lower():
+            state = False
+        else:
+            state = None
+        self._cache[day] = state
+        return state
+
+    def previous_trading_day(self, day: date) -> date | None:
+        candidate = day - timedelta(days=1)
+        for _ in range(self._max_lookback_days):
+            state = self.is_trading_day(candidate)
+            if state is True:
+                return candidate
+            if state is None:
+                return None
+            candidate -= timedelta(days=1)
+        return None
 
 
 # Pure indicator transform signature: (frame, IndicatorConfig) -> IndicatorResult.

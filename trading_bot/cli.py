@@ -16,13 +16,15 @@ from zoneinfo import ZoneInfo
 import typer
 
 from trading_bot.config import Settings, TradingMode, startup_banner
-from trading_bot.data_source import build_data_source
+from trading_bot.data_source import ObservedKRXCalendar, build_data_source
 from trading_bot.domain import Money, Ticker
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
 from trading_bot.kis_broker import AmbiguousSubmissionError, build_kis_broker
 from trading_bot.kis_order import KisOrderAccount
 from trading_bot.kis_quote import KisQuoteAdapter
+from trading_bot.market_cycle import MarketCycleEvidence, MarketCyclePolicy
+from trading_bot.pykrx_adapter import PykrxOhlcvAdapter
 from trading_bot.llm_provider import build_llm_provider, run_llm_cycle as _run_llm_cycle
 from trading_bot.mock_broker import MockBroker
 from trading_bot.notifier import build_notifier, format_run_summary
@@ -51,6 +53,8 @@ class _Runtime:
     broker: Any
     audit_conn: sqlite3.Connection
     notifier: Any
+    cycle_evidence: Optional[MarketCycleEvidence] = None
+    completed_bar_cutoff: Optional[str] = None
 
 
 def _today_kst() -> str:
@@ -175,10 +179,23 @@ def build_runtime(
     resolved_settings = settings or Settings()
     token_manager = _build_token_manager(resolved_settings)
     quote_adapter = _build_quote_adapter(resolved_settings, token_manager)
-    resolved_trading_date = trading_date or _today_kst()
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    resolved_trading_date = trading_date or now_kst.strftime("%Y%m%d")
+    ohlcv_adapter = PykrxOhlcvAdapter(
+        adjusted=resolved_settings.ohlcv_adjusted,
+        request_timeout_seconds=resolved_settings.pykrx_request_timeout_seconds,
+    )
+    policy = MarketCyclePolicy(ObservedKRXCalendar(ohlcv_adapter))
+    cycle_evidence = policy.classify(now_kst)
+    cutoff = policy.completed_bar_cutoff(now_kst.date())
+    if not cutoff.available or cutoff.cutoff_date is None:
+        raise RuntimeError("KRX completed-bar cutoff is unknown; execution fails closed")
+    cutoff_text = cutoff.cutoff_date.strftime("%Y%m%d")
     data_source = build_data_source(
         resolved_settings,
-        expected_date=resolved_trading_date,
+        expected_date=cutoff_text,
+        accepted_latest_date=cutoff_text,
+        ohlcv_adapter=ohlcv_adapter,
         quote_adapter=quote_adapter,
     )
     return _Runtime(
@@ -193,6 +210,8 @@ def build_runtime(
         ),
         audit_conn=sqlite_audit.connect(resolved_settings.audit_db_path),
         notifier=build_notifier(resolved_settings),
+        cycle_evidence=cycle_evidence,
+        completed_bar_cutoff=cutoff_text,
     )
 
 
@@ -326,8 +345,27 @@ def run_cycle(
             "version": "execution-v1",
             "buy_confidence_threshold": resolved_settings.buy_confidence_threshold,
             "sell_confidence_threshold": resolved_settings.sell_confidence_threshold,
+            "timing_policy_version": (
+                runtime.cycle_evidence.policy_version
+                if runtime is not None and runtime.cycle_evidence is not None else None
+            ),
         },
-        provenance=_run_provenance(ticker=ticker, trading_date=resolved_trading_date),
+        provenance={
+            **_run_provenance(ticker=ticker, trading_date=resolved_trading_date),
+            "completed_bar_cutoff": runtime.completed_bar_cutoff if runtime else None,
+            "market_session": (
+                runtime.cycle_evidence.session.value
+                if runtime is not None and runtime.cycle_evidence is not None else None
+            ),
+            "market_executable": (
+                runtime.cycle_evidence.executable
+                if runtime is not None and runtime.cycle_evidence is not None else None
+            ),
+            "market_reason": (
+                runtime.cycle_evidence.reason
+                if runtime is not None and runtime.cycle_evidence is not None else None
+            ),
+        },
         parent_run_id=parent_run_id,
     )
     if hasattr(resolved_broker, "set_evidence_sink"):
@@ -337,6 +375,10 @@ def run_cycle(
 
     outcomes: list[dict[str, Any]] = []
     try:
+        if execute and runtime is not None and (
+            runtime.cycle_evidence is None or not runtime.cycle_evidence.executable
+        ):
+            raise RuntimeError("KRX session is not authoritatively executable")
         if ticker is not None:
             tickers = [_validate_ticker(ticker)]
         else:
