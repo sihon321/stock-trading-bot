@@ -247,6 +247,39 @@ def test_screen_command_can_suppress_progress(monkeypatch: pytest.MonkeyPatch) -
     assert result.stderr == ""
 
 
+def test_screen_persists_each_selected_rejected_and_error_ticker_once(monkeypatch) -> None:
+    import trading_bot.cli as cli
+    from trading_bot.data_models import DataSourceAuditEvent
+
+    conn = sqlite3.connect(":memory:")
+    result_value = _ScreenerResult(("005930",))
+    result_value.audit_events = (
+        DataSourceAuditEvent("005930", "pykrx", "stale", "stale", "SKIP_CANDIDATE"),
+        DataSourceAuditEvent("000660", "pykrx", "stale", "stale", "SKIP_CANDIDATE"),
+        DataSourceAuditEvent("035420", "pykrx", "error", "failed", "ERROR"),
+    )
+
+    class _ScreenSource:
+        def screen_daily_candidates(self, trading_date, *, progress=None):
+            return result_value
+
+    monkeypatch.setattr(cli, "build_runtime", lambda *, trading_date: cli._Runtime(
+        settings=make_settings(), token_manager=None, data_source=_ScreenSource(),
+        llm_provider=_Provider(), broker=_Broker(), audit_conn=conn, notifier=_Notifier(),
+    ))
+    invoked = CliRunner().invoke(cli.app, ["screen", "--date", "20260709", "--no-progress"])
+
+    assert invoked.exit_code == 0
+    rows = conn.execute(
+        "SELECT ticker, outcome_code, failed_stage FROM ticker_outcomes ORDER BY ticker"
+    ).fetchall()
+    assert rows == [
+        ("000660", "REJECTED", None),
+        ("005930", "SELECTED", None),
+        ("035420", "SCREEN_ERROR", "SCREENING"),
+    ]
+
+
 def test_dry_run_default_no_orders(capsys) -> None:
     broker = _Broker()
 

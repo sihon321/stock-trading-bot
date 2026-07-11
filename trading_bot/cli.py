@@ -37,6 +37,7 @@ from trading_bot.audit_models import (
     RunStatus,
     TickerOutcome,
     TickerOutcomeCode,
+    sanitize_detail,
 )
 
 app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator CLI.")
@@ -152,7 +153,12 @@ def _build_broker(
     quote_adapter: Any = None,
 ) -> Any:
     if settings.trading_mode is TradingMode.MOCK:
-        return MockBroker(cash=Money(10_000_000.0, "KRW"))
+        return MockBroker(
+            cash=Money(10_000_000.0, "KRW"),
+            pre_submit_quote_reader=(
+                quote_adapter.fetch_current_price if quote_adapter is not None else None
+            ),
+        )
 
     if token_manager is None:
         raise ValueError("real broker requires the shared KisTokenManager")
@@ -572,14 +578,42 @@ def screen_command(
             progress=progress,
         )
         candidates = _candidate_tickers(result)
-        for symbol in candidates:
-            sqlite_audit.write_ticker_outcome(
-                runtime.audit_conn,
-                TickerOutcome(
-                    run_id=run_id, ticker=symbol,
-                    outcome_code=TickerOutcomeCode.SELECTED,
-                    reason_code=ReasonCode.COMPLETED,
+        outcomes: dict[str, TickerOutcome] = {}
+        for event in getattr(result, "audit_events", ()):
+            symbol = event.ticker
+            is_error = str(event.action).upper() not in {"SKIP_CANDIDATE", "REJECTED"}
+            reason_text = str(event.reason).lower()
+            if "stale" in reason_text:
+                reason_code = ReasonCode.STALE_OHLCV
+            elif "quote" in reason_text:
+                reason_code = ReasonCode.STALE_QUOTE
+            else:
+                reason_code = ReasonCode.KIS_UNAVAILABLE
+            outcomes[symbol] = TickerOutcome(
+                run_id=run_id,
+                ticker=symbol,
+                outcome_code=(
+                    TickerOutcomeCode.SCREEN_ERROR if is_error else TickerOutcomeCode.REJECTED
                 ),
+                reason_code=reason_code,
+                failed_stage=FailedStage.SCREENING if is_error else None,
+                detail=sanitize_detail({
+                    "source": event.source,
+                    "status": event.status,
+                    "action": event.action,
+                    "observed_date": event.observed_date,
+                    "expected_date": event.expected_date,
+                }),
+            )
+        for symbol in candidates:
+            outcomes[symbol] = TickerOutcome(
+                run_id=run_id, ticker=symbol,
+                outcome_code=TickerOutcomeCode.SELECTED,
+                reason_code=ReasonCode.COMPLETED,
+            )
+        for outcome in outcomes.values():
+            sqlite_audit.write_ticker_outcome(
+                runtime.audit_conn, outcome,
             )
         sqlite_audit.finish_run(runtime.audit_conn, run_id=run_id, status=RunStatus.COMPLETED)
     except KeyboardInterrupt:

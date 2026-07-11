@@ -19,7 +19,7 @@ from trading_bot.kis_order import (
     snap_to_tick,
 )
 from trading_bot.market_cycle import MarketCyclePolicy, QuoteObservation
-from trading_bot.audit_models import OrderEvent, OrderEventType, sanitize_detail
+from trading_bot.audit_models import FreshnessEvidence, OrderEvent, OrderEventType, sanitize_detail
 
 
 class MarketClosedError(RuntimeError):
@@ -83,6 +83,7 @@ class KISBroker:
         evidence_sink: Optional[OrderEvidenceSink] = None,
         pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        freshness_policy_version: str = "quote-freshness-v1",
     ) -> None:
         self._order_adapter = order_adapter
         self._account = account
@@ -95,6 +96,7 @@ class KISBroker:
         self._evidence_sink = evidence_sink
         self._pre_submit_quote_reader = pre_submit_quote_reader
         self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
+        self._freshness_policy_version = freshness_policy_version
 
     def set_evidence_sink(self, sink: OrderEvidenceSink) -> None:
         self._evidence_sink = sink
@@ -166,20 +168,24 @@ class KISBroker:
                 freshness = MarketCyclePolicy(_UnusedCalendar()).quote_freshness(
                     QuoteObservation(observed_at), checked_at
                 )
-            if freshness is None or not freshness.fresh:
-                self._emit(OrderEvent(
+            facts = FreshnessEvidence(
+                observed_at=observed_at.isoformat() if observed_at else None,
+                checked_at=checked_at.isoformat(),
+                age_seconds=freshness.age_seconds if freshness else None,
+                verdict="PASS" if freshness is not None and freshness.fresh else "BLOCK",
+                reason=freshness.reason if freshness else "quote unavailable",
+                policy_version=self._freshness_policy_version,
+            )
+            passed = freshness is not None and freshness.fresh
+            self._emit(OrderEvent(
                     order_intent_id=intent_id, origin_run_id=origin,
                     observer_run_id=observer, ticker=order.ticker.value,
-                    event_type=OrderEventType.FRESHNESS_BLOCKED,
+                    event_type=(OrderEventType.FRESHNESS_CHECKED if passed else OrderEventType.FRESHNESS_BLOCKED),
                     submission_id=submission_id, side=order.side.value,
                     requested_qty=order.quantity, broker_status="STALE_QUOTE",
-                    detail={
-                        "reason": freshness.reason if freshness else "quote unavailable",
-                        "age_seconds": freshness.age_seconds if freshness else None,
-                        "checked_at": checked_at.isoformat(),
-                        "observed_at": observed_at.isoformat() if observed_at else None,
-                    },
+                    detail=facts.detail(), observed_at=facts.observed_at,
                 ))
+            if not passed:
                 raise MarketClosedError("KIS order skipped: pre-submit quote is stale")
         self._emit(OrderEvent(
             order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,

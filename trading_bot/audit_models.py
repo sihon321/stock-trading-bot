@@ -64,6 +64,7 @@ class OrderEventType(StrEnum):
     BROKER_OBSERVED = "BROKER_OBSERVED"
     RECONCILED = "RECONCILED"
     FRESHNESS_BLOCKED = "FRESHNESS_BLOCKED"
+    FRESHNESS_CHECKED = "FRESHNESS_CHECKED"
 
 
 _FORBIDDEN_DETAIL_KEYS = {
@@ -121,3 +122,25 @@ class OrderEvent:
     duplicate_of_intent_id: str | None = None
     detail: Mapping[str, Any] | None = None
     observed_at: str | None = None
+
+
+@dataclass(frozen=True)
+class FreshnessEvidence:
+    """Normalized quote-freshness facts persisted before broker mutation."""
+
+    observed_at: str | None
+    checked_at: str
+    age_seconds: float | None
+    verdict: str
+    reason: str
+    policy_version: str = "quote-freshness-v1"
+
+    def detail(self) -> dict[str, Any]:
+        return sanitize_detail({
+            "observed_at": self.observed_at,
+            "checked_at": self.checked_at,
+            "age_seconds": self.age_seconds,
+            "verdict": self.verdict,
+            "reason": self.reason,
+            "policy_version": self.policy_version,
+        })

@@ -137,6 +137,34 @@ def test_pre_submit_quote_is_refetched_and_ten_seconds_is_inclusive(age, allowed
     assert adapter.post_attempts == int(allowed)
 
 
+def test_successful_freshness_evidence_precedes_submission() -> None:
+    from trading_bot.kis_broker import KISBroker
+    from trading_bot.kis_quote import KisQuoteResult
+
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    events = []
+    broker = KISBroker(
+        order_adapter=_FakeOrderAdapter(), account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True, clock=lambda: now, evidence_sink=events.append,
+        pre_submit_quote_reader=lambda ticker: KisQuoteResult(
+            Money(70_000, "KRW"),
+            SourceHealth(source="kis_quote", status=SourceStatus.AVAILABLE, reason="ok"),
+            now - timedelta(seconds=10),
+        ),
+    )
+
+    broker.place_order(_order(quantity=1), order_intent_id="intent-fresh")
+
+    kinds = [event.event_type.value for event in events]
+    assert kinds.index("FRESHNESS_CHECKED") < kinds.index("SUBMISSION_ATTEMPTED")
+    detail = next(event.detail for event in events if event.event_type.value == "FRESHNESS_CHECKED")
+    assert detail == {
+        "observed_at": (now - timedelta(seconds=10)).isoformat(),
+        "checked_at": now.isoformat(), "age_seconds": 10.0,
+        "verdict": "PASS", "reason": "fresh", "policy_version": "quote-freshness-v1",
+    }
+
+
 def test_append_only_evidence_has_stable_intent_and_distinct_submission() -> None:
     from trading_bot.kis_broker import KISBroker
 

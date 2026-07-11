@@ -8,12 +8,16 @@ import no KIS/LLM/pykrx/HTTP/adapter code (T-02-09/T-02-10).
 import importlib
 import inspect
 import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from trading_bot.domain import Money, Order, OrderSide, Position, Ticker
 from trading_bot.mock_broker import MockBroker
 from trading_bot.ports import Broker
+from trading_bot.data_models import SourceHealth, SourceStatus
+from trading_bot.kis_quote import KisQuoteResult
 
 
 FORBIDDEN_MODULE_PREFIXES = (
@@ -193,3 +197,35 @@ def test_mock_broker_import_has_no_forbidden_side_effects() -> None:
         and any(fragment in name for fragment in FORBIDDEN_LOCAL_MODULE_FRAGMENTS)
     ]
     assert forbidden_local == []
+
+
+@pytest.mark.parametrize(("age", "allowed"), [(10.0, True), (10.001, False)])
+def test_mock_pre_submit_refresh_is_inclusive_and_blocks_without_mutation(age, allowed) -> None:
+    from trading_bot.kis_broker import MarketClosedError
+
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    calls = []
+    events = []
+
+    def reader(ticker):
+        calls.append(ticker)
+        return KisQuoteResult(
+            Money(70_000, "KRW"),
+            SourceHealth(source="kis_quote", status=SourceStatus.AVAILABLE, reason="ok"),
+            now - timedelta(seconds=age),
+        )
+
+    broker = MockBroker(
+        cash=Money(1_000_000, "KRW"), pre_submit_quote_reader=reader,
+        evidence_sink=events.append, clock=lambda: now,
+    )
+    if allowed:
+        broker.place_order(_buy(1), order_intent_id="intent-mock", origin_run_id="run")
+        assert broker.cash.amount == 930_000
+    else:
+        with pytest.raises(MarketClosedError):
+            broker.place_order(_buy(1), order_intent_id="intent-mock", origin_run_id="run")
+        assert broker.cash.amount == 1_000_000
+        assert broker.order_history == []
+    assert calls == ["005930"]
+    assert events[0].detail["verdict"] == ("PASS" if allowed else "BLOCK")

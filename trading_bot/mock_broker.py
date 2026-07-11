@@ -17,9 +17,15 @@ and leave all state unchanged — the broker never mutates on a rejected order.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Sequence
+import uuid
+from zoneinfo import ZoneInfo
 
+from trading_bot.audit_models import FreshnessEvidence, OrderEvent, OrderEventType
+from trading_bot.data_models import SourceStatus
 from trading_bot.domain import Money, Order, OrderSide, Position, Ticker
+from trading_bot.market_cycle import MarketCyclePolicy, QuoteObservation
 
 
 class MockBroker:
@@ -29,6 +35,10 @@ class MockBroker:
         self,
         cash: Money,
         positions: Optional[Sequence[Position]] = None,
+        pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
+        evidence_sink: Optional[Callable[[OrderEvent], object]] = None,
+        clock: Optional[Callable[[], datetime]] = None,
+        freshness_policy_version: str = "quote-freshness-v1",
     ) -> None:
         self._cash = cash
         self._positions: Dict[str, Position] = {
@@ -36,6 +46,13 @@ class MockBroker:
         }
         self._order_history: List[Order] = []
         self._order_counter = 0
+        self._pre_submit_quote_reader = pre_submit_quote_reader
+        self._evidence_sink = evidence_sink
+        self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
+        self._freshness_policy_version = freshness_policy_version
+
+    def set_evidence_sink(self, sink: Callable[[OrderEvent], object]) -> None:
+        self._evidence_sink = sink
 
     @property
     def cash(self) -> Money:
@@ -51,7 +68,7 @@ class MockBroker:
         """Return the in-memory position for ``ticker`` without side effects."""
         return self._positions.get(ticker.value)
 
-    def place_order(self, order: Order) -> str:
+    def place_order(self, order: Order, **context: object) -> str:
         """Apply ``order`` to in-memory state and return a deterministic order ID.
 
         Raises:
@@ -59,6 +76,45 @@ class MockBroker:
                 exceeds available cash, or a SELL exceeds the held quantity. On any
                 such rejection no state is mutated.
         """
+
+        if self._pre_submit_quote_reader is not None:
+            from trading_bot.kis_broker import MarketClosedError
+
+            intent_id = str(context.get("order_intent_id") or uuid.uuid4())
+            origin = str(context.get("origin_run_id") or "unattributed")
+            observer = str(context.get("observer_run_id") or origin)
+            quote = self._pre_submit_quote_reader(order.ticker.value)
+            checked_at = self._clock()
+            observed_at = getattr(quote, "observed_at", None)
+            health = getattr(quote, "health", None)
+            freshness = None
+            if health is not None and health.status is SourceStatus.AVAILABLE and observed_at is not None:
+                class _UnusedCalendar:
+                    def is_trading_day(self, day): return None
+                    def previous_trading_day(self, day): return None
+                freshness = MarketCyclePolicy(_UnusedCalendar()).quote_freshness(
+                    QuoteObservation(observed_at), checked_at
+                )
+            passed = freshness is not None and freshness.fresh
+            facts = FreshnessEvidence(
+                observed_at=observed_at.isoformat() if observed_at else None,
+                checked_at=checked_at.isoformat(),
+                age_seconds=freshness.age_seconds if freshness else None,
+                verdict="PASS" if passed else "BLOCK",
+                reason=freshness.reason if freshness else "quote unavailable",
+                policy_version=self._freshness_policy_version,
+            )
+            if self._evidence_sink is not None:
+                self._evidence_sink(OrderEvent(
+                    order_intent_id=intent_id, origin_run_id=origin,
+                    observer_run_id=observer, ticker=order.ticker.value,
+                    event_type=(OrderEventType.FRESHNESS_CHECKED if passed else OrderEventType.FRESHNESS_BLOCKED),
+                    side=order.side.value, requested_qty=order.quantity,
+                    broker_status="FRESH" if passed else "STALE_QUOTE",
+                    detail=facts.detail(), observed_at=facts.observed_at,
+                ))
+            if not passed:
+                raise MarketClosedError("mock order skipped: pre-submit quote is stale")
 
         if order.quantity <= 0:
             raise ValueError(
