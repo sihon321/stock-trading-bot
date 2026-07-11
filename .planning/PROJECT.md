@@ -39,6 +39,11 @@ run safely each day and that every order or hold decision can be explained and r
 
 _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to `.planning/REQUIREMENTS.md`._
 
+- [x] EVID-01: every mutable run records a terminal lifecycle state, KST date, run kind, target, policy snapshot, and provenance — Phase 6
+- [x] EVID-02: every attempted screen/run ticker records exactly one normalized terminal outcome — Phase 6
+- [x] EVID-03: order intent, submission, ambiguity, duplicate suppression, and reconciliation remain attributable to ticker and run — Phase 6
+- [x] EVID-04: executable cycles enforce and record KRX session, completed-bar cutoff, and pre-submit quote freshness — Phase 6
+
 - [x] CFG-01: typed gitignored settings load KIS and LLM secrets without leaking them to logs — Phase 1
 - [x] CFG-02: trading mode atomically selects mock or real KIS credentials, endpoint, and TR_ID — Phase 1
 - [x] CFG-03: exactly one active LLM provider is selected per run — Phase 1
@@ -137,4 +142,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after starting Milestone v1.1 — Mock Soak & Replay Validation*
+*Last updated: 2026-07-11 after completing Phase 6 — Audit Evidence & Cycle Boundaries*
