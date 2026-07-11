@@ -266,12 +266,12 @@ finally:
 | A1 | The CLI remains single-process for Phase 6. | Pitfall 1 | Concurrent invocations would require stronger ownership/lease semantics. |
 | A2 | Existing v1 audit rows may remain legacy-incomplete rather than being fabricated into full Phase 6 evidence. | Migration | Downstream consumers must recognize schema/evidence version. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **How will explicit retry `parent_run_id` be supplied?**
-   - Recommendation: add optional `--parent-run-id` to `screen` and `run`, validate that it exists, and never infer retry relationships merely from date/ticker similarity.
+   - **RESOLVED:** Add optional `--parent-run-id` to `screen` and `run`, validate that it is a UUID referencing an existing run, reject self-reference, and never infer retry relationships from date/ticker similarity. Every retry remains a new run UUID.
 2. **What is the runtime source for special KRX closure dates?**
-   - Official KRX rules establish semantics but the current repo has no official machine-readable calendar client. Recommendation: define an injected calendar provider, derive observed trading dates through the existing KRX data seam, and fail closed whenever it cannot confirm the requested/previous date. Keep fixtures for statutory, Labor Day, year-end, and exchange-designated closure cases. Do not fall back to weekday arithmetic.
+   - **RESOLVED:** Define an injected `KRXCalendarProvider`; its production implementation confirms dates from KRX-observed dates through the existing pykrx seam for the current invocation. It authorizes submission only when both the current and previous completed trading day are positively confirmed. Provider error, missing/stale observation, or inability to distinguish a special closure returns `UNKNOWN`/`CALENDAR_UNAVAILABLE` and blocks submission. There is no weekday fallback. Tests cover statutory holidays, Labor Day, year-end closure, exchange-designated closure, and provider failure. Official KRX rules are the semantic authority; the adapter is observation transport only.
 
 ## Environment Availability
 
