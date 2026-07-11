@@ -44,10 +44,10 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   3. Operator can trace each ticker's order intent through submission and broker reconciliation, or see the exact attributed reason that no order was placed.
   4. Operator can verify the KRX session, completed-bar cutoff, quote freshness, and permitted order window used by each executable cycle.
 
-**Plans**: 0/4 plans executed
+**Plans**: 1/4 plans executed
 **Wave 1**
 
-- [ ] 06-01-PLAN.md
+- [x] 06-01-PLAN.md
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -129,7 +129,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 | 3. Data Pipeline | v1.0 | 6/6 | Complete | 2026-07-01 |
 | 4. LLM Agent | v1.0 | 4/4 | Complete | 2026-07-02 |
 | 5. Real-Money Readiness & Operations | v1.0 | 5/5 | Complete | 2026-07-02 |
-| 6. Audit Evidence & Cycle Boundaries | v1.1 | 0/4 | Planned    |  |
+| 6. Audit Evidence & Cycle Boundaries | v1.1 | 1/4 | In Progress|  |
 | 7. Deterministic Replay Validation | v1.1 | 0/TBD | Not started | - |
 | 8. Decision Reports & Operator Runbook | v1.1 | 0/TBD | Not started | - |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 0/TBD | Not started | - |
