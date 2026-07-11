@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 from pydantic import SecretStr
@@ -8,6 +9,68 @@ from trading_bot.config import KisCredentialGroup, Settings
 from trading_bot.domain import DataContext, Money, Ticker
 
 Settings.model_config['env_file'] = None
+
+
+def create_v1_audit_database(path) -> sqlite3.Connection:
+    """Create the exact audit schema shipped before Phase 6, including evidence."""
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            trading_mode TEXT NOT NULL,
+            dry_run INTEGER NOT NULL
+        );
+        CREATE TABLE decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES runs(run_id),
+            ticker TEXT NOT NULL,
+            final_action TEXT NOT NULL,
+            parsed_decision TEXT,
+            confidence REAL,
+            parse_error TEXT,
+            risk_override INTEGER NOT NULL,
+            override_reason TEXT,
+            order_reason TEXT,
+            broker_order_id TEXT,
+            requested_qty INTEGER,
+            filled_qty INTEGER,
+            current_price REAL,
+            correlation_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_decisions_run ON decisions(run_id);
+        CREATE INDEX ix_decisions_ticker ON decisions(ticker);
+        INSERT INTO runs VALUES ('legacy-run', '2026-07-10T00:00:00+00:00', 'mock', 1);
+        INSERT INTO decisions (
+            run_id, ticker, final_action, parsed_decision, confidence, parse_error,
+            risk_override, override_reason, order_reason, broker_order_id,
+            requested_qty, filled_qty, current_price, correlation_id, created_at
+        ) VALUES (
+            'legacy-run', '005930', 'HOLD', 'HOLD', 0.42, NULL,
+            0, '', 'hold reason', NULL, NULL, NULL, 70000,
+            'legacy-correlation', '2026-07-10T00:00:01+00:00'
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def normalized_broker_observation(**overrides):
+    values = {
+        "broker_order_id": "kis-order-1",
+        "side": "BUY",
+        "requested_qty": 2,
+        "filled_qty": 1,
+        "unfilled_qty": 1,
+        "broker_status": "PARTIALLY_FILLED",
+    }
+    values.update(overrides)
+    return values
 
 
 

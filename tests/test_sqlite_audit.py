@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 from trading_bot.execution import CycleAuditEvent
+from tests.conftest import create_v1_audit_database, normalized_broker_observation
 
 
 def _event(ticker: str, *, final_action: str = "HOLD") -> CycleAuditEvent:
@@ -127,3 +128,36 @@ def test_correlation_id(tmp_path) -> None:
         pass
     else:  # pragma: no cover - dataclass contract would be broken.
         raise AssertionError("CycleAuditEvent must remain frozen")
+
+
+def test_shipped_v1_fixture_preserves_legacy_reads_and_writes(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    path = tmp_path / "legacy.db"
+    conn = create_v1_audit_database(path)
+    conn.close()
+
+    upgraded = sqlite_audit.connect(path)
+    assert upgraded.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    assert upgraded.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
+    sqlite_audit.start_run(
+        upgraded, run_id="new-run", trading_mode="mock", dry_run=True
+    )
+    sqlite_audit.write_decision(
+        upgraded,
+        "new-run",
+        _event("000660"),
+        confidence=0.5,
+        current_price=120000,
+        correlation_id="new-correlation",
+    )
+    assert upgraded.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 2
+    assert upgraded.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 2
+
+
+def test_normalized_broker_fixture_has_no_raw_or_secret_fields() -> None:
+    observation = normalized_broker_observation()
+    assert observation["requested_qty"] == 2
+    assert observation["filled_qty"] + observation["unfilled_qty"] == 2
+    forbidden = {"raw", "payload", "response", "app_key", "secret", "token"}
+    assert forbidden.isdisjoint(observation)
