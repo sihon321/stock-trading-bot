@@ -58,8 +58,6 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - Real-money promotion remains an evidence-linked checklist with separate explicit manual approval.
 - [Phase 06]: Run finalization is a guarded RUNNING-to-terminal transition; abandoned work is recovered before mutable invocations. — Preserves immutable lifecycle evidence after crashes.
 - [Phase 06]: Ticker completeness is derived from durable ticker_outcomes and persisted detail excludes raw exception text. — Makes partial completion queryable without leaking provider data.
-- [Phase ?]: KIS POST acknowledgement uncertainty terminalizes as ambiguous and is never blindly retried.
-- [Phase ?]: Order reconciliation retains origin_run_id and records the later observer_run_id.
 - [Phase 06]: KIS POST acknowledgement uncertainty terminalizes as ambiguous and is never blindly retried.
 - [Phase 06]: Order reconciliation retains origin_run_id and records the later observer_run_id.
 - [Phase 06]: KRX execution requires positively observed trading-day data and the half-open [09:00, 15:20) KST continuous session. — Fail closed outside confirmed continuous trading.
