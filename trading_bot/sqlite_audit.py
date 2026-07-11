@@ -42,6 +42,45 @@ _RUN_V2_COLUMNS = (
     ("recovered_at", "TEXT"), ("recovery_reason", "TEXT"),
 )
 
+# Compatibility surface for callers that supply their own empty connection.
+# Versioned/on-disk databases must use ``connect()``/``migrate()``; the CLI's
+# historical in-memory seam still executes this idempotent current-schema script.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, trading_mode TEXT NOT NULL,
+    dry_run INTEGER NOT NULL, run_kind TEXT, status TEXT NOT NULL DEFAULT 'RUNNING',
+    finished_at TEXT, trading_date_kst TEXT, target TEXT, policy_snapshot TEXT,
+    provenance TEXT, parent_run_id TEXT, recovered_at TEXT, recovery_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id),
+    ticker TEXT NOT NULL, final_action TEXT NOT NULL, parsed_decision TEXT,
+    confidence REAL, parse_error TEXT, risk_override INTEGER NOT NULL,
+    override_reason TEXT, order_reason TEXT, broker_order_id TEXT,
+    requested_qty INTEGER, filled_qty INTEGER, current_price REAL,
+    correlation_id TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_decisions_run ON decisions(run_id);
+CREATE INDEX IF NOT EXISTS ix_decisions_ticker ON decisions(ticker);
+CREATE TABLE IF NOT EXISTS ticker_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT NOT NULL,
+    outcome_code TEXT NOT NULL, reason_code TEXT NOT NULL, detail_json TEXT NOT NULL,
+    failed_stage TEXT, order_intent_id TEXT, final_order_state TEXT,
+    created_at TEXT NOT NULL, UNIQUE(run_id, ticker)
+);
+CREATE TABLE IF NOT EXISTS order_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, order_intent_id TEXT NOT NULL,
+    origin_run_id TEXT NOT NULL REFERENCES runs(run_id),
+    observer_run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT NOT NULL,
+    event_type TEXT NOT NULL, submission_id TEXT, broker_order_id TEXT, side TEXT,
+    requested_qty INTEGER, filled_qty INTEGER, unfilled_qty INTEGER,
+    broker_status TEXT, duplicate_of_intent_id TEXT, detail_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_order_events_intent ON order_events(order_intent_id, id);
+"""
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
