@@ -5,15 +5,15 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 06
 current_phase_name: Audit Evidence & Cycle Boundaries
 status: executing
-stopped_at: Phase 6 context gathered
-last_updated: "2026-07-11T12:15:59.105Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-07-11T12:22:38.270Z"
 last_activity: 2026-07-11
 last_activity_desc: Phase 06 execution started
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 06 (Audit Evidence & Cycle Boundaries) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-11 — Phase 06 execution started
 
@@ -56,6 +56,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - Only the explicit KIS mock path counts as soak evidence; local simulation does not.
 - Calibration is advisory only and cannot mutate settings or enable real-money trading.
 - Real-money promotion remains an evidence-linked checklist with separate explicit manual approval.
+- [Phase 06]: Run finalization is a guarded RUNNING-to-terminal transition; abandoned work is recovered before mutable invocations. — Preserves immutable lifecycle evidence after crashes.
+- [Phase 06]: Ticker completeness is derived from durable ticker_outcomes and persisted detail excludes raw exception text. — Makes partial completion queryable without leaking provider data.
 
 ### Pending Todos
 
@@ -74,12 +76,13 @@ None yet.
 | Validation | Full portfolio backtest, live-LLM historical replay, web dashboard, unattended scheduling | Future | v1.1 scoping |
 | Automation | Automatic policy writes or real-money promotion | Prohibited | v1.1 scoping |
 | Phase 06 P01 | 8min | 3 tasks | 6 files |
+| Phase 06 P02 | 12min | 2 tasks | 4 files |
 
 ## Session Continuity
 
-Last session: 2026-07-11T12:14:50.692Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-audit-evidence-cycle-boundaries/06-CONTEXT.md
+Last session: 2026-07-11T12:22:03.836Z
+Stopped at: Completed 06-02-PLAN.md
+Resume file: .planning/phases/06-audit-evidence-cycle-boundaries/06-03-PLAN.md
 
 ## Operator Next Steps
 
