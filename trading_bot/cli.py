@@ -20,7 +20,7 @@ from trading_bot.data_source import build_data_source
 from trading_bot.domain import Money, Ticker
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
-from trading_bot.kis_broker import build_kis_broker
+from trading_bot.kis_broker import AmbiguousSubmissionError, build_kis_broker
 from trading_bot.kis_order import KisOrderAccount
 from trading_bot.kis_quote import KisQuoteAdapter
 from trading_bot.llm_provider import build_llm_provider, run_llm_cycle as _run_llm_cycle
@@ -228,6 +228,8 @@ def _outcome_from_result(
 
 
 def _reason_for_exception(exc: BaseException) -> tuple[ReasonCode, FailedStage]:
+    if isinstance(exc, AmbiguousSubmissionError):
+        return ReasonCode.AMBIGUOUS_SUBMISSION, FailedStage.ORDER
     name = type(exc).__name__.lower()
     message = str(exc).lower()
     if "timeout" in name or "timeout" in message:
@@ -328,6 +330,10 @@ def run_cycle(
         provenance=_run_provenance(ticker=ticker, trading_date=resolved_trading_date),
         parent_run_id=parent_run_id,
     )
+    if hasattr(resolved_broker, "set_evidence_sink"):
+        resolved_broker.set_evidence_sink(
+            lambda event: sqlite_audit.append_order_event(resolved_audit_conn, event)
+        )
 
     outcomes: list[dict[str, Any]] = []
     try:
@@ -351,6 +357,7 @@ def run_cycle(
                     risk_config=_risk_config(resolved_settings),
                     daily_loss_state=_daily_loss_state(resolved_settings),
                     dry_run=dry_run,
+                    origin_run_id=resolved_run_id,
                 )
                 if result.audit is None:
                     raise RuntimeError("cycle result missing audit event")
@@ -406,6 +413,14 @@ def run_cycle(
                     outcome_code=TickerOutcomeCode.EXECUTION_ERROR,
                     reason_code=reason_code, failed_stage=failed_stage,
                     detail={"error_type": type(exc).__name__},
+                    order_intent_id=(
+                        exc.order_intent_id
+                        if isinstance(exc, AmbiguousSubmissionError) else None
+                    ),
+                    final_order_state=(
+                        "AMBIGUOUS_SUBMISSION"
+                        if isinstance(exc, AmbiguousSubmissionError) else None
+                    ),
                 )
                 _safe_send(resolved_notifier, f"ERROR {symbol}: {type(exc).__name__}: {exc}")
             finally:

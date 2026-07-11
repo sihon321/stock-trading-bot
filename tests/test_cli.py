@@ -95,6 +95,32 @@ class _Notifier:
         return True
 
 
+def test_ambiguous_submission_becomes_terminal_ticker_outcome() -> None:
+    from trading_bot.cli import run_cycle as cli_run_cycle
+    from trading_bot.kis_broker import AmbiguousSubmissionError
+
+    conn = sqlite3.connect(":memory:")
+
+    def ambiguous_cycle(*args, **kwargs):
+        raise AmbiguousSubmissionError(
+            order_intent_id="intent-ambiguous", submission_id="submission-once"
+        )
+
+    result = cli_run_cycle(
+        ticker="005930", execute=True, settings=make_settings(),
+        data_source=_DataSource(), llm_provider=_Provider(), broker=_Broker(),
+        audit_conn=conn, notifier=_Notifier(), run_cycle=ambiguous_cycle,
+        trading_date="20260702", run_id="ambiguous-run",
+    )
+    row = conn.execute(
+        "SELECT reason_code, order_intent_id, final_order_state FROM ticker_outcomes"
+    ).fetchone()
+    assert result["errors"] == 1
+    assert row == (
+        "AMBIGUOUS_SUBMISSION", "intent-ambiguous", "AMBIGUOUS_SUBMISSION"
+    )
+
+
 def _run_with(
     *,
     settings=None,
