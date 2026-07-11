@@ -28,6 +28,14 @@ from trading_bot.mock_broker import MockBroker
 from trading_bot.notifier import build_notifier, format_run_summary
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
+from trading_bot.audit_models import (
+    FailedStage,
+    ReasonCode,
+    RunKind,
+    RunStatus,
+    TickerOutcome,
+    TickerOutcomeCode,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator CLI.")
 
@@ -219,6 +227,43 @@ def _outcome_from_result(
     }
 
 
+def _reason_for_exception(exc: BaseException) -> tuple[ReasonCode, FailedStage]:
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    if "timeout" in name or "timeout" in message:
+        return ReasonCode.LLM_TIMEOUT, FailedStage.LLM
+    if "parse" in name or "malformed" in message or "json" in message:
+        return ReasonCode.MALFORMED_SIGNAL, FailedStage.PARSING
+    if "stale" in message:
+        return ReasonCode.STALE_OHLCV, FailedStage.DATA_COLLECTION
+    if "kis" in message or "broker" in message:
+        return ReasonCode.KIS_UNAVAILABLE, FailedStage.ORDER
+    return ReasonCode.KIS_UNAVAILABLE, FailedStage.DATA_COLLECTION
+
+
+def _terminal_outcome(result: ExecutionResult) -> tuple[TickerOutcomeCode, ReasonCode]:
+    audit = result.audit
+    reason = (audit.order_reason if audit else result.reason).lower()
+    action = audit.final_action if audit else result.action.value
+    if "ambiguous" in reason:
+        return TickerOutcomeCode.EXECUTION_ERROR, ReasonCode.AMBIGUOUS_SUBMISSION
+    if "duplicate" in reason:
+        return TickerOutcomeCode.ORDER_SUPPRESSED, ReasonCode.DUPLICATE_ORDER
+    if result.broker_order_id:
+        return TickerOutcomeCode.ORDER_SUBMITTED, ReasonCode.COMPLETED
+    if action == "HOLD":
+        if "confidence" in reason:
+            return TickerOutcomeCode.NO_TRADE, ReasonCode.LOW_CONFIDENCE
+        return TickerOutcomeCode.NO_TRADE, ReasonCode.HOLD_SIGNAL
+    if result.order is not None:
+        return TickerOutcomeCode.ORDER_SUPPRESSED, ReasonCode.COMPLETED
+    return TickerOutcomeCode.NO_TRADE, ReasonCode.COMPLETED
+
+
+def _run_provenance(*, ticker: str | None, trading_date: str) -> dict[str, Any]:
+    return {"ticker": ticker, "requested_trading_date": trading_date}
+
+
 def run_cycle(
     *,
     ticker: Optional[str] = None,
@@ -233,6 +278,7 @@ def run_cycle(
     run_cycle: Optional[RunCycleFn] = None,
     trading_date: Optional[str] = None,
     run_id: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
     kis_account: Optional[KisOrderAccount] = None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
@@ -263,82 +309,126 @@ def run_cycle(
     resolved_notifier = notifier if notifier is not None else runtime.notifier
     cycle_fn = run_cycle or _run_llm_cycle
 
-    if ticker is not None:
-        tickers = [_validate_ticker(ticker)]
-    else:
-        tickers = _candidate_tickers(
-            resolved_data_source.screen_daily_candidates(resolved_trading_date)
-        )
-
     resolved_run_id = run_id or uuid.uuid4().hex
     _ensure_audit_schema(resolved_audit_conn)
+    sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
     sqlite_audit.start_run(
         resolved_audit_conn,
         run_id=resolved_run_id,
         trading_mode=resolved_settings.trading_mode.value,
         dry_run=dry_run,
+        run_kind=RunKind.RUN,
+        trading_date_kst=resolved_trading_date,
+        target=resolved_settings.trading_mode.value,
+        policy_snapshot={
+            "version": "execution-v1",
+            "buy_confidence_threshold": resolved_settings.buy_confidence_threshold,
+            "sell_confidence_threshold": resolved_settings.sell_confidence_threshold,
+        },
+        provenance=_run_provenance(ticker=ticker, trading_date=resolved_trading_date),
+        parent_run_id=parent_run_id,
     )
 
     outcomes: list[dict[str, Any]] = []
-    error_count = 0
-    for symbol in tickers:
-        correlation_id = f"{resolved_run_id}:{symbol}"
-        try:
-            context = resolved_data_source.build_context(Ticker(symbol))
-            result = cycle_fn(
-                resolved_llm_provider,
-                context,
-                broker=resolved_broker,
-                available_cash=_available_cash(resolved_broker, resolved_settings),
-                execution_config=_execution_config(resolved_settings),
-                risk_config=_risk_config(resolved_settings),
-                daily_loss_state=_daily_loss_state(resolved_settings),
-                dry_run=dry_run,
+    try:
+        if ticker is not None:
+            tickers = [_validate_ticker(ticker)]
+        else:
+            tickers = _candidate_tickers(
+                resolved_data_source.screen_daily_candidates(resolved_trading_date)
             )
-            if result.audit is None:
-                raise RuntimeError("cycle result missing audit event")
-            reconciliation = getattr(resolved_broker, "last_reconciliation", None)
-            requested_qty = result.order.quantity if result.order is not None else None
-            filled_qty = getattr(reconciliation, "filled_qty", None)
-            if reconciliation is not None:
-                requested_qty = getattr(reconciliation, "requested_qty", requested_qty)
-            sqlite_audit.write_decision(
-                resolved_audit_conn,
-                resolved_run_id,
-                result.audit,
-                confidence=result.confidence,
-                current_price=context.current_price.amount,
-                requested_qty=requested_qty,
-                filled_qty=filled_qty,
-                correlation_id=correlation_id,
-            )
-            outcome = _outcome_from_result(
-                result=result,
-                ticker=symbol,
-                current_price=context.current_price.amount,
-                correlation_id=correlation_id,
-            )
-            outcome["requested_qty"] = requested_qty
-            outcome["filled_qty"] = filled_qty
-            outcomes.append(outcome)
-        except Exception as exc:  # noqa: BLE001 - isolate one ticker's failure.
-            error_count += 1
-            outcome = {
-                "ticker": symbol,
-                "status": "error",
-                "final_action": "ERROR",
-                "parsed_decision": None,
-                "confidence": None,
-                "broker_order_id": None,
-                "order_reason": str(exc),
-                "requested_qty": None,
-                "filled_qty": None,
-                "current_price": None,
-                "correlation_id": correlation_id,
-            }
-            outcomes.append(outcome)
-            _safe_send(resolved_notifier, f"ERROR {symbol}: {type(exc).__name__}: {exc}")
-            continue
+        for symbol in tickers:
+            correlation_id = f"{resolved_run_id}:{symbol}"
+            terminal: TickerOutcome | None = None
+            try:
+                context = resolved_data_source.build_context(Ticker(symbol))
+                result = cycle_fn(
+                    resolved_llm_provider,
+                    context,
+                    broker=resolved_broker,
+                    available_cash=_available_cash(resolved_broker, resolved_settings),
+                    execution_config=_execution_config(resolved_settings),
+                    risk_config=_risk_config(resolved_settings),
+                    daily_loss_state=_daily_loss_state(resolved_settings),
+                    dry_run=dry_run,
+                )
+                if result.audit is None:
+                    raise RuntimeError("cycle result missing audit event")
+                reconciliation = getattr(resolved_broker, "last_reconciliation", None)
+                requested_qty = result.order.quantity if result.order is not None else None
+                filled_qty = getattr(reconciliation, "filled_qty", None)
+                if reconciliation is not None:
+                    requested_qty = getattr(reconciliation, "requested_qty", requested_qty)
+                sqlite_audit.write_decision(
+                    resolved_audit_conn,
+                    resolved_run_id,
+                    result.audit,
+                    confidence=result.confidence,
+                    current_price=context.current_price.amount,
+                    requested_qty=requested_qty,
+                    filled_qty=filled_qty,
+                    correlation_id=correlation_id,
+                )
+                outcome = _outcome_from_result(
+                    result=result,
+                    ticker=symbol,
+                    current_price=context.current_price.amount,
+                    correlation_id=correlation_id,
+                )
+                outcome["requested_qty"] = requested_qty
+                outcome["filled_qty"] = filled_qty
+                outcomes.append(outcome)
+                outcome_code, reason_code = _terminal_outcome(result)
+                terminal = TickerOutcome(
+                    run_id=resolved_run_id, ticker=symbol,
+                    outcome_code=outcome_code, reason_code=reason_code,
+                    detail={"correlation_id": correlation_id},
+                    final_order_state=outcome_code.value,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate one ticker's failure.
+                reason_code, failed_stage = _reason_for_exception(exc)
+                outcome = {
+                    "ticker": symbol,
+                    "status": "error",
+                    "final_action": "ERROR",
+                    "parsed_decision": None,
+                    "confidence": None,
+                    "broker_order_id": None,
+                    "order_reason": str(exc),
+                    "requested_qty": None,
+                    "filled_qty": None,
+                    "current_price": None,
+                    "correlation_id": correlation_id,
+                }
+                outcomes.append(outcome)
+                terminal = TickerOutcome(
+                    run_id=resolved_run_id, ticker=symbol,
+                    outcome_code=TickerOutcomeCode.EXECUTION_ERROR,
+                    reason_code=reason_code, failed_stage=failed_stage,
+                    detail={"error_type": type(exc).__name__},
+                )
+                _safe_send(resolved_notifier, f"ERROR {symbol}: {type(exc).__name__}: {exc}")
+            finally:
+                if terminal is not None:
+                    sqlite_audit.write_ticker_outcome(resolved_audit_conn, terminal)
+
+        error_count = sqlite_audit.count_failed_ticker_outcomes(
+            resolved_audit_conn, run_id=resolved_run_id
+        )
+        sqlite_audit.finish_run(
+            resolved_audit_conn, run_id=resolved_run_id,
+            status=(RunStatus.COMPLETED_WITH_ERRORS if error_count else RunStatus.COMPLETED),
+        )
+    except KeyboardInterrupt:
+        sqlite_audit.finish_run(
+            resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.INTERRUPTED
+        )
+        raise
+    except BaseException:
+        sqlite_audit.finish_run(
+            resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.FAILED
+        )
+        raise
 
     summary = format_run_summary(
         run_id=resolved_run_id,
@@ -365,6 +455,7 @@ def run_command(
         "--live-confirm",
         help="Required in real mode when --execute is passed.",
     ),
+    parent_run_id: Optional[str] = typer.Option(None, "--parent-run-id", help="UUID of an explicit retry parent."),
 ) -> None:
     """Run one manual evaluation cycle over the screened universe."""
 
@@ -373,6 +464,7 @@ def run_command(
             ticker=ticker,
             execute=execute,
             live_confirm=live_confirm,
+            parent_run_id=parent_run_id,
         )
     except SystemExit as exc:
         typer.echo(str(exc), err=True)
@@ -389,17 +481,47 @@ def screen_command(
         "--no-progress",
         help="Suppress screening progress messages on stderr.",
     ),
+    parent_run_id: Optional[str] = typer.Option(None, "--parent-run-id", help="UUID of an explicit retry parent."),
 ) -> None:
     """Preview the screened candidate universe without placing orders."""
 
     resolved_trading_date = trading_date or _today_kst()
     runtime = build_runtime(trading_date=resolved_trading_date)
-    progress = None if no_progress else _screen_progress
-    result = runtime.data_source.screen_daily_candidates(
-        resolved_trading_date,
-        progress=progress,
+    _ensure_audit_schema(runtime.audit_conn)
+    sqlite_audit.recover_abandoned_runs(runtime.audit_conn)
+    run_id = uuid.uuid4().hex
+    sqlite_audit.start_run(
+        runtime.audit_conn, run_id=run_id,
+        trading_mode=runtime.settings.trading_mode.value, dry_run=True,
+        run_kind=RunKind.SCREEN, trading_date_kst=resolved_trading_date,
+        target=runtime.settings.trading_mode.value,
+        policy_snapshot={"version": "screen-v1"},
+        provenance={"requested_trading_date": resolved_trading_date},
+        parent_run_id=parent_run_id,
     )
-    candidates = _candidate_tickers(result)
+    progress = None if no_progress else _screen_progress
+    try:
+        result = runtime.data_source.screen_daily_candidates(
+            resolved_trading_date,
+            progress=progress,
+        )
+        candidates = _candidate_tickers(result)
+        for symbol in candidates:
+            sqlite_audit.write_ticker_outcome(
+                runtime.audit_conn,
+                TickerOutcome(
+                    run_id=run_id, ticker=symbol,
+                    outcome_code=TickerOutcomeCode.SELECTED,
+                    reason_code=ReasonCode.COMPLETED,
+                ),
+            )
+        sqlite_audit.finish_run(runtime.audit_conn, run_id=run_id, status=RunStatus.COMPLETED)
+    except KeyboardInterrupt:
+        sqlite_audit.finish_run(runtime.audit_conn, run_id=run_id, status=RunStatus.INTERRUPTED)
+        raise
+    except BaseException:
+        sqlite_audit.finish_run(runtime.audit_conn, run_id=run_id, status=RunStatus.FAILED)
+        raise
     if progress is not None:
         progress(f"selected {len(candidates)} candidates")
     for symbol in candidates:

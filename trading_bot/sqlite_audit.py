@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Union
@@ -153,6 +154,15 @@ def start_run(conn: sqlite3.Connection, *, run_id: str, trading_mode: str,
               policy_snapshot: dict[str, Any] | None = None,
               provenance: dict[str, Any] | None = None,
               parent_run_id: str | None = None) -> str:
+    if parent_run_id is not None:
+        try:
+            uuid.UUID(parent_run_id)
+        except ValueError as exc:
+            raise ValueError("parent_run_id must be a UUID") from exc
+        if parent_run_id == run_id:
+            raise ValueError("run cannot be its own parent")
+        if conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (parent_run_id,)).fetchone() is None:
+            raise ValueError("parent run does not exist")
     conn.execute(
         """INSERT INTO runs (run_id, started_at, trading_mode, dry_run, run_kind, status,
            trading_date_kst, target, policy_snapshot, provenance, parent_run_id)
@@ -164,6 +174,54 @@ def start_run(conn: sqlite3.Connection, *, run_id: str, trading_mode: str,
     )
     conn.commit()
     return run_id
+
+
+def recover_abandoned_runs(
+    conn: sqlite3.Connection,
+    *,
+    recovered_at: str | None = None,
+    reason: str = "ABANDONED_PROCESS",
+) -> int:
+    """Terminalize runs left RUNNING by an earlier process."""
+
+    observed_at = recovered_at or _utc_now()
+    cursor = conn.execute(
+        """UPDATE runs SET status = ?, finished_at = ?, recovered_at = ?, recovery_reason = ?
+           WHERE status = ?""",
+        (RunStatus.INTERRUPTED.value, observed_at, observed_at, reason, RunStatus.RUNNING.value),
+    )
+    conn.commit()
+    return int(cursor.rowcount)
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    status: RunStatus,
+    finished_at: str | None = None,
+) -> None:
+    """Apply the single permitted RUNNING -> terminal transition."""
+
+    if status is RunStatus.RUNNING:
+        raise ValueError("finish_run requires a terminal status")
+    cursor = conn.execute(
+        "UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ? AND status = ?",
+        (status.value, finished_at or _utc_now(), run_id, RunStatus.RUNNING.value),
+    )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise ValueError("run is missing or already terminal")
+    conn.commit()
+
+
+def count_failed_ticker_outcomes(conn: sqlite3.Connection, *, run_id: str) -> int:
+    row = conn.execute(
+        """SELECT COUNT(*) FROM ticker_outcomes
+           WHERE run_id = ? AND outcome_code IN (?, ?)""",
+        (run_id, TickerOutcomeCode.SCREEN_ERROR.value, TickerOutcomeCode.EXECUTION_ERROR.value),
+    ).fetchone()
+    return int(row[0])
 
 
 def write_ticker_outcome(conn: sqlite3.Connection, outcome: TickerOutcome) -> int:
@@ -228,4 +286,7 @@ def write_decision(conn: sqlite3.Connection, run_id: str, event: Any, *,
     return int(cursor.lastrowid)
 
 
-__all__ = ["RunStatus", "RunKind", "TickerOutcome", "OrderEvent", "migrate"]
+__all__ = [
+    "RunStatus", "RunKind", "TickerOutcome", "OrderEvent", "migrate",
+    "recover_abandoned_runs", "finish_run", "write_ticker_outcome",
+]
