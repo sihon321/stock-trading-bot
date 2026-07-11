@@ -535,6 +535,7 @@ def run_llm_cycle(
     risk_config: RiskConfig,
     daily_loss_state: DailyLossState,
     dry_run: bool = True,
+    origin_run_id: str | None = None,
 ) -> ExecutionResult:
     """Generate a provider signal and feed it through the execution core."""
 
@@ -579,4 +580,5 @@ def run_llm_cycle(
         risk_config,
         daily_loss_state,
         dry_run=dry_run,
+        origin_run_id=origin_run_id,
     )

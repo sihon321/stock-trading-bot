@@ -15,7 +15,7 @@ class Broker(Protocol):
         """Return the current position for a ticker, if any."""
         ...
 
-    def place_order(self, order: Order) -> str:
+    def place_order(self, order: Order, **context: object) -> str:
         """Place an order and return the broker's order identifier."""
         ...
 

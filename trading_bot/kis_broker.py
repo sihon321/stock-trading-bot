@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Protocol, Sequence
+import uuid
 from zoneinfo import ZoneInfo
 
 from trading_bot.data_models import SourceStatus
@@ -17,10 +18,26 @@ from trading_bot.kis_order import (
     KisOrderError,
     snap_to_tick,
 )
+from trading_bot.audit_models import OrderEvent, OrderEventType, sanitize_detail
 
 
 class MarketClosedError(RuntimeError):
     """Raised when the order pre-flight guard fails safe to HOLD/skip."""
+
+
+class OrderEvidenceSink(Protocol):
+    """Synchronous append-only sink used at the money-moving boundary."""
+
+    def __call__(self, event: OrderEvent) -> object: ...
+
+
+class AmbiguousSubmissionError(RuntimeError):
+    """A single POST may have reached KIS but acknowledgement is unknown."""
+
+    def __init__(self, *, order_intent_id: str, submission_id: str) -> None:
+        self.order_intent_id = order_intent_id
+        self.submission_id = submission_id
+        super().__init__("KIS order submission is ambiguous; reconcile before retry")
 
 
 @dataclass(frozen=True)
@@ -33,6 +50,9 @@ class OrderReconciliation:
     filled_qty: int
     remaining_qty: int
     local_client_ref: str
+    order_intent_id: str = ""
+    submission_id: Optional[str] = None
+    broker_status: str = ""
 
 
 def _default_market_clock() -> bool:
@@ -59,6 +79,7 @@ class KISBroker:
         tracked_positions: Optional[Sequence[Position]] = None,
         market_clock: Optional[Callable[[], bool]] = None,
         data_fresh: Optional[Callable[[], bool]] = None,
+        evidence_sink: Optional[OrderEvidenceSink] = None,
     ) -> None:
         self._order_adapter = order_adapter
         self._account = account
@@ -68,6 +89,10 @@ class KISBroker:
         self._market_clock = market_clock or _default_market_clock
         self._data_fresh = data_fresh or _default_data_fresh
         self._last_reconciliation: Optional[OrderReconciliation] = None
+        self._evidence_sink = evidence_sink
+
+    def set_evidence_sink(self, sink: OrderEvidenceSink) -> None:
+        self._evidence_sink = sink
 
     @property
     def last_reconciliation(self) -> Optional[OrderReconciliation]:
@@ -76,22 +101,79 @@ class KISBroker:
     def get_position(self, ticker: Ticker) -> Optional[Position]:
         return self._positions.get(ticker.value)
 
-    def place_order(self, order: Order) -> str:
+    def place_order(
+        self, order: Order, *, order_intent_id: Optional[str] = None,
+        origin_run_id: Optional[str] = None, observer_run_id: Optional[str] = None,
+    ) -> str:
         """Place a KIS order after query-before-POST reconciliation."""
 
         self._preflight()
+        intent_id = order_intent_id or str(uuid.uuid4())
+        origin = origin_run_id or "unattributed"
+        observer = observer_run_id or origin
         snapped_price = snap_to_tick(order.limit_price.amount, side=order.side)
         client_ref = self._local_client_ref(order)
+        self._emit(OrderEvent(
+            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+            ticker=order.ticker.value, event_type=OrderEventType.INTENT_CREATED,
+            side=order.side.value, requested_qty=order.quantity,
+            detail={"local_client_ref": client_ref, "snapped_price": snapped_price},
+        ))
 
         existing = self._find_existing_order(order)
+        self._emit(OrderEvent(
+            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+            ticker=order.ticker.value, event_type=OrderEventType.DUPLICATE_CHECKED,
+            side=order.side.value, requested_qty=order.quantity,
+            broker_order_id=existing, broker_status="MATCHED" if existing else "CLEAR",
+        ))
         if existing is not None:
+            self._last_reconciliation = OrderReconciliation(
+                existing, order.ticker.value, order.quantity, 0, order.quantity,
+                client_ref, intent_id, None, "DUPLICATE_SUPPRESSED",
+            )
+            self._emit(OrderEvent(
+                order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+                ticker=order.ticker.value, event_type=OrderEventType.RECONCILED,
+                broker_order_id=existing, side=order.side.value,
+                requested_qty=order.quantity, filled_qty=0, unfilled_qty=order.quantity,
+                broker_status="DUPLICATE_SUPPRESSED",
+                detail={"matching_broker_order_id": existing},
+            ))
             return existing
 
-        result = self._order_adapter.place_order_cash(
-            account=self._account,
-            order=order,
-            snapped_price=snapped_price,
-        )
+        submission_id = str(uuid.uuid4())
+        self._emit(OrderEvent(
+            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+            ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ATTEMPTED,
+            submission_id=submission_id, side=order.side.value,
+            requested_qty=order.quantity,
+        ))
+        try:
+            result = self._order_adapter.place_order_cash(
+                account=self._account, order=order, snapped_price=snapped_price,
+            )
+        except Exception as exc:
+            self._emit(OrderEvent(
+                order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+                ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_AMBIGUOUS,
+                submission_id=submission_id, side=order.side.value,
+                requested_qty=order.quantity, broker_status="ACK_UNKNOWN",
+                detail={"error_type": type(exc).__name__},
+            ))
+            self._last_reconciliation = OrderReconciliation(
+                "", order.ticker.value, order.quantity, 0, order.quantity,
+                client_ref, intent_id, submission_id, "AMBIGUOUS_SUBMISSION",
+            )
+            raise AmbiguousSubmissionError(
+                order_intent_id=intent_id, submission_id=submission_id
+            ) from None
+        self._emit(OrderEvent(
+            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+            ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ACCEPTED,
+            submission_id=submission_id, broker_order_id=result.order_id,
+            side=order.side.value, requested_qty=order.quantity, broker_status="ACCEPTED",
+        ))
 
         fill = self._read_fill_status(
             ticker=order.ticker.value,
@@ -105,8 +187,45 @@ class KISBroker:
             filled_qty=fill.filled_qty,
             remaining_qty=fill.remaining_qty,
             local_client_ref=client_ref,
+            order_intent_id=intent_id,
+            submission_id=submission_id,
+            broker_status="RECONCILED",
         )
+        self._emit(OrderEvent(
+            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+            ticker=order.ticker.value, event_type=OrderEventType.RECONCILED,
+            submission_id=submission_id, broker_order_id=result.order_id,
+            side=order.side.value, requested_qty=order.quantity,
+            filled_qty=fill.filled_qty, unfilled_qty=fill.remaining_qty,
+            broker_status="FILLED" if fill.remaining_qty == 0 else "PARTIAL",
+        ))
         return result.order_id
+
+    def reconcile_order(
+        self, *, order_intent_id: str, origin_run_id: str, observer_run_id: str,
+        ticker: str, broker_order_id: str, submission_id: Optional[str] = None,
+    ) -> OrderReconciliation:
+        """Append later broker truth without mutating the originating facts."""
+        fill = self._read_fill_status(ticker=ticker, order_id=broker_order_id)
+        evidence = OrderReconciliation(
+            broker_order_id, ticker, fill.ordered_qty, fill.filled_qty,
+            fill.remaining_qty, "", order_intent_id, submission_id, "RECONCILED",
+        )
+        self._last_reconciliation = evidence
+        self._emit(OrderEvent(
+            order_intent_id=order_intent_id, origin_run_id=origin_run_id,
+            observer_run_id=observer_run_id, ticker=ticker,
+            event_type=OrderEventType.BROKER_OBSERVED, submission_id=submission_id,
+            broker_order_id=broker_order_id, requested_qty=fill.ordered_qty,
+            filled_qty=fill.filled_qty, unfilled_qty=fill.remaining_qty,
+            broker_status="FILLED" if fill.remaining_qty == 0 else "PARTIAL",
+        ))
+        return evidence
+
+    def _emit(self, event: OrderEvent) -> None:
+        if self._evidence_sink is not None:
+            sanitize_detail(event.detail)
+            self._evidence_sink(event)
 
     def _preflight(self) -> None:
         if not self._market_clock():

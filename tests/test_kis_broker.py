@@ -89,7 +89,7 @@ def test_kis_broker_is_broker() -> None:
 
 
 def test_order_post_not_retried() -> None:
-    from trading_bot.kis_broker import KISBroker
+    from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker
 
     adapter = _FakeOrderAdapter(post_exception=RuntimeError("single POST failure"))
     broker = KISBroker(
@@ -98,10 +98,62 @@ def test_order_post_not_retried() -> None:
         market_clock=lambda: True,
     )
 
-    with pytest.raises(RuntimeError, match="single POST failure"):
+    with pytest.raises(AmbiguousSubmissionError, match="reconcile before retry"):
         broker.place_order(_order(quantity=1, price=70_000))
 
     assert adapter.post_attempts == 1
+
+
+def test_append_only_evidence_has_stable_intent_and_distinct_submission() -> None:
+    from trading_bot.kis_broker import KISBroker
+
+    events = []
+    broker = KISBroker(
+        order_adapter=_FakeOrderAdapter(), account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True, evidence_sink=events.append,
+    )
+    broker.place_order(
+        _order(quantity=1), order_intent_id="intent-1",
+        origin_run_id="origin", observer_run_id="origin",
+    )
+    assert [event.event_type.value for event in events] == [
+        "INTENT_CREATED", "DUPLICATE_CHECKED", "SUBMISSION_ATTEMPTED",
+        "SUBMISSION_ACCEPTED", "RECONCILED",
+    ]
+    assert {event.order_intent_id for event in events} == {"intent-1"}
+    submissions = {event.submission_id for event in events if event.submission_id}
+    assert len(submissions) == 1
+    assert all("response" not in (event.detail or {}) for event in events)
+
+
+def test_ambiguous_evidence_is_single_shot_and_later_observation_links_runs() -> None:
+    from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker
+
+    events = []
+    adapter = _FakeOrderAdapter(post_exception=TimeoutError("do not persist this body"))
+    broker = KISBroker(
+        order_adapter=adapter, account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True, evidence_sink=events.append,
+    )
+    with pytest.raises(AmbiguousSubmissionError) as caught:
+        broker.place_order(
+            _order(), order_intent_id="intent-a", origin_run_id="origin",
+            observer_run_id="origin",
+        )
+    assert adapter.post_attempts == 1
+    assert events[-1].event_type.value == "SUBMISSION_AMBIGUOUS"
+    assert "do not persist" not in repr(events[-1].detail)
+
+    adapter.post_exception = None
+    broker.reconcile_order(
+        order_intent_id="intent-a", origin_run_id="origin", observer_run_id="observer",
+        ticker="005930", broker_order_id="KIS-LATER",
+        submission_id=caught.value.submission_id,
+    )
+    observed = events[-1]
+    assert observed.origin_run_id == "origin"
+    assert observed.observer_run_id == "observer"
+    assert observed.order_intent_id == "intent-a"
 
 
 def test_reconcile_skips_duplicate() -> None:

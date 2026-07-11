@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+import uuid
 
 from trading_bot.domain import Decision, Money, Order, OrderSide, Position, Ticker
 from trading_bot.ports import Broker
@@ -185,6 +186,7 @@ def _finalize_cycle(
     override_reason: str,
     order_reason: str,
     confidence: Optional[float] = None,
+    origin_run_id: Optional[str] = None,
 ) -> ExecutionResult:
     """Apply the dry-run gate, then build the audit event and result (EXEC-05).
 
@@ -196,7 +198,16 @@ def _finalize_cycle(
 
     broker_order_id: Optional[str] = None
     if not dry_run and order is not None:
-        broker_order_id = broker.place_order(order)
+        order_intent_id = str(uuid.uuid4())
+        try:
+            broker_order_id = broker.place_order(
+                order, order_intent_id=order_intent_id,
+                origin_run_id=origin_run_id, observer_run_id=origin_run_id,
+            )
+        except TypeError as exc:
+            if "unexpected keyword" not in str(exc):
+                raise
+            broker_order_id = broker.place_order(order)
 
     audit = CycleAuditEvent(
         ticker=ticker.value,
@@ -231,6 +242,7 @@ def execute_signal_cycle(
     risk_config: RiskConfig,
     daily_loss_state: DailyLossState,
     dry_run: bool = True,
+    origin_run_id: Optional[str] = None,
 ) -> ExecutionResult:
     """Run one parse -> risk -> execute -> (gated) place decision cycle.
 
@@ -288,6 +300,7 @@ def execute_signal_cycle(
             override_reason=risk.reason,
             order_reason=f"risk exit ({risk.reason}) overrides LLM {parsed_decision}",
             confidence=confidence,
+            origin_run_id=origin_run_id,
         )
 
     # 3. LLM action evaluation, gated by the daily-loss kill switch (D-08).
@@ -338,4 +351,5 @@ def execute_signal_cycle(
         override_reason="",
         order_reason=order_reason,
         confidence=confidence,
+        origin_run_id=origin_run_id,
     )
