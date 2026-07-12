@@ -16,10 +16,10 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ### Deterministic Replay
 
-- [ ] **REPLAY-01**: Operator can replay historical OHLCV through the production screener, fixture signal, parser, risk rules, sizing, and execution gate without live LLM, KIS, Naver, or wall-clock dependencies.
-- [ ] **REPLAY-02**: Operator can inspect a deterministic replay manifest containing fixture hashes, policy snapshot, code revision, initial state, ordered outcomes, and a stable result identity.
-- [ ] **REPLAY-03**: Operator can compare BUY, HOLD, and SELL outcomes across fixture scenarios to judge whether the BUY policy is too strict or too loose without presenting replay results as live profitability.
-- [ ] **REPLAY-04**: Replay verification covers threshold boundaries, malformed signals, stale data, risk overrides, HOLD and SELL paths, and no-look-ahead constraints.
+- [x] **REPLAY-01**: Operator can replay historical OHLCV through the production screener, fixture signal, parser, risk rules, sizing, and execution gate without live LLM, KIS, Naver, or wall-clock dependencies.
+- [x] **REPLAY-02**: Operator can inspect a deterministic replay manifest containing fixture hashes, policy snapshot, code revision, initial state, ordered outcomes, and a stable result identity.
+- [x] **REPLAY-03**: Operator can compare BUY, HOLD, and SELL outcomes across fixture scenarios to judge whether the BUY policy is too strict or too loose without presenting replay results as live profitability.
+- [x] **REPLAY-04**: Replay verification covers threshold boundaries, malformed signals, stale data, risk overrides, HOLD and SELL paths, and no-look-ahead constraints.
 
 ### Reports & Runbook
 
@@ -75,10 +75,10 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | EVID-02 | Phase 6 | Complete |
 | EVID-03 | Phase 6 | Complete |
 | EVID-04 | Phase 6 | Complete |
-| REPLAY-01 | Phase 7 | Pending |
-| REPLAY-02 | Phase 7 | Pending |
-| REPLAY-03 | Phase 7 | Pending |
-| REPLAY-04 | Phase 7 | Pending |
+| REPLAY-01 | Phase 7 | Complete |
+| REPLAY-02 | Phase 7 | Complete |
+| REPLAY-03 | Phase 7 | Complete |
+| REPLAY-04 | Phase 7 | Complete |
 | REP-01 | Phase 8 | Pending |
 | REP-02 | Phase 8 | Pending |
 | RUN-01 | Phase 8 | Pending |

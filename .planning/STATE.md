@@ -5,15 +5,15 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 7
 current_phase_name: Deterministic Replay Validation
 status: executing
-stopped_at: Phase 7 context gathered
-last_updated: "2026-07-11T14:39:02.979Z"
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-07-12T01:41:38.147Z"
 last_activity: 2026-07-11
 last_activity_desc: Phase 06 complete, transitioned to Phase 7
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 8
+  completed_plans: 7
   percent: 20
 ---
 
@@ -65,6 +65,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 06]: KIS orders re-fetch an aware timestamped quote immediately before POST and accept an inclusive maximum age of 10 seconds. — Enforce freshness at the money-moving boundary.
 - [Phase 6]: Selected screen candidates override duplicate rejection evidence for the same ticker.
 - [Phase 6]: Real and mock mutation boundaries share an inclusive 10-second freshness verdict and normalized evidence shape.
+- [Phase 07]: Hash Git HEAD and normalized replay-relevant tracked diff separately so dirty executions remain attributable.
+- [Phase 07]: Compute replay result identity from canonical deterministic evidence only; persist invocation metadata outside identity.
 
 ### Pending Todos
 
@@ -87,12 +89,13 @@ None yet.
 | Phase 06 P03 | 12min | 2 tasks | 7 files |
 | Phase 06 P04 | 12m | 3 tasks | 8 files |
 | Phase 06 P05 | 10min | 3 tasks | 7 files |
+| Phase 07 P02 | 10min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-07-11T14:39:02.973Z
-Stopped at: Phase 7 context gathered
-Resume file: .planning/phases/07-deterministic-replay-validation/07-CONTEXT.md
+Last session: 2026-07-12T01:41:38.141Z
+Stopped at: Completed 07-02-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
