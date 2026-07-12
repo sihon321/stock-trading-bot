@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import asdict, is_dataclass
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -35,6 +37,10 @@ class FutureDataAccessError(ValueError):
 
 class ReplayEvidenceError(RuntimeError):
     """Raised when deterministic revision evidence cannot be established."""
+
+
+class ReplayOutputError(RuntimeError):
+    """Raised when replay evidence cannot be persisted without ambiguity."""
 
 
 def _canonical_value(value: Any) -> Any:
@@ -82,6 +88,104 @@ class ReplayManifest:
     evaluation_time: str
     trading_date: str
     fixture_schema_version: int
+
+
+def _deterministic_result_document(
+    manifest: ReplayManifest, outcomes: Sequence[Any]
+) -> Mapping[str, Any]:
+    return {
+        "manifest": _canonical_value(manifest),
+        # Sequence order is policy evidence and must never be sorted.
+        "outcomes": _canonical_value(tuple(outcomes)),
+    }
+
+
+def compute_result_id(manifest: ReplayManifest, outcomes: Sequence[Any]) -> str:
+    """Hash deterministic inputs and ordered normalized outcomes."""
+    return hashlib.sha256(
+        canonical_json_bytes(_deterministic_result_document(manifest, outcomes))
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    manifest: ReplayManifest
+    outcomes: tuple[Any, ...]
+    observational_metadata: Mapping[str, Any]
+    result_id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        normalized_outcomes = tuple(
+            json.loads(canonical_json_bytes(outcome)) for outcome in self.outcomes
+        )
+        normalized_metadata = json.loads(canonical_json_bytes(self.observational_metadata))
+        object.__setattr__(self, "outcomes", normalized_outcomes)
+        object.__setattr__(self, "observational_metadata", normalized_metadata)
+        object.__setattr__(
+            self, "result_id", compute_result_id(self.manifest, normalized_outcomes)
+        )
+
+    def deterministic_bytes(self) -> bytes:
+        return canonical_json_bytes(
+            _deterministic_result_document(self.manifest, self.outcomes)
+        )
+
+    def normalized_bytes(self) -> bytes:
+        document = {
+            "schema_version": 1,
+            "result_id": self.result_id,
+            "evidence": _deterministic_result_document(self.manifest, self.outcomes),
+            "observational_metadata": self.observational_metadata,
+        }
+        return canonical_json_bytes(document) + b"\n"
+
+
+def write_replay_result(
+    result: ReplayResult,
+    destination: str | Path,
+    *,
+    filename: str | None = None,
+) -> Path:
+    """Atomically persist normalized evidence within a trusted destination."""
+    raw_destination = Path(destination)
+    if raw_destination.is_symlink():
+        raise ReplayOutputError("output destination may not be a symbolic link")
+    raw_destination.mkdir(parents=True, exist_ok=True)
+    if not raw_destination.is_dir():
+        raise ReplayOutputError("output destination must be a directory")
+    root = raw_destination.resolve(strict=True)
+
+    selected_name = filename or f"{result.result_id}.json"
+    selected = Path(selected_name)
+    if selected.is_absolute() or selected.name != selected_name or selected_name in {"", ".", ".."}:
+        raise ReplayOutputError("output filename must be a plain filename")
+    target = root / selected_name
+    if target.is_symlink():
+        raise ReplayOutputError("output file may not be a symbolic link")
+    if target.parent.resolve(strict=True) != root:
+        raise ReplayOutputError("output path escapes selected destination")
+
+    payload = result.normalized_bytes()
+    if target.exists():
+        if not target.is_file() or target.read_bytes() != payload:
+            raise ReplayOutputError("output conflict: existing content differs")
+        return target
+
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=root, prefix=".replay-", suffix=".tmp", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, target)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+    return target
 
 
 def _git_output(repo_root: Path, args: Sequence[str], *, binary: bool = False) -> bytes:
