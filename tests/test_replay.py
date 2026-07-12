@@ -144,6 +144,28 @@ def test_reordered_unordered_input_keeps_result_identity() -> None:
     assert compute_result_id(left, outcomes) == compute_result_id(right, outcomes)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scenario_hash", "a" * 64),
+        ("ohlcv_hash", "b" * 64),
+        ("raw_signal_hash", "c" * 64),
+        ("policy", {"threshold": 0.9}),
+        ("head_commit", "def456"),
+        ("relevant_tracked_diff_hash", "d" * 64),
+        ("code_state", "dirty"),
+        ("initial_state", {"cash": 999, "positions": []}),
+        ("evaluation_time", "2026-07-01T15:31:00+09:00"),
+        ("trading_date", "20260702"),
+        ("fixture_schema_version", 2),
+    ],
+)
+def test_each_manifest_input_changes_result_identity(field: str, value) -> None:
+    outcomes = ({"ticker": "000010", "action": "HOLD"},)
+    baseline = compute_result_id(_static_manifest(), outcomes)
+    assert compute_result_id(_static_manifest(**{field: value}), outcomes) != baseline
+
+
 def test_output_is_normalized_idempotent_and_conflict_safe(tmp_path: Path) -> None:
     result = ReplayResult(
         _static_manifest(),
