@@ -10,6 +10,9 @@ from trading_bot.replay import (
     ReplayManifest,
     ReplayOutputError,
     ReplayResult,
+    ReplayOutcome,
+    build_replay_funnel,
+    verify_replay_expectations,
     build_replay_manifest,
     canonical_json_bytes,
     compute_result_id,
@@ -254,3 +257,42 @@ def test_fixture_rejects_future_rows_before_replay(tmp_path: Path) -> None:
     path = tmp_path / "future.json"
     path.write_text(json.dumps(data))
     with pytest.raises(FutureDataAccessError): load_replay_bundle(path)
+
+
+def test_funnel_has_explicit_denominators_and_monotonic_buy_stages() -> None:
+    outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "focused.json"))
+    funnel = build_replay_funnel(outcomes)
+    assert funnel.evaluated == type(funnel.evaluated)(len(outcomes), len(outcomes))
+    assert funnel.buy_signaled.denominator == funnel.selected.numerator
+    assert funnel.confidence_qualified.denominator == funnel.buy_signaled.numerator
+    assert funnel.order_eligible.numerator <= funnel.validly_sized.numerator
+    assert set(funnel.actions) == {"BUY", "HOLD", "SELL"}
+    assert all(value.denominator == len(outcomes) for value in funnel.actions.values())
+    assert list(funnel.blocked_reasons) == sorted(funnel.blocked_reasons)
+
+
+def test_funnel_rejects_non_monotonic_normalized_facts() -> None:
+    outcome = ReplayOutcome(
+        "broken", "000001", 1, "HOLD", False, "NONE", "broken", 1, 0,
+        "HOLD", True, selected=False, buy_signaled=True,
+    )
+    with pytest.raises(ValueError, match="monotonic"):
+        build_replay_funnel((outcome,))
+
+
+def test_verification_attributes_every_mismatch_and_json_has_disclaimer() -> None:
+    outcome = ReplayOutcome(
+        "scenario", "000001", 1, "HOLD", False, "NONE", "reason", 1, 0,
+        "BUY", False,
+    )
+    verification = verify_replay_expectations((outcome,))
+    assert verification.passed is False
+    assert (verification.checks[0].scenario_id, verification.checks[0].ticker,
+            verification.checks[0].stage) == ("scenario", "000001", "action")
+    result = ReplayResult(
+        _static_manifest(), (outcome,), {}, build_replay_funnel((outcome,)), verification
+    )
+    document = json.loads(result.normalized_bytes())
+    assert "decision-policy paths only" in document["evidence"]["disclaimer"]
+    forbidden = {"pnl", "return", "win_rate", "sharpe", "profitability"}
+    assert not forbidden.intersection(document["evidence"])

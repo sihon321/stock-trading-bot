@@ -29,6 +29,10 @@ REQUIRED_BOUNDARIES = frozenset({
     "malformed_signal", "stale_data", "stop_loss", "take_profit",
     "daily_loss_block", "sizing_boundary", "future_access",
 })
+NON_PROFITABILITY_DISCLAIMER = (
+    "This replay validates decision-policy paths only; it is not an estimate of "
+    "profitability, returns, win rate, or investment performance."
+)
 
 
 class FutureDataAccessError(ValueError):
@@ -91,19 +95,24 @@ class ReplayManifest:
 
 
 def _deterministic_result_document(
-    manifest: ReplayManifest, outcomes: Sequence[Any]
+    manifest: ReplayManifest, outcomes: Sequence[Any], **extra: Any
 ) -> Mapping[str, Any]:
-    return {
+    document = {
         "manifest": _canonical_value(manifest),
         # Sequence order is policy evidence and must never be sorted.
         "outcomes": _canonical_value(tuple(outcomes)),
     }
+    document.update({key: _canonical_value(value) for key, value in extra.items()})
+    return document
 
 
 def compute_result_id(manifest: ReplayManifest, outcomes: Sequence[Any]) -> str:
     """Hash deterministic inputs and ordered normalized outcomes."""
     return hashlib.sha256(
-        canonical_json_bytes(_deterministic_result_document(manifest, outcomes))
+        canonical_json_bytes(_deterministic_result_document(
+            manifest, outcomes, funnel=None, verification=None,
+            disclaimer=NON_PROFITABILITY_DISCLAIMER,
+        ))
     ).hexdigest()
 
 
@@ -112,6 +121,9 @@ class ReplayResult:
     manifest: ReplayManifest
     outcomes: tuple[Any, ...]
     observational_metadata: Mapping[str, Any]
+    funnel: ReplayFunnel | None = None
+    verification: ReplayVerification | None = None
+    disclaimer: str = NON_PROFITABILITY_DISCLAIMER
     result_id: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -122,19 +134,22 @@ class ReplayResult:
         object.__setattr__(self, "outcomes", normalized_outcomes)
         object.__setattr__(self, "observational_metadata", normalized_metadata)
         object.__setattr__(
-            self, "result_id", compute_result_id(self.manifest, normalized_outcomes)
+            self, "result_id", hashlib.sha256(self.deterministic_bytes()).hexdigest()
         )
 
     def deterministic_bytes(self) -> bytes:
         return canonical_json_bytes(
-            _deterministic_result_document(self.manifest, self.outcomes)
+            _deterministic_result_document(
+                self.manifest, self.outcomes, funnel=self.funnel,
+                verification=self.verification, disclaimer=self.disclaimer,
+            )
         )
 
     def normalized_bytes(self) -> bytes:
         document = {
             "schema_version": 1,
             "result_id": self.result_id,
-            "evidence": _deterministic_result_document(self.manifest, self.outcomes),
+            "evidence": json.loads(self.deterministic_bytes()),
             "observational_metadata": self.observational_metadata,
         }
         return canonical_json_bytes(document) + b"\n"
@@ -277,6 +292,88 @@ class ReplayOutcome:
     position_quantity_after: int
     expected_action: str
     matched: bool
+    selected: bool = True
+    buy_signaled: bool = False
+    confidence_qualified: bool = False
+    risk_qualified: bool = False
+    validly_sized: bool = False
+    order_eligible: bool = False
+    blocked_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplayCount:
+    numerator: int
+    denominator: int
+
+
+@dataclass(frozen=True)
+class ReplayFunnel:
+    evaluated: ReplayCount
+    selected: ReplayCount
+    buy_signaled: ReplayCount
+    confidence_qualified: ReplayCount
+    risk_qualified: ReplayCount
+    validly_sized: ReplayCount
+    order_eligible: ReplayCount
+    actions: Mapping[str, ReplayCount]
+    blocked_reasons: Mapping[str, ReplayCount]
+
+
+@dataclass(frozen=True)
+class ReplayCheck:
+    scenario_id: str
+    ticker: str
+    stage: str
+    expected: str
+    actual: str
+    passed: bool
+
+
+@dataclass(frozen=True)
+class ReplayVerification:
+    passed: bool
+    checks: tuple[ReplayCheck, ...]
+
+
+def build_replay_funnel(outcomes: Sequence[ReplayOutcome]) -> ReplayFunnel:
+    """Derive an explicit-denominator policy funnel from normalized stage facts."""
+    total = len(outcomes)
+    selected = sum(outcome.selected for outcome in outcomes)
+    buy = sum(outcome.buy_signaled for outcome in outcomes)
+    confidence = sum(outcome.confidence_qualified for outcome in outcomes)
+    risk = sum(outcome.risk_qualified for outcome in outcomes)
+    sized = sum(outcome.validly_sized for outcome in outcomes)
+    eligible = sum(outcome.order_eligible for outcome in outcomes)
+    if not total >= selected >= buy >= confidence >= risk >= sized >= eligible:
+        raise ValueError("replay BUY-stage facts violate monotonic funnel invariants")
+    actions = {
+        action: ReplayCount(sum(x.action == action for x in outcomes), total)
+        for action in ("BUY", "HOLD", "SELL")
+    }
+    reasons = sorted({x.blocked_reason for x in outcomes if x.blocked_reason})
+    blocked = {
+        reason: ReplayCount(sum(x.blocked_reason == reason for x in outcomes), total)
+        for reason in reasons
+    }
+    return ReplayFunnel(
+        ReplayCount(total, total), ReplayCount(selected, total),
+        ReplayCount(buy, selected), ReplayCount(confidence, buy),
+        ReplayCount(risk, confidence), ReplayCount(sized, risk),
+        ReplayCount(eligible, sized), actions, blocked,
+    )
+
+
+def verify_replay_expectations(outcomes: Sequence[ReplayOutcome]) -> ReplayVerification:
+    """Compare frozen expected terminal actions with normalized replay outcomes."""
+    checks = tuple(
+        ReplayCheck(
+            outcome.scenario_id, outcome.ticker, "action", outcome.expected_action,
+            outcome.action, outcome.action == outcome.expected_action,
+        )
+        for outcome in outcomes
+    )
+    return ReplayVerification(all(check.passed for check in checks), checks)
 
 
 def guarded_historical_view(
@@ -384,5 +481,29 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
                 broker.place_order(result.order)
             held = broker.get_position(Ticker(step.ticker))
             action = result.action.value
-            outcomes.append(ReplayOutcome(scenario.scenario_id, step.ticker, rank, action, result.order is not None, step.fill, result.reason, broker.cash.amount, held.quantity if held else 0, step.expected_action, action == step.expected_action))
+            audit = result.audit
+            buy_signaled = bool(audit and audit.parsed_decision == "BUY")
+            confidence_qualified = bool(
+                buy_signaled and result.confidence is not None
+                and result.confidence >= execution.buy_confidence_threshold
+            )
+            risk_qualified = bool(confidence_qualified and action == "BUY")
+            validly_sized = bool(risk_qualified and result.order is not None)
+            blocked_reason = None
+            if audit and audit.parse_error:
+                blocked_reason = "MALFORMED_SIGNAL"
+            elif buy_signaled and not confidence_qualified:
+                blocked_reason = "LOW_CONFIDENCE"
+            elif confidence_qualified and not risk_qualified:
+                blocked_reason = "RISK_BLOCK"
+            elif risk_qualified and not validly_sized:
+                blocked_reason = "INVALID_SIZE"
+            outcomes.append(ReplayOutcome(
+                scenario.scenario_id, step.ticker, rank, action,
+                result.order is not None, step.fill, result.reason,
+                broker.cash.amount, held.quantity if held else 0,
+                step.expected_action, action == step.expected_action,
+                True, buy_signaled, confidence_qualified, risk_qualified,
+                validly_sized, validly_sized, blocked_reason,
+            ))
     return tuple(outcomes)
