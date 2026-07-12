@@ -8,11 +8,15 @@ import pytest
 from trading_bot.replay import (
     FutureDataAccessError,
     ReplayManifest,
+    ReplayOutputError,
+    ReplayResult,
     build_replay_manifest,
     canonical_json_bytes,
+    compute_result_id,
     guarded_historical_view,
     load_replay_bundle,
     run_replay_scenarios,
+    write_replay_result,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "replay"
@@ -99,6 +103,75 @@ def test_dirty_relevant_tracked_content_changes_manifest_but_untracked_does_not(
     assert dirty.code_state == "dirty"
     assert dirty.head_commit == clean.head_commit
     assert dirty.relevant_tracked_diff_hash != clean.relevant_tracked_diff_hash
+
+
+def _static_manifest(**changes) -> ReplayManifest:
+    values = {
+        "scenario_hash": "1" * 64,
+        "ohlcv_hash": "2" * 64,
+        "raw_signal_hash": "3" * 64,
+        "policy": {"threshold": 0.8},
+        "head_commit": "abc123",
+        "relevant_tracked_diff_hash": "4" * 64,
+        "code_state": "clean",
+        "initial_state": {"cash": 1000, "positions": []},
+        "evaluation_time": "2026-07-01T15:30:00+09:00",
+        "trading_date": "20260701",
+        "fixture_schema_version": 1,
+    }
+    values.update(changes)
+    return ReplayManifest(**values)
+
+
+def test_result_identity_is_repeatable_order_sensitive_and_metadata_independent() -> None:
+    manifest = _static_manifest()
+    outcomes = ({"ticker": "000010", "action": "BUY"}, {"ticker": "000020", "action": "HOLD"})
+    first = ReplayResult(manifest, outcomes, {"invoked_at": "now", "duration_ms": 1})
+    second = ReplayResult(manifest, outcomes, {"invoked_at": "later", "duration_ms": 99})
+
+    assert first.result_id == second.result_id == compute_result_id(manifest, outcomes)
+    assert first.deterministic_bytes() == second.deterministic_bytes()
+    assert ReplayResult(manifest, tuple(reversed(outcomes)), {}).result_id != first.result_id
+    changed = ({"ticker": "000010", "action": "HOLD"}, outcomes[1])
+    assert ReplayResult(manifest, changed, {}).result_id != first.result_id
+    assert ReplayResult(_static_manifest(trading_date="20260702"), outcomes, {}).result_id != first.result_id
+
+
+def test_reordered_unordered_input_keeps_result_identity() -> None:
+    left = _static_manifest(policy={"a": 1, "b": {"x": 2, "y": 3}})
+    right = _static_manifest(policy={"b": {"y": 3, "x": 2}, "a": 1})
+    outcomes = ({"ticker": "000010", "action": "HOLD"},)
+    assert compute_result_id(left, outcomes) == compute_result_id(right, outcomes)
+
+
+def test_output_is_normalized_idempotent_and_conflict_safe(tmp_path: Path) -> None:
+    result = ReplayResult(
+        _static_manifest(),
+        ({"ticker": "000010", "action": "HOLD"},),
+        {"invoked_at": "2026-07-01T16:00:00+09:00", "output_path": "ignored-for-id"},
+    )
+    path = write_replay_result(result, tmp_path)
+    original = path.read_bytes()
+    assert original == result.normalized_bytes()
+    assert write_replay_result(result, tmp_path) == path
+    assert path.read_bytes() == original
+
+    path.write_text("different", encoding="utf-8")
+    with pytest.raises(ReplayOutputError, match="conflict"):
+        write_replay_result(result, tmp_path)
+
+
+def test_output_rejects_traversal_and_symlink_escape(tmp_path: Path) -> None:
+    result = ReplayResult(_static_manifest(), (), {})
+    with pytest.raises(ReplayOutputError):
+        write_replay_result(result, tmp_path, filename="../escape.json")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ReplayOutputError):
+        write_replay_result(result, link)
 
 
 def test_fixture_bundles_are_strict_and_catalog_is_enumerable() -> None:
