@@ -6,11 +6,13 @@ import dotenv
 dotenv.load_dotenv()
 
 import os
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional, Sequence
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import typer
@@ -543,6 +545,70 @@ def run_command(
         raise typer.Exit(2) from None
 
     typer.echo(f"Run {result['run_id']} complete: {len(result['outcomes'])} tickers")
+
+
+@app.command("replay")
+def replay_command(
+    fixture: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    output: Path = typer.Option(..., "--output", file_okay=False),
+) -> None:
+    """Replay a frozen fixture bundle entirely offline and write normalized evidence."""
+    from trading_bot.replay import (
+        NON_PROFITABILITY_DISCLAIMER,
+        ReplayResult,
+        build_replay_funnel,
+        build_replay_manifest,
+        load_replay_bundle,
+        run_replay_scenarios,
+        verify_replay_expectations,
+        write_replay_result,
+    )
+
+    try:
+        raw = json.loads(fixture.read_text(encoding="utf-8"))
+        scenarios = load_replay_bundle(fixture)
+        outcomes = run_replay_scenarios(scenarios)
+        funnel = build_replay_funnel(outcomes)
+        verification = verify_replay_expectations(outcomes)
+        manifest = build_replay_manifest(
+            scenario_fixtures=raw["scenarios"],
+            ohlcv_fixtures=[row for scenario in raw["scenarios"] for row in scenario["market_history"]],
+            raw_signal_fixtures=[step["raw_signal"] for scenario in raw["scenarios"] for step in scenario["steps"]],
+            policy={scenario["id"]: scenario["policy"] for scenario in raw["scenarios"]},
+            initial_state={scenario["id"]: scenario["initial_state"] for scenario in raw["scenarios"]},
+            evaluation_time="|".join(scenario["evaluation_time"] for scenario in raw["scenarios"]),
+            trading_date="|".join(scenario["trading_date"] for scenario in raw["scenarios"]),
+            fixture_schema_version=raw["schema_version"],
+        )
+        result = ReplayResult(manifest, outcomes, {}, funnel, verification)
+        written = write_replay_result(result, output)
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        typer.echo(f"Replay failed: {type(exc).__name__}: {str(exc)[:200]}", err=True)
+        raise typer.Exit(2) from None
+
+    typer.echo(f"Replay result: {result.result_id}")
+    for scenario_id in sorted({item.scenario_id for item in outcomes}):
+        selected = [item for item in outcomes if item.scenario_id == scenario_id]
+        counts = {action: sum(item.action == action for item in selected) for action in ("BUY", "HOLD", "SELL")}
+        blocked = sum(item.blocked_reason is not None for item in selected)
+        typer.echo(
+            f"{scenario_id}: BUY={counts['BUY']} HOLD={counts['HOLD']} "
+            f"SELL={counts['SELL']} blocked={blocked}"
+        )
+    for name in ("evaluated", "selected", "buy_signaled", "confidence_qualified", "risk_qualified", "validly_sized", "order_eligible"):
+        count = getattr(funnel, name)
+        typer.echo(f"{name}: {count.numerator}/{count.denominator}")
+    typer.echo(f"Verification: {'PASS' if verification.passed else 'FAIL'}")
+    for check in verification.checks:
+        if not check.passed:
+            typer.echo(
+                f"Mismatch {check.scenario_id}/{check.ticker}/{check.stage}: "
+                f"expected={check.expected} actual={check.actual}"
+            )
+    typer.echo(f"Evidence: {written}")
+    typer.echo(NON_PROFITABILITY_DISCLAIMER)
+    if not verification.passed:
+        raise typer.Exit(1)
 
 
 @app.command("screen")

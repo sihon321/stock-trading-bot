@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,6 +19,8 @@ from trading_bot.execution import (
     ExecutionAction,
     ExecutionResult,
 )
+
+REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
 
 @dataclass
@@ -481,3 +485,60 @@ def test_immediate_error_push() -> None:
     assert clean_result["errors"] == 0
     assert len(clean_notifier.messages) == 1
     assert "Trading run test-run" in clean_notifier.messages[0]
+
+
+def test_replay_command_is_offline_concise_and_writes_complete_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import trading_bot.cli as cli
+
+    monkeypatch.setattr(
+        cli, "build_runtime",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live builder called")),
+    )
+    result = CliRunner().invoke(
+        cli.app,
+        ["replay", str(REPLAY_FIXTURES / "focused.json"), "--output", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Replay result:" in result.stdout
+    assert "Verification: PASS" in result.stdout
+    assert "evaluated:" in result.stdout and "/" in result.stdout
+    assert "decision-policy paths only" in result.stdout
+    assert "Mismatch " not in result.stdout
+    output_files = list(tmp_path.glob("*.json"))
+    assert len(output_files) == 1
+    document = json.loads(output_files[0].read_text())
+    assert document["result_id"] in result.stdout
+    assert document["evidence"]["verification"]["passed"] is True
+    assert document["evidence"]["funnel"]["evaluated"]["denominator"] > 0
+    assert "decision-policy paths only" in document["evidence"]["disclaimer"]
+
+
+def test_replay_command_shows_only_mismatch_detail_and_exits_nonzero(tmp_path: Path) -> None:
+    import trading_bot.cli as cli
+
+    raw = json.loads((REPLAY_FIXTURES / "focused.json").read_text())
+    raw["scenarios"][0]["steps"][0]["expected_action"] = "HOLD"
+    fixture = tmp_path / "mismatch.json"
+    fixture.write_text(json.dumps(raw), encoding="utf-8")
+    result = CliRunner().invoke(
+        cli.app, ["replay", str(fixture), "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 1
+    assert "Verification: FAIL" in result.stdout
+    assert "Mismatch buy-at-threshold/005930/action" in result.stdout
+    assert "malformed-signal/000002/action" not in result.stdout
+
+
+def test_replay_command_rejects_invalid_fixture_with_bounded_diagnostic(tmp_path: Path) -> None:
+    from trading_bot.cli import app
+
+    fixture = tmp_path / "invalid.json"
+    fixture.write_text('{"secret":"do-not-echo"}', encoding="utf-8")
+    result = CliRunner().invoke(
+        app, ["replay", str(fixture), "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 2
+    assert "Replay failed:" in result.stderr
+    assert len(result.stderr) < 300
