@@ -1,16 +1,104 @@
 import json
+import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from trading_bot.replay import (
     FutureDataAccessError,
+    ReplayManifest,
+    build_replay_manifest,
+    canonical_json_bytes,
     guarded_historical_view,
     load_replay_bundle,
     run_replay_scenarios,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "replay"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _manifest(repo: Path, **overrides) -> ReplayManifest:
+    values = {
+        "scenario_fixtures": {"b": 2, "a": 1},
+        "ohlcv_fixtures": [{"date": "20260701", "close": 70000}],
+        "raw_signal_fixtures": {"005930": '{"decision":"HOLD"}'},
+        "policy": {"buy_threshold": 0.8, "markets": ["KOSPI"]},
+        "initial_state": {"cash": 1_000_000, "positions": []},
+        "evaluation_time": "2026-07-01T15:30:00+09:00",
+        "trading_date": "20260701",
+        "fixture_schema_version": 1,
+        "repo_root": repo,
+        "relevant_paths": ("trading_bot", "pyproject.toml"),
+    }
+    values.update(overrides)
+    return build_replay_manifest(**values)
+
+
+def test_canonical_json_is_sorted_strict_and_stable() -> None:
+    assert canonical_json_bytes({"z": [2, 1], "a": {"d": 4, "c": 3}}) == (
+        b'{"a":{"c":3,"d":4},"z":[2,1]}'
+    )
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"bad": float("nan")})
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"bad": float("inf")})
+
+
+def test_manifest_records_complete_deterministic_evidence(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "trading_bot").mkdir()
+    (tmp_path / "trading_bot" / "replay.py").write_text("VERSION = 1\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+    _git(tmp_path, "add", "trading_bot/replay.py", "pyproject.toml")
+    _git(tmp_path, "commit", "-qm", "initial")
+
+    manifest = _manifest(tmp_path)
+
+    assert manifest.scenario_hash == hashlib.sha256(
+        canonical_json_bytes({"b": 2, "a": 1})
+    ).hexdigest()
+    assert len(manifest.ohlcv_hash) == len(manifest.raw_signal_hash) == 64
+    assert manifest.policy == {"buy_threshold": 0.8, "markets": ["KOSPI"]}
+    assert manifest.initial_state == {"cash": 1_000_000, "positions": []}
+    assert manifest.head_commit == _git(tmp_path, "rev-parse", "HEAD")
+    assert manifest.relevant_tracked_diff_hash == hashlib.sha256(b"").hexdigest()
+    assert manifest.code_state == "clean"
+    assert manifest.evaluation_time == "2026-07-01T15:30:00+09:00"
+    assert manifest.trading_date == "20260701"
+    assert manifest.fixture_schema_version == 1
+
+
+def test_dirty_relevant_tracked_content_changes_manifest_but_untracked_does_not(
+    tmp_path: Path,
+) -> None:
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "trading_bot").mkdir()
+    source = tmp_path / "trading_bot" / "replay.py"
+    source.write_text("VERSION = 1\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+    _git(tmp_path, "add", "trading_bot/replay.py", "pyproject.toml")
+    _git(tmp_path, "commit", "-qm", "initial")
+    clean = _manifest(tmp_path)
+
+    (tmp_path / "result.json").write_text("generated")
+    assert _manifest(tmp_path) == clean
+
+    source.write_text("VERSION = 2\n")
+    dirty = _manifest(tmp_path)
+    assert dirty.code_state == "dirty"
+    assert dirty.head_commit == clean.head_commit
+    assert dirty.relevant_tracked_diff_hash != clean.relevant_tracked_diff_hash
 
 
 def test_fixture_bundles_are_strict_and_catalog_is_enumerable() -> None:
