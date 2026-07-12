@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "boundaries": ["buy_at_threshold", "buy_below_threshold", "hold", "sell", "malformed_signal", "stale_data", "stop_loss", "take_profit", "daily_loss_block", "sizing_boundary", "future_access"],
+  "scenarios": [
+    {
+      "id": "buy-at-threshold", "mode": "FOCUSED", "trading_date": "20260630", "evaluation_time": "2026-06-30T15:30:00+09:00",
+      "policy": {"max_candidates": 20, "markets": ["KOSPI", "KOSDAQ"], "min_trading_value": 1000000000, "min_volume_ratio": 1.0, "excluded_states": ["HALTED"], "stop_loss_pct": 0.05, "take_profit_pct": 0.10, "daily_loss_threshold": 500000, "buy_confidence_threshold": 0.8, "sell_confidence_threshold": 0.8, "buy_cash_fraction": 0.1, "max_position_value": 1000000},
+      "initial_state": {"cash": 10000000, "positions": [], "daily_loss": {"realized_loss": 0, "threshold": 500000}},
+      "market_history": [{"observed_at": "2026-06-01T15:30:00+09:00", "close": 65000}, {"observed_at": "2026-06-30T15:30:00+09:00", "close": 70000}],
+      "steps": [{"ticker": "005930", "raw_signal": "{\"decision\":\"BUY\",\"confidence\":0.8,\"reason\":\"threshold\"}", "current_price": 70000, "fill": "NONE", "market_row": {"ticker":"005930","market":"KOSPI","state":"NORMAL","trading_value":9000000000,"technicals":{"atr_14":5,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}}, "expected_action":"BUY"}]
+    },
+    {
+      "id": "buy-below-threshold", "mode": "FOCUSED", "trading_date": "20260630", "evaluation_time": "2026-06-30T15:30:00+09:00",
+      "policy": {"max_candidates":20,"markets":["KOSPI"],"min_trading_value":1,"min_volume_ratio":1,"excluded_states":["HALTED"],"stop_loss_pct":0.05,"take_profit_pct":0.1,"daily_loss_threshold":500000,"buy_confidence_threshold":0.8,"sell_confidence_threshold":0.8,"buy_cash_fraction":0.1,"max_position_value":1000000},
+      "initial_state":{"cash":10000000,"positions":[],"daily_loss":{"realized_loss":0,"threshold":500000}}, "market_history":[],
+      "steps":[{"ticker":"000001","raw_signal":"{\"decision\":\"BUY\",\"confidence\":0.79,\"reason\":\"below\"}","current_price":10000,"fill":"NONE","market_row":{"ticker":"000001","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":5,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}},"expected_action":"HOLD"}]
+    },
+    {
+      "id":"malformed-signal", "mode":"FOCUSED", "trading_date":"20260630", "evaluation_time":"2026-06-30T15:30:00+09:00",
+      "policy":{"max_candidates":20,"markets":["KOSPI"],"min_trading_value":1,"min_volume_ratio":1,"excluded_states":["HALTED"],"stop_loss_pct":0.05,"take_profit_pct":0.1,"daily_loss_threshold":500000,"buy_confidence_threshold":0.8,"sell_confidence_threshold":0.8,"buy_cash_fraction":0.1,"max_position_value":1000000},
+      "initial_state":{"cash":10000000,"positions":[],"daily_loss":{"realized_loss":0,"threshold":500000}},"market_history":[],
+      "steps":[{"ticker":"000002","raw_signal":"{bad json","current_price":10000,"fill":"NONE","market_row":{"ticker":"000002","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":5,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}},"expected_action":"HOLD"}]
+    },
+    {
+      "id":"stop-loss-override", "mode":"FOCUSED", "trading_date":"20260630", "evaluation_time":"2026-06-30T15:30:00+09:00",
+      "policy":{"max_candidates":20,"markets":["KOSPI"],"min_trading_value":1,"min_volume_ratio":1,"excluded_states":["HALTED"],"stop_loss_pct":0.05,"take_profit_pct":0.1,"daily_loss_threshold":500000,"buy_confidence_threshold":0.8,"sell_confidence_threshold":0.8,"buy_cash_fraction":0.1,"max_position_value":1000000},
+      "initial_state":{"cash":10000000,"positions":[{"ticker":"000003","quantity":5,"average_price":10000}],"daily_loss":{"realized_loss":0,"threshold":500000}},"market_history":[],
+      "steps":[{"ticker":"000003","raw_signal":"{\"decision\":\"HOLD\",\"confidence\":0.9,\"reason\":\"llm hold\"}","current_price":9000,"fill":"COMPLETE","market_row":{"ticker":"000003","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":5,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}},"expected_action":"SELL"}]
+    },
+    {
+      "id":"daily-loss-block", "mode":"FOCUSED", "trading_date":"20260630", "evaluation_time":"2026-06-30T15:30:00+09:00",
+      "policy":{"max_candidates":20,"markets":["KOSPI"],"min_trading_value":1,"min_volume_ratio":1,"excluded_states":["HALTED"],"stop_loss_pct":0.05,"take_profit_pct":0.1,"daily_loss_threshold":500000,"buy_confidence_threshold":0.8,"sell_confidence_threshold":0.8,"buy_cash_fraction":0.1,"max_position_value":1000000},
+      "initial_state":{"cash":10000000,"positions":[],"daily_loss":{"realized_loss":500000,"threshold":500000}},"market_history":[],
+      "steps":[{"ticker":"000004","raw_signal":"{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"buy\"}","current_price":10000,"fill":"NONE","market_row":{"ticker":"000004","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":5,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}},"expected_action":"HOLD"}]
+    }
+  ]
+}
