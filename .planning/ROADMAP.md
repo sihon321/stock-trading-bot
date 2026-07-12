@@ -79,9 +79,16 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   4. Replay verification visibly covers threshold boundaries, malformed signals, stale data, risk overrides, HOLD and SELL paths, and rejects look-ahead access.
 
 **Plans**: 2/3 plans executed
+**Wave 1**
 
 - [x] 07-01-PLAN.md
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] 07-02-PLAN.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 07-03-PLAN.md
 
 ### Phase 8: Decision Reports & Operator Runbook
