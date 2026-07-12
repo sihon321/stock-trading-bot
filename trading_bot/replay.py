@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
+import subprocess
+from dataclasses import asdict, is_dataclass
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +31,109 @@ REQUIRED_BOUNDARIES = frozenset({
 
 class FutureDataAccessError(ValueError):
     """Raised whenever frozen data crosses its declared evaluation cutoff."""
+
+
+class ReplayEvidenceError(RuntimeError):
+    """Raised when deterministic revision evidence cannot be established."""
+
+
+def _canonical_value(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _canonical_value(asdict(value))
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("canonical JSON object keys must be strings")
+        return {key: _canonical_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonical_value(item) for item in value]
+        return sorted(normalized, key=lambda item: canonical_json_bytes(item))
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Serialize deterministic evidence using strict, compact canonical JSON."""
+    return json.dumps(
+        _canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+@dataclass(frozen=True)
+class ReplayManifest:
+    scenario_hash: str
+    ohlcv_hash: str
+    raw_signal_hash: str
+    policy: Mapping[str, Any]
+    head_commit: str
+    relevant_tracked_diff_hash: str
+    code_state: str
+    initial_state: Mapping[str, Any]
+    evaluation_time: str
+    trading_date: str
+    fixture_schema_version: int
+
+
+def _git_output(repo_root: Path, args: Sequence[str], *, binary: bool = False) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReplayEvidenceError("unable to establish Git revision evidence") from exc
+    return result.stdout if binary else result.stdout.strip()
+
+
+def build_replay_manifest(
+    *,
+    scenario_fixtures: Any,
+    ohlcv_fixtures: Any,
+    raw_signal_fixtures: Any,
+    policy: Mapping[str, Any],
+    initial_state: Mapping[str, Any],
+    evaluation_time: str,
+    trading_date: str,
+    fixture_schema_version: int,
+    repo_root: str | Path = ".",
+    relevant_paths: Sequence[str] = ("trading_bot", "pyproject.toml", "uv.lock"),
+) -> ReplayManifest:
+    """Build the complete deterministic input envelope for a replay."""
+    root = Path(repo_root).resolve()
+    head = _git_output(root, ("rev-parse", "HEAD")).decode("utf-8")
+    diff = _git_output(
+        root,
+        ("diff", "--no-ext-diff", "--binary", "HEAD", "--", *relevant_paths),
+        binary=True,
+    ).replace(b"\r\n", b"\n")
+    # Freeze caller-owned structures through a canonical round trip.
+    frozen_policy = json.loads(canonical_json_bytes(policy))
+    frozen_state = json.loads(canonical_json_bytes(initial_state))
+    return ReplayManifest(
+        scenario_hash=_sha256(scenario_fixtures),
+        ohlcv_hash=_sha256(ohlcv_fixtures),
+        raw_signal_hash=_sha256(raw_signal_fixtures),
+        policy=frozen_policy,
+        head_commit=head,
+        relevant_tracked_diff_hash=hashlib.sha256(diff).hexdigest(),
+        code_state="dirty" if diff else "clean",
+        initial_state=frozen_state,
+        evaluation_time=evaluation_time,
+        trading_date=trading_date,
+        fixture_schema_version=fixture_schema_version,
+    )
 
 
 @dataclass(frozen=True)
