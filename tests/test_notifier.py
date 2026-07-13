@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import SecretStr
@@ -113,6 +115,28 @@ def test_missing_webhook_builds_noop_notifier() -> None:
     assert isinstance(notifier, NoopNotifier)
     assert isinstance(notifier, Notifier)
     assert notifier.send("anything") is False
+
+
+def test_delivery_attempt_status_distinguishes_delivered_failed_and_disabled() -> None:
+    from trading_bot.audit_models import NotificationDeliveryStatus
+    from trading_bot.cli import _notification_attempt
+    from trading_bot.notifier import NoopNotifier
+
+    class Delivered:
+        def send(self, summary: str) -> bool:
+            return True
+
+    class Failed:
+        def send(self, summary: str) -> bool:
+            return False
+
+    delivered = _notification_attempt(Delivered(), "summary")
+    failed = _notification_attempt(Failed(), "summary")
+    disabled = _notification_attempt(NoopNotifier(), "summary")
+
+    assert delivered == (NotificationDeliveryStatus.DELIVERED, None)
+    assert failed == (NotificationDeliveryStatus.FAILED, "TRANSPORT_FAILED")
+    assert disabled == (NotificationDeliveryStatus.DISABLED, None)
 
 
 __all__ = ["_FakeWebhookClient", "make_settings"]

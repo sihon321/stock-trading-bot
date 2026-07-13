@@ -20,6 +20,13 @@ from trading_bot.execution import (
     ExecutionAction,
     ExecutionResult,
 )
+from trading_bot.audit_models import ReasonCode
+from trading_bot.preflight import (
+    PreflightCheck,
+    PreflightCode,
+    PreflightResult,
+    PreflightState,
+)
 
 REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
@@ -136,6 +143,7 @@ def _run_with(
     execute: bool = False,
     live_confirm: bool = False,
     run_cycle=None,
+    preflight_result: PreflightResult | None = None,
 ) -> dict[str, Any]:
     from trading_bot.cli import run_cycle as cli_run_cycle
 
@@ -150,9 +158,128 @@ def _run_with(
         audit_conn=sqlite3.connect(":memory:"),
         notifier=notifier or _Notifier(),
         run_cycle=run_cycle,
+        preflight_result=preflight_result,
         trading_date="20260702",
         run_id="test-run",
     )
+
+
+def _preflight(
+    *,
+    executable: bool = True,
+    frozen: dict[str, ReasonCode] | None = None,
+) -> PreflightResult:
+    return PreflightResult(
+        checks=(
+            PreflightCheck(
+                code=(
+                    PreflightCode.MOCK_TARGET_CONFIRMED
+                    if executable else PreflightCode.UNRESOLVED_SCAN_UNKNOWN
+                ),
+                state=PreflightState.PASS if executable else PreflightState.UNKNOWN,
+                explanation_ko="테스트 사전 점검",
+                facts={"source": "test"},
+                stops_run=not executable,
+            ),
+        ),
+        global_executable=executable,
+        frozen_tickers=frozen or {},
+    )
+
+
+def test_global_unknown_preflight_has_zero_run_mutation() -> None:
+    from trading_bot.cli import run_cycle as cli_run_cycle
+
+    conn = sqlite3.connect(":memory:")
+    data_source = _DataSource(("005930",))
+    notifier = _Notifier()
+    cycle_calls: list[str] = []
+
+    with pytest.raises(SystemExit, match="UNRESOLVED_SCAN_UNKNOWN"):
+        cli_run_cycle(
+            settings=make_settings(),
+            data_source=data_source,
+            llm_provider=_Provider(),
+            broker=_Broker(),
+            audit_conn=conn,
+            notifier=notifier,
+            run_cycle=lambda *args, **kwargs: cycle_calls.append("called"),
+            trading_date="20260702",
+            run_id="blocked-run",
+            preflight_result=_preflight(executable=False),
+        )
+
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall() == []
+    assert data_source.contexts == []
+    assert cycle_calls == []
+    assert notifier.messages == []
+
+
+def test_frozen_ticker_skips_candidate_mutation_while_sibling_completes() -> None:
+    from trading_bot.cli import run_cycle as cli_run_cycle
+
+    conn = sqlite3.connect(":memory:")
+    data_source = _DataSource(("005930", "000660"))
+    calls: list[str] = []
+
+    def cycle(provider, context, **kwargs):
+        calls.append(context.ticker.value)
+        return ExecutionResult(
+            action=ExecutionAction.HOLD,
+            order=None,
+            reason="safe hold",
+            audit=CycleAuditEvent(
+                ticker=context.ticker.value,
+                parsed_decision="HOLD",
+                parse_error=None,
+                risk_override=False,
+                override_reason="",
+                final_action="HOLD",
+                order_reason="safe hold",
+                dry_run=True,
+            ),
+        )
+
+    result = cli_run_cycle(
+        settings=make_settings(), data_source=data_source,
+        llm_provider=_Provider(), broker=_Broker(), audit_conn=conn,
+        notifier=_Notifier(), run_cycle=cycle, trading_date="20260702",
+        run_id="freeze-run",
+        preflight_result=_preflight(
+            frozen={"005930": ReasonCode.AMBIGUOUS_SUBMISSION}
+        ),
+    )
+
+    assert calls == ["000660"]
+    assert data_source.contexts == ["000660"]
+    assert [item["ticker"] for item in result["outcomes"]] == ["005930", "000660"]
+    assert conn.execute(
+        "SELECT ticker, outcome_code, reason_code FROM ticker_outcomes ORDER BY id"
+    ).fetchall() == [
+        ("005930", "NO_TRADE", "AMBIGUOUS_SUBMISSION"),
+        ("000660", "NO_TRADE", "HOLD_SIGNAL"),
+    ]
+    assert conn.execute("SELECT ticker FROM decisions").fetchall() == [("000660",)]
+
+
+def test_status_renders_the_same_preflight_contract_without_live_runtime(monkeypatch) -> None:
+    import trading_bot.cli as cli
+
+    result = _preflight(executable=False)
+    monkeypatch.setattr(cli, "build_preflight_result", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        cli,
+        "build_runtime",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime built")),
+    )
+
+    invoked = CliRunner().invoke(cli.app, ["status"])
+
+    assert invoked.exit_code == 0
+    assert "UNRESOLVED_SCAN_UNKNOWN" in invoked.stdout
+    assert "실행 가능: 아니오" in invoked.stdout
 
 
 def test_real_execute_requires_live_confirm() -> None:

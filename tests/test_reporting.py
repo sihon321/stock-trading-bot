@@ -323,6 +323,84 @@ def test_missing_final_summary_notification_is_unknown(tmp_path: Path) -> None:
     assert section.final_summary_notification_state is NotificationState.UNKNOWN
 
 
+@pytest.mark.parametrize(
+    ("delivered", "expected"),
+    [
+        (True, NotificationState.DELIVERED),
+        (False, NotificationState.FAILED),
+    ],
+)
+def test_cli_produced_notification_rows_project_to_exact_scope(
+    tmp_path: Path,
+    delivered: bool,
+    expected: NotificationState,
+) -> None:
+    from conftest import make_data_context, make_settings
+    from trading_bot.cli import run_cycle
+    from trading_bot.domain import Money, Ticker
+    from trading_bot.preflight import PreflightResult
+
+    class Source:
+        def screen_daily_candidates(self, trading_date):
+            return ("005930", "000660")
+
+        def build_context(self, ticker: Ticker):
+            if ticker.value == "005930":
+                raise RuntimeError("candidate data unavailable")
+            return make_data_context(ticker=ticker, current_price=Money(70_000, "KRW"))
+
+    class Notifier:
+        def send(self, summary: str) -> bool:
+            return delivered
+
+    class Broker:
+        cash = Money(10_000_000, "KRW")
+
+    def cycle(provider, context, **kwargs):
+        from trading_bot.execution import CycleAuditEvent, ExecutionAction, ExecutionResult
+
+        return ExecutionResult(
+            action=ExecutionAction.HOLD,
+            order=None,
+            reason="safe hold",
+            audit=CycleAuditEvent(
+                ticker=context.ticker.value,
+                parsed_decision="HOLD",
+                parse_error=None,
+                risk_override=False,
+                override_reason="",
+                final_action="HOLD",
+                order_reason="safe hold",
+                dry_run=True,
+            ),
+        )
+
+    path = tmp_path / "audit.db"
+    conn = sqlite_audit.connect(path)
+    run_cycle(
+        settings=make_settings(audit_db_path=str(path)),
+        data_source=Source(), llm_provider=object(), broker=Broker(),
+        audit_conn=conn, notifier=Notifier(), run_cycle=cycle,
+        trading_date="20260714", run_id="producer-run",
+        preflight_result=PreflightResult((), True, {}),
+    )
+    conn.close()
+
+    rows = sqlite_audit.connect(path).execute(
+        "SELECT ticker, kind, delivery_status FROM notification_attempts ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        ("005930", "IMMEDIATE_ERROR", expected.value),
+        (None, "FINAL_SUMMARY", expected.value),
+    ]
+    section = ReadOnlyAuditRepository(path).load_daily(DAY)[0]
+    first, sibling = section.candidates
+    assert first.ticker == "005930" and len(first.notification_attempts) == 1
+    assert sibling.ticker == "000660" and sibling.notification_attempts == ()
+    assert len(section.run_notification_attempts) == 1
+    assert section.final_summary_notification_state is expected
+
+
 def test_period_is_inclusive_and_reconciles_detail_denominators(tmp_path: Path) -> None:
     path = tmp_path / "audit.db"
     conn = sqlite_audit.connect(path)
