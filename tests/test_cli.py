@@ -196,6 +196,24 @@ def test_real_execute_requires_live_confirm() -> None:
     assert "status" in runner.invoke(app, ["--help"]).stdout
 
 
+def test_report_group_is_discoverable_once_with_exact_nested_commands() -> None:
+    from trading_bot.cli import app
+
+    runner = CliRunner()
+    top_level = runner.invoke(app, ["--help"])
+    nested = runner.invoke(app, ["report", "--help"])
+
+    assert top_level.exit_code == 0
+    assert top_level.stdout.count("report") == 1
+    assert nested.exit_code == 0
+    command_lines = [
+        line.strip().split()[0]
+        for line in nested.stdout.splitlines()
+        if line.strip().startswith(("daily", "period", "replay"))
+    ]
+    assert command_lines == ["daily", "period", "replay"]
+
+
 def test_screen_command_reports_progress_on_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
     import trading_bot.cli as cli
 
