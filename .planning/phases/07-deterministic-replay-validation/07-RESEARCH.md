@@ -282,17 +282,17 @@ The decision pass remains dry-run so provider order evidence and UUID generation
 |---|-------|---------|---------------|
 | — | None. Recommendations are grounded in locked context, repository inspection, local execution, and Python standard-library contracts. | — | — |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Relevant tracked code path set for D-11**
    - What we know: HEAD plus relevant tracked diff content must identify dirty code state.
-   - What's unclear: Whether to hash all tracked repository changes or only replay/production-policy modules.
-   - Recommendation: hash the normalized diff for all tracked files, record the scope as `tracked_worktree`, and rely on separate fixture hashes for untracked scenario inputs. This is simplest and avoids silently omitting an indirect dependency.
+   - **Decision / Resolution:** Adopt the Phase 07-02 and shipped `build_replay_manifest` contract: record Git HEAD separately and hash the normalized tracked diff only for explicit replay-relevant source/config inputs (`trading_bot`, `pyproject.toml`, and `uv.lock` by default, with the path set remaining an explicit argument). Do not describe this as an all-tracked-files `tracked_worktree` hash. Untracked scenario inputs remain attributable through the independent fixture hashes.
+   - Rationale: This matches the implemented manifest boundary, keeps the code-state scope explicit and reproducible, and preserves D-11's distinction between the clean commit and relevant dirty execution content.
 
 2. **Fixture schema implementation type**
    - What we know: the project uses frozen dataclasses for domain transforms and Pydantic at configuration/provider boundaries.
-   - What's unclear: locked decisions leave serialization details open.
-   - Recommendation: use frozen dataclasses plus explicit validating loader functions in `replay.py`; avoid requiring secret-bearing `Settings`. If validation becomes verbose, existing Pydantic is acceptable without a new package.
+   - **Decision / Resolution:** Adopt frozen dataclasses plus explicit validating loader functions in `trading_bot/replay.py`. The Phase 07-06 nested raw-OHLCV and explicit indicator-policy schema extends this same loader/dataclass pattern; it does not instantiate `Settings`, introduce Pydantic at the replay boundary, or add a dependency.
+   - Rationale: This is the shipped replay pattern, keeps fixture validation offline and secret-free, and makes the strict cutoff/schema rules visible at the replay composition boundary.
 
 ## Validation Architecture
 
