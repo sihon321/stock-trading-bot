@@ -108,8 +108,29 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   3. Operator can follow a fixed market-session runbook for `bot status`, `bot screen`, `bot run`, and report review, including preflight, abort, and postflight checks.
   4. Operator can diagnose and safely recover from stale data, API failure, timeout, ambiguous or duplicate orders, notification failure, and audit failure using documented triage steps.
 
-**Plans**: TBD
+**Plans**: 5 plans
 **UI hint**: yes
+
+Plans:
+**Wave 1**
+
+- [ ] 08-01-PLAN.md — Persist sanitized append-only notification delivery evidence.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 08-02-PLAN.md — Build read-only daily, period, and replay report projections/renderers.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 08-03-PLAN.md — Expose offline report subcommands with atomic terminal/file delivery.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 08-04-PLAN.md — Share and enforce typed preflight evidence across status and run.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 08-05-PLAN.md — Publish and contract-test the Korean operator runbook.
 
 ### Phase 9: KIS Mock Soak & Fault Drills
 

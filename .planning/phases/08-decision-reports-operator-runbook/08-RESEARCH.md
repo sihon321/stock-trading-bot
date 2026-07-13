@@ -254,7 +254,7 @@ Broker-truth inquiry for mock soak remains Phase 9. Phase 8 preflight must label
 
 ### Anti-Patterns to Avoid
 
-- **Reporting through `build_runtime()`:** It constructs live KIS, pykrx, LLM, notifier, and market-cycle collaborators; reports must be usable offline and under failed preflight. Use Settings only to locate the DB, then a read-only connection. [VERIFIED: `trading_bot/cli.py:185-225`]
+- **Reporting through `build_runtime()` or live `Settings`:** Both cross credential-validation boundaries; reports must be usable offline and under failed preflight. Use a dedicated lightweight `ReportSettings` contract containing only `audit_db_path`, then a read-only connection. [VERIFIED: `trading_bot/config.py`, `trading_bot/cli.py:185-225`; resolved planning correction]
 - **One giant SQL join:** Multiple order events multiply ticker/decision rows and make totals lie. Fetch normalized tables independently and reconcile cardinality in Python. [VERIFIED: schema cardinalities]
 - **Treating null as zero or HOLD:** Null is unknown/unavailable evidence, not a negative outcome. [VERIFIED: Phase 6 D-07 and Phase 8 D-07]
 - **Using latest timestamp alone for processing order:** Preserve insertion IDs within each run; timestamps can collide and are observational. [VERIFIED: schema IDs and write order]
@@ -421,14 +421,14 @@ latest = {intent: history[-1] for intent, history in events_by_intent.items()}
 |---|-------|---------|---------------|
 | — | None. Recommendations are derived from locked decisions, current production/test contracts, or cited official documentation. | — | — |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **No unresolved product decision blocks planning.**
+1. **RESOLVED — No unresolved product decision blocks planning.**
    - What we know: The user delegated internal models, SQL, rendering, output extension, CLI option names, Korean catalog, and replay compatibility mechanics. [VERIFIED: Agent Discretion]
    - What's unclear: Exact labels and final file names are implementation choices, not missing product decisions. [VERIFIED: context]
    - Recommendation: Planner should lock the prescriptive defaults in this research and test their observable behavior. [VERIFIED: derived recommendation]
 
-2. **Broker-truth preflight remains intentionally bounded in Phase 8.**
+2. **RESOLVED — Broker-truth preflight remains intentionally bounded in Phase 8.**
    - What we know: Phase 8 must block on unresolved-order uncertainty, while authenticated KIS mock soak/restart/fault semantics belong to Phase 9. [VERIFIED: Phase 8/9 roadmap boundaries]
    - What's unclear: Full broker inquiry behavior is deferred and must not be fabricated here. [VERIFIED: roadmap]
    - Recommendation: Phase 8 status checks local append-only ambiguity/reconciliation evidence and labels any unconfirmed broker state `UNKNOWN/BLOCK`; Phase 9 later adds authenticated broker-truth checks. [VERIFIED: derived scope-safe recommendation]
@@ -499,7 +499,7 @@ Security enforcement is enabled at ASVS level 1 and blocks high-severity finding
 | V2 Authentication | No new auth | Phase 8 must not read or print credential values; existing Settings/KIS selection remains authoritative. [VERIFIED: phase scope] |
 | V3 Session Management | No | Local synchronous CLI has no user session. [VERIFIED: architecture] |
 | V4 Access Control | Limited | Reports are local-file readers and must not broaden real-trading authority or mutate settings. [VERIFIED: CAL-04 boundary] |
-| V5 Input Validation | Yes | Strict `YYYYMMDD` dates, start <= end, SQLite placeholders, regular-file replay validation, strict JSON structure/types, result-ID recomputation. [CITED: https://docs.python.org/3.10/library/sqlite3.html] [VERIFIED: replay identity contract] |
+| V5 Input Validation | Yes | Strict CLI `YYYY-MM-DD` dates converted to stored `YYYYMMDD`, start <= end, SQLite placeholders, regular-file replay validation, strict JSON structure/types, result-ID recomputation. [CITED: https://docs.python.org/3.10/library/sqlite3.html] [VERIFIED: replay identity contract] |
 | V6 Cryptography | Limited | Reuse existing SHA-256 stable identity via `hashlib`; do not design new cryptography or treat the hash as authentication. [VERIFIED: `trading_bot/replay.py`] |
 | V12 Files and Resources | Yes | Reject symlink/path escape ambiguity, use read-only SQLite URI, atomic UTF-8 output, and bounded diagnostics without replay/provider payload echo. [VERIFIED: existing replay output security pattern] |
 | V14 Configuration | Yes | Reports may read `audit_db_path` but must not mutate policy, trading mode, or promotion state. [VERIFIED: requirements and settings] |

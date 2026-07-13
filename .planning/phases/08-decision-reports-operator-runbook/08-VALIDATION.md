@@ -2,8 +2,8 @@
 phase: 08
 slug: decision-reports-operator-runbook
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-07-13
 ---
 
@@ -38,10 +38,16 @@ created: 2026-07-13
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 08-W0-01 | TBD | 0 | REP-01 | T-08-01 | Parameterized read-only audit queries; sanitized output | unit + CLI | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_reporting.py tests/test_report_cli.py -k daily` | ❌ W0 | ⬜ pending |
-| 08-W0-02 | TBD | 0 | REP-02 | T-08-02 | Replay integrity checked before aggregation; unknown states preserved | unit + CLI | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_reporting.py tests/test_report_cli.py -k 'period or replay'` | ❌ W0 | ⬜ pending |
-| 08-W0-03 | TBD | 0 | RUN-01 | T-08-03 | Unknown safety evidence blocks mutation | unit + CLI + docs | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_preflight.py tests/test_operator_runbook.py` | ❌ W0 | ⬜ pending |
-| 08-W0-04 | TBD | 0 | RUN-02 | T-08-04 | Audit failure blocks; notification failure remains attributable | unit + CLI + docs | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_preflight.py tests/test_operator_runbook.py -k failure` | ❌ W0 | ⬜ pending |
+| 08-01-01 | 08-01 | 1 | REP-01, REP-02, RUN-02 | T-08-01, T-08-02 | Additive notification schema preserves legacy evidence and rejects sensitive/non-scalar details | migration + unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_sqlite_audit.py -k 'migration or notification'` | inline TDD extends `tests/test_sqlite_audit.py` | ⬜ pending |
+| 08-01-02 | 08-01 | 1 | REP-01, REP-02, RUN-02 | T-08-01, T-08-03 | Append-only notification attempts remain ordered, attributable, validated, and immutable | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_sqlite_audit.py` | inline TDD extends `tests/test_sqlite_audit.py` | ⬜ pending |
+| 08-02-01 | 08-02 | 2 | REP-01, REP-02 | T-08-04, T-08-07, T-08-08 | Read-only daily/period projections preserve order, denominators, COMPLETED/FAILED/INTERRUPTED/RUNNING and zero-candidate lifecycle evidence, ticker-scoped notifications, and run-scoped FINAL_SUMMARY DELIVERED/FAILED/DISABLED/missing evidence | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_reporting.py -k 'daily or period or readonly or reconciliation or run_lifecycle or zero_candidates or final_summary_notification'` | inline TDD creates `tests/test_reporting.py` | ⬜ pending |
+| 08-02-02 | 08-02 | 2 | REP-01, REP-02 | T-08-05, T-08-06, T-08-07, T-08-08 | Replay IDs are verified before compatible-only aggregation and renderers expose bounded deterministic evidence | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_reporting.py` | inline TDD extends `tests/test_reporting.py` | ⬜ pending |
+| 08-03-01 | 08-03 | 3 | REP-01, REP-02 | T-08-09, T-08-11, T-08-12 | Credential-free report settings and strict inputs keep all report commands offline | CLI integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_report_cli.py -k 'daily or period or replay or offline'` | inline TDD creates `tests/test_report_cli.py` | ⬜ pending |
+| 08-03-02 | 08-03 | 3 | REP-01, REP-02 | T-08-10, T-08-11, T-08-12 | Registered reports print and atomically save identical UTF-8 bytes without output-path ambiguity | CLI integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_report_cli.py tests/test_cli.py` | inline TDD extends `tests/test_report_cli.py`, `tests/test_cli.py` | ⬜ pending |
+| 08-04-01 | 08-04 | 4 | RUN-01, RUN-02, REP-02 | T-08-13, T-08-15, T-08-16, T-08-17 | Global proof failures abort while determinately attributed ambiguity yields exact affected-ticker freezes | unit | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_preflight.py -k 'pass or block or unknown or unresolved or audit'` | inline TDD creates `tests/test_preflight.py` | ⬜ pending |
+| 08-04-02 | 08-04 | 4 | RUN-01, RUN-02, REP-02 | T-08-14, T-08-15, T-08-16, T-08-17 | Shared gate prevents global mutation and freezes only affected candidates; each immediate error persists exactly once with its candidate ticker, each FINAL_SUMMARY persists exactly once with NULL ticker, and report projections keep those scopes disjoint while deriving DELIVERED/FAILED/DISABLED/UNKNOWN | CLI + projection integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_preflight.py tests/test_cli.py tests/test_notifier.py tests/test_reporting.py` | inline TDD extends `tests/test_preflight.py`, `tests/test_cli.py`, `tests/test_notifier.py`, `tests/test_reporting.py` | ⬜ pending |
+| 08-05-01 | 08-05 | 5 | RUN-01, RUN-02, REP-01, REP-02 | T-08-18, T-08-19, T-08-20, T-08-21 | Documentation contract fixes schedule, completion, seven triage rows, prohibitions, and safe resolution semantics | docs contract | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_operator_runbook.py` | inline TDD creates `tests/test_operator_runbook.py` | ⬜ pending |
+| 08-05-02 | 08-05 | 5 | RUN-01, RUN-02, REP-01, REP-02 | T-08-18, T-08-19, T-08-20, T-08-21 | Korean runbook matches shipped commands/codes and all targeted evidence remains green | docs + integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_operator_runbook.py tests/test_preflight.py tests/test_reporting.py tests/test_report_cli.py tests/test_sqlite_audit.py tests/test_cli.py tests/test_replay.py tests/test_notifier.py` | Task creates runbook; prior inline TDD creates tests | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -49,13 +55,7 @@ created: 2026-07-13
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_reporting.py` — SQLite fixtures, evidence-state classification, processing order, preview differences, period denominators, reconciliation reduction, and Korean reasons.
-- [ ] `tests/test_report_cli.py` — nested commands, input validation, read-only behavior, terminal/file equality, replay compatibility, and integrity errors.
-- [ ] `tests/test_preflight.py` — mock/audit/KRX/unresolved-order PASS/BLOCK/UNKNOWN plus shared status/run enforcement.
-- [ ] `tests/test_operator_runbook.py` — fixed schedule, completion checklist, all RUN-02 failure rows, prohibited reruns/resubmissions, and resolution criteria.
-- [ ] Extend `tests/test_sqlite_audit.py`, `tests/test_cli.py`, and `tests/test_notifier.py` for notification persistence while retaining fail-soft delivery behavior.
-
-No framework installation or pytest configuration change is required.
+No separate Wave 0 scaffold is required. Every production-changing task is `tdd="true"`, and the map above names the exact test file created or extended before implementation. Existing pytest/Typer infrastructure is sufficient, so `wave_0_complete: true` means there are no `MISSING` test dependencies; every execution status remains pending.
 
 ---
 
@@ -67,11 +67,11 @@ All Phase 8 behaviors have automated unit, CLI integration, or documentation-con
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30 seconds
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have exact `<automated>` verification commands
+- [x] Sampling continuity: every task has automated verification
+- [x] No Wave 0/MISSING references; inline TDD creation contracts are mapped above
+- [x] No watch-mode flags
+- [x] Expected feedback latency < 30 seconds
+- [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending

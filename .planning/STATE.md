@@ -4,9 +4,9 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 8
 current_phase_name: Decision Reports & Operator Runbook
-status: completed
+status: executing
 stopped_at: Phase 8 context gathered
-last_updated: "2026-07-13T13:59:45.230Z"
+last_updated: "2026-07-13T15:44:33.199Z"
 last_activity: 2026-07-13
 last_activity_desc: Phase 7 complete, transitioned to Phase 8
 progress:
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 
 Phase: 8 — Decision Reports & Operator Runbook
 Plan: Not started
-Status: Complete
+Status: Ready to execute
 Last activity: 2026-07-13 — Phase 7 complete, transitioned to Phase 8
 
 Progress: [██████████] 100%
