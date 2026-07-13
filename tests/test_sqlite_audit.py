@@ -278,6 +278,72 @@ def test_notification_contract_rejects_sensitive_and_non_scalar_detail() -> None
         )
 
 
+def test_append_notification_attempt_is_ordered_append_only_and_committed(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    path = tmp_path / "audit.db"
+    conn = sqlite_audit.connect(path)
+    sqlite_audit.start_run(
+        conn, run_id="run", trading_mode="mock", dry_run=True, run_kind=RunKind.RUN
+    )
+    first = NotificationAttempt(
+        run_id="run", ticker="005930", kind=NotificationKind.IMMEDIATE_ERROR,
+        status=NotificationDeliveryStatus.FAILED,
+        failure_category="TRANSPORT_ERROR", detail={"error_type": "TimeoutError"},
+        observed_at=datetime(2026, 7, 14, 0, 0, tzinfo=timezone.utc),
+    )
+    second = NotificationAttempt(
+        run_id="run", ticker=None, kind=NotificationKind.FINAL_SUMMARY,
+        status=NotificationDeliveryStatus.DELIVERED, failure_category=None,
+        detail={"attempt": 2},
+        observed_at=datetime(2026, 7, 14, 0, 1, tzinfo=timezone.utc),
+    )
+
+    first_id = sqlite_audit.append_notification_attempt(conn, first)
+    second_id = sqlite_audit.append_notification_attempt(conn, second)
+    assert first_id < second_id
+    observer = sqlite3.connect(path)
+    assert observer.execute(
+        """SELECT kind, delivery_status, failure_category, detail_json
+           FROM notification_attempts ORDER BY id"""
+    ).fetchall() == [
+        ("IMMEDIATE_ERROR", "FAILED", "TRANSPORT_ERROR", '{"error_type": "TimeoutError"}'),
+        ("FINAL_SUMMARY", "DELIVERED", None, '{"attempt": 2}'),
+    ]
+
+
+def test_invalid_notification_evidence_leaves_no_partial_row(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    conn = sqlite_audit.connect(tmp_path / "audit.db")
+    sqlite_audit.start_run(
+        conn, run_id="run", trading_mode="mock", dry_run=True, run_kind=RunKind.RUN
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="unknown run"):
+        sqlite_audit.append_notification_attempt(
+            conn,
+            NotificationAttempt(
+                run_id="missing", ticker=None, kind=NotificationKind.FINAL_SUMMARY,
+                status=NotificationDeliveryStatus.DISABLED, failure_category=None,
+                detail={}, observed_at=datetime.now(timezone.utc),
+            ),
+        )
+    with pytest.raises(ValueError):
+        NotificationAttempt(
+            run_id="run", ticker=None, kind=NotificationKind.FINAL_SUMMARY,
+            status="SENT", failure_category=None, detail={},
+            observed_at=datetime.now(timezone.utc),
+        )
+    with pytest.raises(ValueError, match="forbidden"):
+        NotificationAttempt(
+            run_id="run", ticker=None, kind=NotificationKind.FINAL_SUMMARY,
+            status=NotificationDeliveryStatus.FAILED,
+            failure_category="TRANSPORT_ERROR", detail={"message": "secret body"},
+            observed_at=datetime.now(timezone.utc),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM notification_attempts").fetchone()[0] == 0
+
+
 def test_migration_failure_rolls_back_and_reopen_retries(tmp_path) -> None:
     from trading_bot import sqlite_audit
 
