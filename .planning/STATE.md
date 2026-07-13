@@ -5,8 +5,8 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 8
 current_phase_name: Decision Reports & Operator Runbook
 status: completed
-stopped_at: Completed 07-06-PLAN.md
-last_updated: "2026-07-13T05:12:57.298Z"
+stopped_at: Phase 8 context gathered
+last_updated: "2026-07-13T13:59:45.230Z"
 last_activity: 2026-07-13
 last_activity_desc: Phase 7 complete, transitioned to Phase 8
 progress:
@@ -95,9 +95,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-13T05:06:05.015Z
-Stopped at: Completed 07-06-PLAN.md
-Resume file: None
+Last session: 2026-07-13T13:59:45.222Z
+Stopped at: Phase 8 context gathered
+Resume file: .planning/phases/08-decision-reports-operator-runbook/08-CONTEXT.md
 
 ## Operator Next Steps
 
