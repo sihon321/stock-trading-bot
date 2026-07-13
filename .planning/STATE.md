@@ -4,17 +4,17 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 7
 current_phase_name: Deterministic Replay Validation
-status: executing
-stopped_at: Completed 07-02-PLAN.md
-last_updated: "2026-07-12T01:41:38.147Z"
-last_activity: 2026-07-11
-last_activity_desc: Phase 06 complete, transitioned to Phase 7
+status: phase_complete
+stopped_at: Completed 07-06-PLAN.md
+last_updated: "2026-07-13T05:06:05.021Z"
+last_activity: 2026-07-13
+last_activity_desc: Phase 07 complete with raw OHLCV replay provenance verified
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 8
-  completed_plans: 7
-  percent: 20
+  completed_phases: 2
+  total_plans: 11
+  completed_plans: 11
+  percent: 40
 ---
 
 # Project State
@@ -24,16 +24,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 06 — Audit Evidence & Cycle Boundaries
+**Current focus:** Phase 07 — Deterministic Replay Validation
 
 ## Current Position
 
 Phase: 7 — Deterministic Replay Validation
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-11 — Phase 06 complete, transitioned to Phase 7
+Plan: 6 of 6
+Status: Complete
+Last activity: 2026-07-13 — Raw OHLCV now traverses shipped indicators and production screening
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -67,6 +67,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 6]: Real and mock mutation boundaries share an inclusive 10-second freshness verdict and normalized evidence shape.
 - [Phase 07]: Hash Git HEAD and normalized replay-relevant tracked diff separately so dirty executions remain attributable.
 - [Phase 07]: Compute replay result identity from canonical deterministic evidence only; persist invocation metadata outside identity.
+- [Phase 07]: Canonical replay technicals come only from cutoff-safe raw OHLCV passed through the shipped calculate_technicals function.
+- [Phase 07]: Explicit non-AVAILABLE fixture health overrides indicator health; otherwise the actual IndicatorResult health controls screening.
 
 ### Pending Todos
 
@@ -74,7 +76,6 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 7 planning must define decision/fill epochs and point-in-time data limitations.
 - Phase 9 planning must confirm authenticated KIS mock restrictions, inquiry behavior, and fault semantics.
 - Phase 10 planning must define sample sufficiency, uncertainty, and promotion thresholds before calibration claims.
 
@@ -90,14 +91,15 @@ None yet.
 | Phase 06 P04 | 12m | 3 tasks | 8 files |
 | Phase 06 P05 | 10min | 3 tasks | 7 files |
 | Phase 07 P02 | 10min | 2 tasks | 2 files |
+| Phase 07 P06 | 7min | 2 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-07-12T01:41:38.141Z
-Stopped at: Completed 07-02-PLAN.md
+Last session: 2026-07-13T05:06:05.015Z
+Stopped at: Completed 07-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
 
-- Run `$gsd-discuss-phase 6` to define audit taxonomy, cycle boundaries, and implementation constraints.
-- Or run `$gsd-plan-phase 6` to plan directly from the roadmap.
+- Run `$gsd-verify-work 7` to independently re-verify the completed replay phase.
+- Then run `$gsd-discuss-phase 8` to define decision reports and the operator runbook.

@@ -25,7 +25,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 **Milestone Goal:** Prove through reproducible replay and repeated KIS mock-account operation that daily decisions are safe, explainable, and evidence-backed before any manual real-money promotion is considered.
 
 - [x] **Phase 6: Audit Evidence & Cycle Boundaries** — Establish complete, correctly attributed evidence for every run, ticker, order path, and executable market window. (completed 2026-07-11)
-- [ ] **Phase 7: Deterministic Replay Validation** — Exercise the production decision and execution gates against frozen historical scenarios without live dependencies.
+- [x] **Phase 7: Deterministic Replay Validation** — Exercise the production decision and execution gates against frozen historical scenarios without live dependencies. (completed 2026-07-13)
 - [ ] **Phase 8: Decision Reports & Operator Runbook** — Make validation evidence reviewable and daily operation repeatable, including failure triage.
 - [ ] **Phase 9: KIS Mock Soak & Fault Drills** — Collect multi-day broker-facing mock evidence and prove recovery behavior under expected faults.
 - [ ] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review.
@@ -78,7 +78,12 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   3. Operator can compare BUY, HOLD, and SELL outcomes across fixture scenarios to assess policy strictness without the output claiming live profitability.
   4. Replay verification visibly covers threshold boundaries, malformed signals, stale data, risk overrides, HOLD and SELL paths, and rejects look-ahead access.
 
-**Plans**: 2/3 plans executed
+**Plans**: 6/6 plans complete
+
+- [x] 07-04-PLAN.md
+- [x] 07-05-PLAN.md
+- [x] 07-06-PLAN.md
+
 **Wave 1**
 
 - [x] 07-01-PLAN.md
@@ -89,7 +94,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 07-03-PLAN.md
+- [x] 07-03-PLAN.md
 
 ### Phase 8: Decision Reports & Operator Runbook
 
@@ -146,7 +151,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 | 4. LLM Agent | v1.0 | 4/4 | Complete | 2026-07-02 |
 | 5. Real-Money Readiness & Operations | v1.0 | 5/5 | Complete | 2026-07-02 |
 | 6. Audit Evidence & Cycle Boundaries | v1.1 | 5/5 | Complete    | 2026-07-11 |
-| 7. Deterministic Replay Validation | v1.1 | 2/3 | In Progress|  |
+| 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete   | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 0/TBD | Not started | - |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 0/TBD | Not started | - |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 0/TBD | Not started | - |
