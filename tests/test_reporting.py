@@ -236,7 +236,7 @@ def test_missing_or_unknown_lifecycle_is_unknown(tmp_path: Path) -> None:
         status=RunStatus.COMPLETED,
         started_at="2026-07-14T00:10:00+00:00",
     )
-    conn.execute("UPDATE runs SET status = NULL WHERE run_id = ?", ("run",))
+    conn.execute("UPDATE runs SET status = ? WHERE run_id = ?", ("LEGACY", "run"))
     conn.commit()
     conn.close()
     section = ReadOnlyAuditRepository(path).load_daily(DAY)[0]
