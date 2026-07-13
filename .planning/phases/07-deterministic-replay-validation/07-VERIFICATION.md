@@ -1,48 +1,30 @@
 ---
 phase: 07-deterministic-replay-validation
-verified: 2026-07-13T00:13:08Z
-status: gaps_found
-score: 10/11
+verified: 2026-07-13T05:11:18Z
+status: passed
+score: 11/11
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 7/11
+  previous_score: 10/11
   gaps_closed:
-    - "F-002: all eleven required boundaries now have exactly one executed and attributed check."
-    - "F-003: full-day replay now advances cash, positions, and explicit daily-loss state in production rank order."
-    - "F-004: compute_result_id, ReplayResult, and CLI now share the complete deterministic identity document."
-  gaps_remaining:
-    - "F-001: fixture OHLCV still does not drive production screening; precomputed technical rows do."
+    - "F-001: canonical fixtures now carry cutoff-safe raw OHLCV warm-up series, and replay derives screener technicals through the shipped calculate_technicals transform."
+  gaps_remaining: []
   regressions: []
 requirements:
-  REPLAY-01: blocked
+  REPLAY-01: satisfied
   REPLAY-02: satisfied
   REPLAY-03: satisfied
   REPLAY-04: satisfied
-gaps:
-  - truth: "Frozen historical OHLCV flows through production candidate selection before signal, parser, risk, sizing, and execution gates."
-    status: failed
-    reason: "Replay history contains precomputed screener fields and technicals, not OHLCV. The runner forwards the latest precomputed record to screen_candidates and never calls calculate_technicals; the new mutation test changes atr_14/historical_volatility rather than an OHLCV price or volume."
-    artifacts:
-      - path: "trading_bot/replay.py"
-        issue: "load_replay_bundle requires market/state/trading_value/technicals/health records and run_replay_scenarios projects them directly into screen_candidates; no OHLCV-to-indicator transform exists."
-      - path: "tests/fixtures/replay/full_day.json"
-        issue: "market_history has one pre-derived technical row per ticker and no open/high/low/close/volume warm-up series."
-      - path: "tests/test_replay.py"
-        issue: "test_historical_input_materially_drives_production_screener_rank mutates technicals, so it cannot prove OHLCV materially drives screening."
-    missing:
-      - "Store cutoff-safe per-ticker OHLCV warm-up series in the replay fixture."
-      - "Run the shipped calculate_technicals transform (or a production-equivalent existing composition seam) before screen_candidates."
-      - "Add a regression that mutates close/high/low/volume and proves selection or rank changes, while a future OHLCV row fails before screening or broker mutation."
 ---
 
 # Phase 07: Deterministic Replay Validation Verification Report
 
 **Phase Goal:** Operators can reproducibly exercise shipped screening, signal, risk, sizing, and execution rules against frozen historical scenarios without contacting live services.
-**Verified:** 2026-07-13T00:13:08Z
-**Status:** gaps_found
-**Re-verification:** Yes — after gap closure
+**Verified:** 2026-07-13T05:11:18Z
+**Status:** passed
+**Re-verification:** Yes — after 07-06 gap closure
 
 ## Goal Achievement
 
@@ -50,81 +32,102 @@ gaps:
 
 | # | Truth | Status | Evidence |
 |---|---|---|---|
-| 1 | Frozen OHLCV flows through production candidate selection, then fixture signal/parser/risk/sizing/execution gates | **FAILED — BLOCKER** | `market_history` records are already-derived screener rows. `run_replay_scenarios` removes `observed_at`, wraps health, and calls `screen_candidates`; it never calls `calculate_technicals`. The claimed mutation test changes `atr_14` and `historical_volatility`, not OHLCV. |
-| 2 | Replay contacts no live LLM, KIS, Naver, pykrx, SQLite, network, or wall clock | **VERIFIED** | Replay remains a pure fixture composition path; the CLI test patches `build_runtime` to raise and passes. Full suite is green. |
-| 3 | Identical deterministic inputs produce byte-identical ordered evidence and stable identity | **VERIFIED** | Canonical serialization, repeated CLI output-file stability, deterministic-field sensitivity, and metadata exclusion are tested. |
-| 4 | Complete manifest records fixture domains, policy, revision/diff, initial state, fixed time/date, and schema | **VERIFIED** | `ReplayManifest` and `build_replay_manifest` retain every locked deterministic input domain. |
-| 5 | Focused scenarios are isolated | **VERIFIED** | Each scenario constructs a new `MockBroker` and `DailyLossState`; focused fixtures have independent initial state. |
-| 6 | Full-day steps advance cash, positions, and daily loss in production rank order | **VERIFIED** | `test_full_day_uses_production_rank_and_fill_state` and `test_full_day_daily_loss_progresses_and_blocks_later_buy` pass. COMPLETE mutates broker state, NONE preserves it, and the later BUY is `HOLD/RISK_BLOCK` after loss reaches 500,000. |
-| 7 | Every unmarked future-data request fails loudly | **VERIFIED** | Loader and runner apply `guarded_historical_view`; the dedicated expected-rejection scenario is explicit and ordinary future rows raise `FutureDataAccessError`. |
-| 8 | Every required Phase 7 boundary has exactly one executed attributed check | **VERIFIED** | Eleven outcomes produce eleven `ReplayCheck`s. The exact `Counter` equality fails on missing, duplicate, or unknown IDs, and non-empty scenario/ticker/stage/expected/actual attribution is required. |
-| 9 | Funnel exposes explicit denominators for BUY stages, actions, and blocks | **VERIFIED** | `ReplayCount` denominators and monotonic stage invariants remain implemented and tested. |
-| 10 | CLI shows stable ID, summaries, funnel, verification, mismatch-only detail, and writes normalized JSON | **VERIFIED** | CLI integration tests pass twice with one stable result file and bounded mismatch/error output. |
-| 11 | CLI/JSON make no profitability claim or metric | **VERIFIED** | Both emit the non-profitability disclaimer; normalized evidence contains no performance metric fields. |
+| 1 | Frozen OHLCV flows through production candidate selection, then fixture signal/parser/risk/sizing/execution gates | **VERIFIED** | Both canonical bundles contain only raw `open/high/low/close/volume` warm-up rows. `run_replay_scenarios` cutoff-guards all history, builds the Korean-column DataFrame, calls the imported shipped `calculate_technicals(..., IndicatorConfig)`, then passes its `IndicatorResult.technicals` to production `screen_candidates`. The shipped-call, raw-mutation, and complete boundary tests pass. |
+| 2 | Replay contacts no live LLM, KIS, Naver, pykrx, SQLite, network, or wall clock | **VERIFIED** | `trading_bot/replay.py` imports only pure domain/indicator/screener/execution seams plus local filesystem/Git evidence utilities. The replay CLI never calls `build_runtime`; its offline integration test passes. No invocation clock is read or persisted. |
+| 3 | Identical deterministic inputs produce byte-identical ordered evidence and stable identity | **VERIFIED** | Canonical JSON, manifest-field sensitivity, outcome-order sensitivity, metadata exclusion, repeated CLI output identity, and shared helper/object result identity are implemented and green. |
+| 4 | Complete manifest records fixture domains, policy, revision/diff, initial state, fixed time/date, and schema | **VERIFIED** | `ReplayManifest` and `build_replay_manifest` bind scenario/OHLCV/signal hashes, policy, HEAD plus relevant tracked-diff hash, state, evaluation time, trading date, and schema version. |
+| 5 | Focused scenarios are isolated | **VERIFIED** | Each focused `ReplayScenario` declares its own initial cash, positions, and daily-loss state; each scenario invocation constructs fresh broker/risk state. |
+| 6 | Full-day steps advance cash, positions, and daily loss in production rank order | **VERIFIED** | The full-day replay is ranked `000010`, `000020`, `000030`; COMPLETE and NONE fill effects persist correctly, and explicit realized loss reaches 500,000 before blocking the later BUY. |
+| 7 | Every unmarked future-data request fails loudly before downstream work | **VERIFIED** | Loader and runner both apply `guarded_historical_view`. The adversarial test observes `FutureDataAccessError` with zero indicator, screener, execution, and broker-mutation calls; the explicitly marked rejection remains attributed. |
+| 8 | Every required Phase 7 boundary has exactly one executed attributed check | **VERIFIED** | Eleven outcomes produce exactly one check for each member of `REQUIRED_BOUNDARIES`; exact `Counter` equality and non-empty scenario/ticker/stage/expected/actual fields fail closed. |
+| 9 | Funnel exposes explicit denominators for BUY stages, actions, and blocks | **VERIFIED** | `ReplayCount` carries each numerator/denominator, stage monotonicity is enforced, and action/block denominators are tested. |
+| 10 | CLI shows stable ID, summaries, funnel, verification, mismatch-only detail, and writes normalized JSON | **VERIFIED** | Offline CLI integration verifies stable output filename/ID, PASS summary, explicit funnel denominators, bounded anomaly-only detail, and complete normalized JSON evidence. |
+| 11 | CLI/JSON make no profitability claim or metric | **VERIFIED** | Both surfaces include `NON_PROFITABILITY_DISCLAIMER`; normalized evidence is tested to exclude P&L, return, win-rate, Sharpe, and profitability keys. |
 
-**Score:** 10/11 truths verified (0 present-but-behavior-unverified)
+**Score:** 11/11 truths verified (0 present-but-behavior-unverified)
 
 ## Re-verification of Previous Findings
 
 | Finding | Status | Evidence |
 |---|---|---|
-| F-001 — OHLCV materially drives `screen_candidates` | **REMAINS OPEN** | The fixture and loader accept precomputed technical rows only. The mutation test modifies those technical fields, bypassing `calculate_technicals(ohlcv, ...)`. |
-| F-002 — exact canonical check for all 11 boundaries | **CLOSED** | `REQUIRED_BOUNDARIES` ↔ executed checks is an exact one-count `Counter` bijection; missing/duplicate/unknown cases fail. |
-| F-003 — full-day cash/position/daily-loss progression | **CLOSED** | Ranked three-step fixture observes COMPLETE/NONE broker behavior and an explicit loss transition that blocks later BUY. |
-| F-004 — one stable complete result identity | **CLOSED** | `ReplayResult.__post_init__` delegates to `compute_result_id` using manifest, ordered outcomes, funnel, verification, and disclaimer; CLI persists that same `result_id`. |
+| F-001 — OHLCV materially drives `screen_candidates` | **CLOSED** | Canonical fixture history has exact raw fields only and four cutoff-safe warm-up rows per ticker under explicit 2/3-period `IndicatorConfig` windows. `run_replay_scenarios` directly calls the shipped indicator transform before screening. Mutating only raw market observations moves `000020` from second to first production rank. |
+| F-002 — exact canonical check for all 11 boundaries | **CLOSED — regression check passed** | Required/executed boundary sets remain an exact one-count bijection with full attribution. |
+| F-003 — full-day cash/position/daily-loss progression | **CLOSED — regression check passed** | Ranked state progression and later daily-loss BUY block remain green. |
+| F-004 — one stable complete result identity | **CLOSED — regression check passed** | `ReplayResult.__post_init__` still delegates to `compute_result_id` over manifest, ordered outcomes, funnel, verification, and disclaimer. |
 
 ## Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `trading_bot/replay.py` | Offline replay, state progression, exact coverage, stable identity | **PARTIAL** | Substantive and wired; OHLCV-to-indicator-to-screener link is missing. |
-| `tests/fixtures/replay/focused.json` | Executable catalog for all boundaries | **VERIFIED** | Eleven focused scenarios, including explicit expected future rejection. |
-| `tests/fixtures/replay/full_day.json` | Ranked state progression | **VERIFIED** | Three candidates, complete/no-fill evidence, explicit loss progression, later BUY block. |
-| `tests/test_replay.py` | Adversarial replay regressions | **PARTIAL** | F-002/F-003/F-004 coverage is substantive; F-001 test mutates precomputed outputs instead of OHLCV inputs. |
-| `tests/test_cli.py` | Offline CLI and stable evidence | **VERIFIED** | Offline-builder prohibition, repeatability, output, disclaimer, and mismatch behavior are tested. |
+| `trading_bot/replay.py` | Strict offline replay, raw OHLCV projection, state progression, coverage, and stable identity | **VERIFIED** | Exists, substantive, and wired to shipped indicators, screener, parser/risk/sizing/execution, funnel, verification, CLI, and safe evidence output. |
+| `tests/fixtures/replay/focused.json` | Eleven isolated raw-OHLCV boundary scenarios | **VERIFIED** | Eleven scenarios; each history record contains only ticker metadata, health, and raw OHLCV. No precomputed technical or `market_row` field exists. |
+| `tests/fixtures/replay/full_day.json` | Raw-OHLCV multi-ticker ranked state progression | **VERIFIED** | Three out-of-order input histories produce the asserted production rank and state transitions after indicator calculation. |
+| `tests/test_replay.py` | Adversarial deterministic replay regressions | **VERIFIED** | Covers strict schema, shipped transform arguments, raw-input sensitivity, cutoff ordering, exact boundaries, state progression, funnel, identity, and disclaimer. |
+| `trading_bot/cli.py` / `tests/test_cli.py` | Offline operator replay and normalized evidence | **VERIFIED** | CLI directly composes replay functions and the integration test proves no live runtime construction. |
+| `07-VALIDATION.md` | Executable requirement and gap-closure evidence map | **VERIFIED** | F-001 now cites raw schema, shipped transform, raw mutation, and zero-downstream-call tests. |
 
 ## Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| Frozen OHLCV | `screen_candidates` | `calculate_technicals` / production indicator seam | **NOT WIRED** | No OHLCV series exists in the fixture contract and `calculate_technicals` is never invoked by replay. |
-| Frozen precomputed row | `screen_candidates` | latest cutoff-safe ticker record | **WIRED** | This is deterministic but does not satisfy the OHLCV contract. |
-| Step loss transition | `execute_signal_cycle` | updated `DailyLossState` for next ranked candidate | **WIRED** | Transition is applied after the current step; subsequent candidates consume it. |
-| `REQUIRED_BOUNDARIES` | `ReplayVerification.checks` | exact `Counter` equality and attribution | **WIRED** | Missing, duplicate, unknown, and unattributed evidence fails verification. |
-| `compute_result_id` | `ReplayResult.result_id` and CLI JSON | shared deterministic result document | **WIRED** | Object delegates to helper; CLI writes the object's ID. |
+| Raw `market_history[*].ohlcv` | `trading_bot.indicators.calculate_technicals` | `_ohlcv_frame` plus explicit `_indicator_config` | **WIRED** | Direct imported production call at replay execution; spy verifies exact columns, monotonic unique index, and config equality. |
+| `IndicatorResult` | `screen_candidates` | calculated technicals plus non-derived metadata and composed health | **WIRED** | Fixture health overrides only when explicitly non-AVAILABLE; otherwise production indicator health controls fail-closed screening. |
+| Future-data guard | indicators/screener/execution/broker | cutoff validation before configuration/state construction and downstream calls | **WIRED** | Adversarial call counters remain zero at rejection. |
+| Raw fixture signal | parser/risk/sizing/execution | `execute_signal_cycle(..., dry_run=True)` | **WIRED** | Production execution seam consumes the raw JSON string for every selected candidate. |
+| Step loss transition | next ranked execution | new explicit `DailyLossState` after each step | **WIRED** | Later BUY consumes the advanced loss state and becomes `HOLD/RISK_BLOCK`. |
+| `REQUIRED_BOUNDARIES` | `ReplayVerification.checks` | exact `Counter` equality and attribution | **WIRED** | Missing, duplicate, unknown, or unattributed evidence fails verification. |
+| `compute_result_id` | `ReplayResult.result_id` and CLI JSON | shared canonical deterministic document | **WIRED** | Helper/object equivalence and deterministic component sensitivity tests pass. |
+
+## Data-Flow Trace (Level 4)
+
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|---|---|---|---|---|
+| `trading_bot/replay.py` | per-ticker technicals | checked-in raw OHLCV → shipped `calculate_technicals` | Yes; raw mutation changes production rank | **FLOWING** |
+| `trading_bot/replay.py` | ordered outcomes | production candidates + raw signals + explicit broker/risk state | Yes; boundary and full-day tests exercise terminal outcomes | **FLOWING** |
+| `trading_bot/cli.py` | persisted replay evidence | manifest + outcomes + funnel + verification | Yes; CLI integration reads and validates normalized JSON | **FLOWING** |
 
 ## Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Four gap selectors | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'historical_input_materially or required_boundaries or boundary_bijection or daily_loss_progresses or complete_result_helper or complete_result_identity' --maxfail=1` | 10 passed | **PASS, with F-001 semantic defect noted** |
-| Full repository regression | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q` | 401 passed in 14.15s | **PASS** |
-| OHLCV schema/data-flow audit | Inspect loader fields, fixture rows, and replay imports/calls | No OHLCV columns or `calculate_technicals` call; mutation changes technicals | **FAIL** |
+| F-001 plus representative deterministic/offline regressions | Exact ten named pytest nodes covering raw schema, shipped transform, raw rank mutation, future call ordering, boundary bijection, state progression, identity, disclaimer, and CLI | 10 passed in 0.62s | **PASS** |
+| Full Phase 7 production-contract suite | `pytest tests/test_replay.py tests/test_indicators.py tests/test_screener.py tests/test_signal_parser.py tests/test_risk.py tests/test_execution.py tests/test_cli.py` | 148 passed in 1.22s | **PASS** |
+| Full repository regression | Orchestrator full-suite run | 406 passed | **PASS** |
+
+## Probe Execution
+
+No probes are declared by Phase 7 plans or summaries, and no migration/tooling probe is required.
 
 ## Requirements Coverage
 
-| Requirement | Status | Evidence |
-|---|---|---|
-| REPLAY-01 | **BLOCKED** | Offline production parser/risk/sizing/execution and screener calls exist, but historical OHLCV is replaced by precomputed technical rows. |
-| REPLAY-02 | **SATISFIED** | Manifest, canonical evidence, dirty-code state, ordered outcomes, and unified stable identity are implemented. |
-| REPLAY-03 | **SATISFIED** | Explicit-denominator funnel and non-profitability output contract remain green. |
-| REPLAY-04 | **SATISFIED** | All eleven locked boundaries execute exactly once with attribution; look-ahead rejection is explicit and fail-loud otherwise. |
+| Requirement | Source Plans | Description | Status | Evidence |
+|---|---|---|---|---|
+| REPLAY-01 | 07-01, 07-02, 07-03, 07-04, 07-06 | Historical OHLCV traverses production screener and execution gates entirely offline | **SATISFIED** | Raw fixture → shipped indicator → production screener link is now substantive, wired, and behaviorally tested; parser/risk/sizing/execution and CLI offline tests remain green. |
+| REPLAY-02 | 07-01, 07-02, 07-03, 07-05 | Deterministic manifest, ordered evidence, and stable identity | **SATISFIED** | Complete manifest and unified identity sensitivity/equivalence tests pass. |
+| REPLAY-03 | 07-01, 07-02, 07-03 | BUY/HOLD/SELL comparison without profitability claims | **SATISFIED** | Explicit-denominator funnel, action/block summaries, and disclaimer/forbidden-key tests pass. |
+| REPLAY-04 | 07-01, 07-02, 07-03, 07-04, 07-05, 07-06 | Complete boundary/failure/no-look-ahead verification | **SATISFIED** | All eleven boundaries execute exactly once with attribution and future OHLCV is rejected before downstream work. |
 
-No Phase 7 requirements are orphaned.
+All requirement IDs declared by 07-01 through 07-06 exist in `REQUIREMENTS.md`; all four Phase 7 requirements are claimed by plans and none are orphaned.
 
 ## Anti-Patterns Found
 
-No unreferenced `TBD`, `FIXME`, or `XXX` markers were found in the Phase 7 implementation, fixtures, or tests. No deferred human checks or declared probes exist for this phase.
+No unreferenced `TBD`, `FIXME`, or `XXX` markers, placeholder implementations, deferred `<human-check>` blocks, or declared probes were found in the Phase 7 implementation and evidence surface. Automated key-link queries reported false negatives for symbolic `from` labels that were not file paths; each such link was manually traced and behaviorally verified above.
+
+## Disconfirmation Pass
+
+- **Potential partial requirement checked:** the earlier OHLCV claim was partial because fixture-derived technicals bypassed production indicators. The alternate path is now removed from canonical history and step schemas, and direct shipped-transform evidence closes it.
+- **Potential misleading test checked:** the CLI offline test alone only prevents `build_runtime`. Import inspection and the replay composition show no pykrx/KIS/Naver/LLM/SQLite/network imports or calls, while the indicator import-boundary suite also passes.
+- **Potential uncovered error path checked:** future nested OHLCV can arrive after strict loading through an in-memory scenario. The runner independently guards again, and the call-order test proves rejection before indicator, screener, execution, or broker mutation.
 
 ## Human Verification Required
 
-None. The remaining failure is programmatically observable.
+None. All Phase 7 truths are deterministic, text/data based, and exercised by automated tests.
 
 ## Gaps Summary
 
-F-002, F-003, and F-004 are closed without regression. F-001 remains a blocker: the implementation proves that frozen **precomputed screener rows** affect production ranking, but the phase contract requires frozen historical **OHLCV** to traverse the production candidate-selection path. The checked-in fixture lacks OHLCV warm-up data, replay does not call the shipped indicator calculation, and the mutation test alters derived technical values. Phase 7 therefore remains incomplete despite 401 passing tests.
+No remaining gaps. F-001 is closed without regression in F-002 through F-004. The actual codebase now proves the complete frozen raw-OHLCV → shipped indicator → production screener → raw signal/parser/risk/sizing/execution path, deterministic identity/funnel evidence, exact boundary coverage, no-look-ahead behavior, and non-profitability contract.
 
 ---
 
-_Verified: 2026-07-13T00:13:08Z_
+_Verified: 2026-07-13T05:11:18Z_
 _Verifier: gsd-verifier (generic-agent workaround)_

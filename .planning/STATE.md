@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 7
-current_phase_name: Deterministic Replay Validation
-status: phase_complete
+current_phase: 8
+current_phase_name: Decision Reports & Operator Runbook
+status: completed
 stopped_at: Completed 07-06-PLAN.md
-last_updated: "2026-07-13T05:06:05.021Z"
+last_updated: "2026-07-13T05:12:57.298Z"
 last_activity: 2026-07-13
-last_activity_desc: Phase 07 complete with raw OHLCV replay provenance verified
+last_activity_desc: Phase 7 complete, transitioned to Phase 8
 progress:
   total_phases: 5
   completed_phases: 2
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 
 ## Current Position
 
-Phase: 7 — Deterministic Replay Validation
-Plan: 6 of 6
+Phase: 8 — Decision Reports & Operator Runbook
+Plan: Not started
 Status: Complete
-Last activity: 2026-07-13 — Raw OHLCV now traverses shipped indicators and production screening
+Last activity: 2026-07-13 — Phase 7 complete, transitioned to Phase 8
 
 Progress: [██████████] 100%
 
