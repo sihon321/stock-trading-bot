@@ -154,6 +154,16 @@ def test_shipped_v1_fixture_preserves_legacy_reads_and_writes(tmp_path) -> None:
     conn = create_v1_audit_database(path)
     conn.close()
 
+    interrupted = sqlite3.connect(path)
+    interrupted.execute("PRAGMA foreign_keys=ON")
+    with pytest.raises(RuntimeError, match="injected"):
+        sqlite_audit.migrate(interrupted, fail_after_step="notification_attempts")
+    assert interrupted.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert interrupted.execute(
+        "SELECT name FROM sqlite_master WHERE name='notification_attempts'"
+    ).fetchone() is None
+    interrupted.close()
+
     upgraded = sqlite_audit.connect(path)
     assert upgraded.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     assert upgraded.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
@@ -263,7 +273,9 @@ def test_notification_contract_rejects_sensitive_and_non_scalar_detail() -> None
     with pytest.raises(TypeError, match="scalar"):
         NotificationAttempt(**base, detail={"provider": {"status": 500}})
     with pytest.raises(ValueError, match="failure_category"):
-        NotificationAttempt(**base, detail={}, failure_category="raw exception text " * 20)
+        NotificationAttempt(
+            **{**base, "failure_category": "raw exception text " * 20}, detail={}
+        )
 
 
 def test_migration_failure_rolls_back_and_reopen_retries(tmp_path) -> None:
@@ -278,7 +290,7 @@ def test_migration_failure_rolls_back_and_reopen_retries(tmp_path) -> None:
     assert "run_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
     conn.close()
     reopened = sqlite_audit.connect(path)
-    assert reopened.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert reopened.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_unique_ticker_outcome_and_append_only_order_event_order(tmp_path) -> None:

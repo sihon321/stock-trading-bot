@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 
@@ -67,9 +70,21 @@ class OrderEventType(StrEnum):
     FRESHNESS_CHECKED = "FRESHNESS_CHECKED"
 
 
+class NotificationKind(StrEnum):
+    IMMEDIATE_ERROR = "IMMEDIATE_ERROR"
+    FINAL_SUMMARY = "FINAL_SUMMARY"
+
+
+class NotificationDeliveryStatus(StrEnum):
+    DELIVERED = "DELIVERED"
+    FAILED = "FAILED"
+    DISABLED = "DISABLED"
+
+
 _FORBIDDEN_DETAIL_KEYS = {
     "raw", "payload", "response", "request", "app_key", "app_secret",
     "secret", "token", "authorization", "credential", "credentials",
+    "webhook", "webhook_url", "body", "message", "exception",
 }
 
 
@@ -83,13 +98,47 @@ def sanitize_detail(detail: Mapping[str, Any] | None) -> dict[str, Any]:
         normalized_key = key.lower()
         if normalized_key in _FORBIDDEN_DETAIL_KEYS or any(
             marker in normalized_key
-            for marker in ("secret", "token", "credential", "app_key", "payload")
+            for marker in (
+                "secret", "token", "credential", "app_key", "payload", "webhook",
+            )
         ):
             raise ValueError(f"forbidden evidence detail field: {key}")
         if value is not None and not isinstance(value, (str, int, float, bool)):
             raise TypeError(f"evidence detail must contain scalar facts: {key}")
         clean[key] = value
     return clean
+
+
+@dataclass(frozen=True)
+class NotificationAttempt:
+    run_id: str
+    ticker: str | None
+    kind: NotificationKind
+    status: NotificationDeliveryStatus
+    failure_category: str | None
+    detail: Mapping[str, str | int | float | bool | None]
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.run_id:
+            raise ValueError("run_id is required")
+        if self.ticker == "":
+            raise ValueError("ticker cannot be empty")
+        object.__setattr__(self, "kind", NotificationKind(self.kind))
+        object.__setattr__(self, "status", NotificationDeliveryStatus(self.status))
+        if self.failure_category is not None and re.fullmatch(
+            r"[A-Z][A-Z0-9_]{0,63}", self.failure_category
+        ) is None:
+            raise ValueError("failure_category must be a bounded stable code")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        clean = sanitize_detail(self.detail)
+        for key, value in clean.items():
+            if len(key) > 64:
+                raise ValueError("notification detail key is too long")
+            if isinstance(value, str) and len(value) > 512:
+                raise ValueError("notification detail value is too long")
+        object.__setattr__(self, "detail", MappingProxyType(clean))
 
 
 @dataclass(frozen=True)

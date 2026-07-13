@@ -11,6 +11,9 @@ from typing import Any, Union
 
 from .audit_models import (
     FailedStage,
+    NotificationAttempt,
+    NotificationDeliveryStatus,
+    NotificationKind,
     OrderEvent,
     OrderEventType,
     ReasonCode,
@@ -22,7 +25,7 @@ from .audit_models import (
 )
 
 PathLike = Union[str, Path]
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _V1_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, "
@@ -80,6 +83,14 @@ CREATE TABLE IF NOT EXISTS order_events (
     observed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_order_events_intent ON order_events(order_intent_id, id);
+CREATE TABLE IF NOT EXISTS notification_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT,
+    kind TEXT NOT NULL, delivery_status TEXT NOT NULL, failure_category TEXT,
+    detail_json TEXT NOT NULL, observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_notification_attempts_run
+    ON notification_attempts(run_id, id);
 """
 
 
@@ -129,7 +140,20 @@ def migrate(conn: sqlite3.Connection, *, fail_after_step: str | None = None) -> 
                 detail_json TEXT NOT NULL, observed_at TEXT NOT NULL)"""
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_order_events_intent ON order_events(order_intent_id, id)")
-        conn.execute("PRAGMA user_version = 2")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS notification_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT,
+                kind TEXT NOT NULL, delivery_status TEXT NOT NULL, failure_category TEXT,
+                detail_json TEXT NOT NULL, observed_at TEXT NOT NULL)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS ix_notification_attempts_run
+               ON notification_attempts(run_id, id)"""
+        )
+        if fail_after_step == "notification_attempts":
+            raise RuntimeError("injected migration failure")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
     except Exception:
         conn.rollback()
