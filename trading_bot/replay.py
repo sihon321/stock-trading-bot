@@ -16,9 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from trading_bot.data_models import SourceHealth, SourceStatus
+import pandas as pd
+
+from trading_bot.data_models import IndicatorConfig, SourceHealth, SourceStatus
 from trading_bot.domain import Money, Position, Ticker
 from trading_bot.execution import ExecutionAction, ExecutionConfig, execute_signal_cycle
+from trading_bot.indicators import calculate_technicals
 from trading_bot.mock_broker import MockBroker
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot.screener import ScreenerConfig, screen_candidates
@@ -272,7 +275,6 @@ class ReplayStep:
     raw_signal: str
     current_price: float
     fill: str
-    market_row: Mapping[str, Any]
     expected_action: str
     boundary_id: str
     expected_stage: str = "action"
@@ -435,6 +437,117 @@ def _keys(value: Mapping[str, Any], expected: set[str], label: str) -> None:
         raise ValueError(f"{label} fields mismatch: expected {sorted(expected)}, got {sorted(value)}")
 
 
+_INDICATOR_CONFIG_FIELDS = {
+    "sma_short_window", "sma_long_window", "rsi_window", "atr_window",
+    "historical_volatility_window", "volume_ratio_window",
+}
+_HISTORY_FIELDS = {
+    "ticker", "market", "state", "trading_value", "health", "ohlcv",
+}
+_OHLCV_FIELDS = {"observed_at", "open", "high", "low", "close", "volume"}
+
+
+def _indicator_config(policy: Mapping[str, Any]) -> IndicatorConfig:
+    raw = policy.get("indicator_config")
+    if not isinstance(raw, Mapping):
+        raise ValueError("policy.indicator_config must be an object")
+    _keys(raw, _INDICATOR_CONFIG_FIELDS, "indicator_config")
+    values: dict[str, int] = {}
+    for name in _INDICATOR_CONFIG_FIELDS:
+        value = raw[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"indicator_config.{name} must be a positive integer")
+        values[name] = value
+    return IndicatorConfig(**values)
+
+
+def _guard_market_history(
+    records: Iterable[Mapping[str, Any]], cutoff: str
+) -> tuple[Mapping[str, Any], ...]:
+    guarded: list[Mapping[str, Any]] = []
+    for record in records:
+        guarded_historical_view(record["ohlcv"], cutoff)
+        guarded.append(record)
+    return tuple(guarded)
+
+
+def _validate_market_history(
+    records: Iterable[Mapping[str, Any]],
+    indicator_config: IndicatorConfig,
+) -> tuple[Mapping[str, Any], ...]:
+    validated: list[Mapping[str, Any]] = []
+    tickers: set[str] = set()
+    minimum_rows = max(
+        indicator_config.sma_short_window,
+        indicator_config.sma_long_window,
+        indicator_config.rsi_window,
+        indicator_config.atr_window,
+        indicator_config.volume_ratio_window,
+        indicator_config.historical_volatility_window + 1,
+    )
+    for record in records:
+        _keys(record, _HISTORY_FIELDS, "market_history record")
+        ticker = str(record["ticker"])
+        if not _TICKER.fullmatch(ticker):
+            raise ValueError("invalid historical ticker")
+        if ticker in tickers:
+            raise ValueError("market_history ticker must be unique")
+        tickers.add(ticker)
+        _finite(record["trading_value"], "trading_value", minimum=0)
+        if not isinstance(record["market"], str) or not isinstance(record["state"], str):
+            raise ValueError("market and state must be strings")
+        if not isinstance(record["health"], Mapping):
+            raise ValueError("health must be an object")
+        try:
+            SourceStatus(record["health"].get("status", "AVAILABLE"))
+        except ValueError as exc:
+            raise ValueError("unsupported source health status") from exc
+
+        rows = record["ohlcv"]
+        if not isinstance(rows, list) or len(rows) < minimum_rows:
+            raise ValueError(
+                f"ticker {ticker} has insufficient warm-up: "
+                f"{len(rows) if isinstance(rows, list) else 0} < {minimum_rows}"
+            )
+        observed_times: list[datetime] = []
+        for row in rows:
+            _keys(row, _OHLCV_FIELDS, "OHLCV row")
+            observed = datetime.fromisoformat(str(row["observed_at"]))
+            if observed.utcoffset() is None:
+                raise ValueError("OHLCV observed_at must be timezone-aware")
+            observed_times.append(observed)
+            opening = _finite(row["open"], "open", minimum=0)
+            high = _finite(row["high"], "high", minimum=0)
+            low = _finite(row["low"], "low", minimum=0)
+            close = _finite(row["close"], "close", minimum=0)
+            _finite(row["volume"], "volume", minimum=0)
+            if min(opening, high, low, close) <= 0:
+                raise ValueError("OHLC prices must be positive")
+            if high < max(opening, close) or low > min(opening, close) or high < low:
+                raise ValueError("OHLC high/low consistency violation")
+        if len(set(observed_times)) != len(observed_times):
+            raise ValueError("OHLCV observed_at values must be unique")
+        if observed_times != sorted(observed_times):
+            raise ValueError("OHLCV observed_at values must be strictly increasing")
+        validated.append(record)
+    return tuple(validated)
+
+
+def _ohlcv_frame(rows: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "시가": [row["open"] for row in rows],
+            "고가": [row["high"] for row in rows],
+            "저가": [row["low"] for row in rows],
+            "종가": [row["close"] for row in rows],
+            "거래량": [row["volume"] for row in rows],
+        },
+        index=pd.DatetimeIndex(
+            [datetime.fromisoformat(str(row["observed_at"])) for row in rows]
+        ),
+    )
+
+
 def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
     """Load and strictly validate a versioned replay fixture bundle."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -445,7 +558,7 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
         raise ValueError("fixture boundary catalog is incomplete or unknown")
     scenarios = []
     scenario_fields = {"id", "mode", "trading_date", "evaluation_time", "policy", "initial_state", "market_history", "steps", "expected_error"}
-    step_fields = {"ticker", "raw_signal", "current_price", "fill", "market_row", "expected_action", "boundary_id", "expected_stage", "realized_loss_after"}
+    step_fields = {"ticker", "raw_signal", "current_price", "fill", "expected_action", "boundary_id", "expected_stage", "realized_loss_after"}
     state_fields = {"cash", "positions", "daily_loss"}
     for raw in data["scenarios"]:
         if set(raw) not in (scenario_fields, scenario_fields - {"expected_error"}):
@@ -466,24 +579,20 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
             _finite(position["average_price"], "average_price", minimum=0)
         _keys(state["daily_loss"], {"realized_loss", "threshold"}, "daily_loss")
         daily_loss = {k: _finite(v, k, minimum=0) for k, v in state["daily_loss"].items()}
+        indicator_config = _indicator_config(raw["policy"])
+        history = _validate_market_history(raw["market_history"], indicator_config)
         expected_error = raw.get("expected_error")
         if expected_error not in {None, "FUTURE_DATA_ACCESS"}:
             raise ValueError("unsupported expected_error")
         if expected_error == "FUTURE_DATA_ACCESS":
             try:
-                guarded_historical_view(raw["market_history"], raw["evaluation_time"])
+                _guard_market_history(history, raw["evaluation_time"])
             except FutureDataAccessError:
                 pass
             else:
                 raise ValueError("future-access scenario must contain a future row")
-            history = tuple(raw["market_history"])
         else:
-            history = guarded_historical_view(raw["market_history"], raw["evaluation_time"])
-        history_fields = {"observed_at", "ticker", "market", "state", "trading_value", "technicals", "health"}
-        for record in history:
-            _keys(record, history_fields, "market_history record")
-            if not _TICKER.fullmatch(str(record["ticker"])):
-                raise ValueError("invalid historical ticker")
+            history = _guard_market_history(history, raw["evaluation_time"])
         steps = []
         for step in raw["steps"]:
             required_step_fields = step_fields - {"realized_loss_after", "expected_stage", "boundary_id"}
@@ -502,7 +611,7 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
                     raise ValueError("realized_loss_after may not exceed policy threshold")
             steps.append(ReplayStep(
                 step["ticker"], step["raw_signal"], price, step["fill"],
-                step["market_row"], step["expected_action"], step.get("boundary_id", ""),
+                step["expected_action"], step.get("boundary_id", ""),
                 step.get("expected_stage", "action"), loss_after,
             ))
         if raw["mode"] == "FULL_DAY" and any(s.realized_loss_after is None for s in steps):
@@ -520,7 +629,9 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
     outcomes: list[ReplayOutcome] = []
     for scenario in scenarios:
         try:
-            history = guarded_historical_view(scenario.market_history, scenario.evaluation_time)
+            history = _guard_market_history(
+                scenario.market_history, scenario.evaluation_time
+            )
         except FutureDataAccessError:
             if scenario.expected_error != "FUTURE_DATA_ACCESS" or len(scenario.steps) != 1:
                 raise
@@ -535,27 +646,43 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
             ))
             continue
         p = scenario.policy
+        indicator_config = _indicator_config(p)
         screener = ScreenerConfig(int(p["max_candidates"]), tuple(p["markets"]), float(p["min_trading_value"]), float(p["min_volume_ratio"]), tuple(p["excluded_states"]))
         risk = RiskConfig(float(p["stop_loss_pct"]), float(p["take_profit_pct"]))
         execution = ExecutionConfig(float(p["buy_confidence_threshold"]), float(p["sell_confidence_threshold"]), float(p["buy_cash_fraction"]), float(p["max_position_value"]))
         broker = MockBroker(Money(scenario.initial_cash, "KRW"), [_position(x) for x in scenario.initial_positions])
         daily = DailyLossState(float(scenario.daily_loss["realized_loss"]), float(scenario.daily_loss["threshold"]))
         by_ticker = {s.ticker: s for s in scenario.steps}
-        latest_by_ticker: dict[str, Mapping[str, Any]] = {}
-        for record in history:
-            ticker = str(record["ticker"])
-            previous = latest_by_ticker.get(ticker)
-            if previous is None or str(record["observed_at"]) > str(previous["observed_at"]):
-                latest_by_ticker[ticker] = record
+        history_by_ticker = {str(record["ticker"]): record for record in history}
         rows = []
         for step in scenario.steps:
-            if step.ticker not in latest_by_ticker:
+            if step.ticker not in history_by_ticker:
                 raise ValueError(f"missing historical screener input for ticker {step.ticker}")
-            row = dict(latest_by_ticker[step.ticker])
-            row.pop("observed_at")
-            health_raw = row.get("health", {})
-            row["health"] = SourceHealth(source="fixture", status=SourceStatus(health_raw.get("status", "AVAILABLE")), reason=health_raw.get("reason", "fixture"), observed_date=health_raw.get("observed_date", scenario.trading_date), expected_date=scenario.trading_date)
-            rows.append(row)
+            record = history_by_ticker[step.ticker]
+            indicator_result = calculate_technicals(
+                _ohlcv_frame(record["ohlcv"]), indicator_config
+            )
+            health_raw = record["health"]
+            fixture_health = SourceHealth(
+                source="fixture",
+                status=SourceStatus(health_raw.get("status", "AVAILABLE")),
+                reason=health_raw.get("reason", "fixture"),
+                observed_date=health_raw.get("observed_date", scenario.trading_date),
+                expected_date=scenario.trading_date,
+            )
+            health = (
+                fixture_health
+                if fixture_health.status is not SourceStatus.AVAILABLE
+                else indicator_result.health
+            )
+            rows.append({
+                "ticker": record["ticker"],
+                "market": record["market"],
+                "state": record["state"],
+                "trading_value": record["trading_value"],
+                "technicals": dict(indicator_result.technicals),
+                "health": health,
+            })
         screening = screen_candidates(scenario.trading_date, rows, screener)
         selected = screening.candidates
         selected_tickers = {candidate.ticker for candidate in selected}

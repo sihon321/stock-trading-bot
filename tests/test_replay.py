@@ -392,7 +392,14 @@ def test_full_day_daily_loss_progresses_and_blocks_later_buy() -> None:
 
 def test_fixture_rejects_future_rows_before_replay(tmp_path: Path) -> None:
     data = json.loads((FIXTURES / "focused.json").read_text())
-    data["scenarios"][0]["market_history"].append({"observed_at":"2026-07-01T00:00:00+09:00","close":1})
+    data["scenarios"][0]["market_history"][0]["ohlcv"].append({
+        "observed_at": "2026-07-01T00:00:00+09:00",
+        "open": 100,
+        "high": 102,
+        "low": 99,
+        "close": 101,
+        "volume": 1000,
+    })
     path = tmp_path / "future.json"
     path.write_text(json.dumps(data))
     with pytest.raises(FutureDataAccessError): load_replay_bundle(path)

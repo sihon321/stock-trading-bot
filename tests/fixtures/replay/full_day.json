@@ -1,19 +1,215 @@
 {
   "schema_version": 1,
-  "boundaries": ["buy_at_threshold", "buy_below_threshold", "hold", "sell", "malformed_signal", "stale_data", "stop_loss", "take_profit", "daily_loss_block", "sizing_boundary", "future_access"],
-  "scenarios": [{
-    "id": "ranked-loss-progression", "mode": "FULL_DAY", "trading_date": "20260630", "evaluation_time": "2026-06-30T15:30:00+09:00",
-    "policy": {"max_candidates": 20, "markets": ["KOSPI"], "min_trading_value": 1, "min_volume_ratio": 1, "excluded_states": ["HALTED"], "stop_loss_pct": 0.05, "take_profit_pct": 0.1, "daily_loss_threshold": 500000, "buy_confidence_threshold": 0.8, "sell_confidence_threshold": 0.8, "buy_cash_fraction": 0.1, "max_position_value": 1000000},
-    "initial_state": {"cash": 10000000, "positions": [], "daily_loss": {"realized_loss": 0, "threshold": 500000}},
-    "market_history": [
-      {"observed_at":"2026-06-30T15:30:00+09:00","ticker":"000020","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":4,"historical_volatility":0.03,"volume_ratio":1.5,"rsi_14":55,"sma_short":105,"sma_long":100},"health":{"status":"AVAILABLE"}},
-      {"observed_at":"2026-06-30T15:30:00+09:00","ticker":"000010","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":8,"historical_volatility":0.05,"volume_ratio":2,"rsi_14":60,"sma_short":110,"sma_long":100},"health":{"status":"AVAILABLE"}},
-      {"observed_at":"2026-06-30T15:30:00+09:00","ticker":"000030","market":"KOSPI","state":"NORMAL","trading_value":1000000,"technicals":{"atr_14":2,"historical_volatility":0.01,"volume_ratio":1.2,"rsi_14":50,"sma_short":101,"sma_long":100},"health":{"status":"AVAILABLE"}}
-    ],
-    "steps": [
-      {"ticker":"000020","raw_signal":"{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"second\"}","current_price":10000,"fill":"NONE","market_row":{},"expected_action":"HOLD","realized_loss_after":500000},
-      {"ticker":"000010","raw_signal":"{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"first\"}","current_price":10000,"fill":"COMPLETE","market_row":{},"expected_action":"BUY","realized_loss_after":500000},
-      {"ticker":"000030","raw_signal":"{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"blocked later\"}","current_price":10000,"fill":"NONE","market_row":{},"expected_action":"HOLD","realized_loss_after":500000}
-    ]
-  }]
+  "boundaries": [
+    "buy_at_threshold",
+    "buy_below_threshold",
+    "hold",
+    "sell",
+    "malformed_signal",
+    "stale_data",
+    "stop_loss",
+    "take_profit",
+    "daily_loss_block",
+    "sizing_boundary",
+    "future_access"
+  ],
+  "scenarios": [
+    {
+      "id": "ranked-loss-progression",
+      "mode": "FULL_DAY",
+      "trading_date": "20260630",
+      "evaluation_time": "2026-06-30T15:30:00+09:00",
+      "policy": {
+        "max_candidates": 20,
+        "markets": [
+          "KOSPI"
+        ],
+        "min_trading_value": 1,
+        "min_volume_ratio": 1,
+        "excluded_states": [
+          "HALTED"
+        ],
+        "stop_loss_pct": 0.05,
+        "take_profit_pct": 0.1,
+        "daily_loss_threshold": 500000,
+        "buy_confidence_threshold": 0.8,
+        "sell_confidence_threshold": 0.8,
+        "buy_cash_fraction": 0.1,
+        "max_position_value": 1000000,
+        "indicator_config": {
+          "sma_short_window": 2,
+          "sma_long_window": 3,
+          "rsi_window": 3,
+          "atr_window": 3,
+          "historical_volatility_window": 3,
+          "volume_ratio_window": 3
+        }
+      },
+      "initial_state": {
+        "cash": 10000000,
+        "positions": [],
+        "daily_loss": {
+          "realized_loss": 0,
+          "threshold": 500000
+        }
+      },
+      "market_history": [
+        {
+          "ticker": "000020",
+          "market": "KOSPI",
+          "state": "NORMAL",
+          "trading_value": 1000000,
+          "health": {
+            "status": "AVAILABLE"
+          },
+          "ohlcv": [
+            {
+              "observed_at": "2026-06-27T06:30:00.000Z",
+              "open": 99,
+              "high": 103,
+              "low": 97,
+              "close": 100,
+              "volume": 1000
+            },
+            {
+              "observed_at": "2026-06-28T06:30:00.000Z",
+              "open": 102,
+              "high": 106,
+              "low": 100,
+              "close": 103,
+              "volume": 1100
+            },
+            {
+              "observed_at": "2026-06-29T06:30:00.000Z",
+              "open": 105,
+              "high": 109,
+              "low": 103,
+              "close": 106,
+              "volume": 1200
+            },
+            {
+              "observed_at": "2026-06-30T06:30:00.000Z",
+              "open": 109,
+              "high": 113,
+              "low": 107,
+              "close": 110,
+              "volume": 3000
+            }
+          ]
+        },
+        {
+          "ticker": "000010",
+          "market": "KOSPI",
+          "state": "NORMAL",
+          "trading_value": 1000000,
+          "health": {
+            "status": "AVAILABLE"
+          },
+          "ohlcv": [
+            {
+              "observed_at": "2026-06-27T06:30:00.000Z",
+              "open": 99,
+              "high": 103,
+              "low": 97,
+              "close": 100,
+              "volume": 1000
+            },
+            {
+              "observed_at": "2026-06-28T06:30:00.000Z",
+              "open": 111,
+              "high": 115,
+              "low": 109,
+              "close": 112,
+              "volume": 1100
+            },
+            {
+              "observed_at": "2026-06-29T06:30:00.000Z",
+              "open": 93,
+              "high": 97,
+              "low": 91,
+              "close": 94,
+              "volume": 1200
+            },
+            {
+              "observed_at": "2026-06-30T06:30:00.000Z",
+              "open": 121,
+              "high": 125,
+              "low": 119,
+              "close": 122,
+              "volume": 3000
+            }
+          ]
+        },
+        {
+          "ticker": "000030",
+          "market": "KOSPI",
+          "state": "NORMAL",
+          "trading_value": 1000000,
+          "health": {
+            "status": "AVAILABLE"
+          },
+          "ohlcv": [
+            {
+              "observed_at": "2026-06-27T06:30:00.000Z",
+              "open": 99,
+              "high": 103,
+              "low": 97,
+              "close": 100,
+              "volume": 1000
+            },
+            {
+              "observed_at": "2026-06-28T06:30:00.000Z",
+              "open": 100,
+              "high": 104,
+              "low": 98,
+              "close": 101,
+              "volume": 1100
+            },
+            {
+              "observed_at": "2026-06-29T06:30:00.000Z",
+              "open": 101,
+              "high": 105,
+              "low": 99,
+              "close": 102,
+              "volume": 1200
+            },
+            {
+              "observed_at": "2026-06-30T06:30:00.000Z",
+              "open": 102,
+              "high": 106,
+              "low": 100,
+              "close": 103,
+              "volume": 3000
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "ticker": "000020",
+          "raw_signal": "{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"second\"}",
+          "current_price": 10000,
+          "fill": "NONE",
+          "expected_action": "HOLD",
+          "realized_loss_after": 500000
+        },
+        {
+          "ticker": "000010",
+          "raw_signal": "{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"first\"}",
+          "current_price": 10000,
+          "fill": "COMPLETE",
+          "expected_action": "BUY",
+          "realized_loss_after": 500000
+        },
+        {
+          "ticker": "000030",
+          "raw_signal": "{\"decision\":\"BUY\",\"confidence\":0.9,\"reason\":\"blocked later\"}",
+          "current_price": 10000,
+          "fill": "NONE",
+          "expected_action": "HOLD",
+          "realized_loss_after": 500000
+        }
+      ]
+    }
+  ]
 }
