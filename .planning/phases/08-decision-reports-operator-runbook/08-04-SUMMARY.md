@@ -119,7 +119,20 @@ Each TDD task was committed atomically as RED then GREEN:
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 1 - Tracking Bug] 상태 진행률의 불일치 수정**
+- **Found during:** Plan metadata synchronization
+- **Issue:** `state.update-progress`가 94%를 반환했지만 STATE frontmatter에는 phase 비율 40%, 본문에는 이전 값 88%를 남겼다.
+- **Fix:** 완료된 15/16 계획과 handler 반환값에 맞춰 두 진행률 표현을 94%로 정규화했다.
+- **Files modified:** `.planning/STATE.md`
+- **Verification:** STATE frontmatter와 본문 진행률이 모두 94%이고 completed_plans가 15임을 확인했다.
+- **Committed in:** plan metadata commit
+
+---
+
+**Total deviations:** 1 auto-fixed (1 tracking bug)
+**Impact on plan:** 실행 기능에는 영향이 없고 GSD 추적 메타데이터의 내부 일관성만 복원했다.
 
 ## Issues Encountered
 

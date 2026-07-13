@@ -108,7 +108,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
   3. Operator can follow a fixed market-session runbook for `bot status`, `bot screen`, `bot run`, and report review, including preflight, abort, and postflight checks.
   4. Operator can diagnose and safely recover from stale data, API failure, timeout, ambiguous or duplicate orders, notification failure, and audit failure using documented triage steps.
 
-**Plans**: 3/5 plans executed
+**Plans**: 4/5 plans executed
 **UI hint**: yes
 
 Plans:
@@ -126,7 +126,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 08-04-PLAN.md — Share and enforce typed preflight evidence across status and run.
+- [x] 08-04-PLAN.md — Share and enforce typed preflight evidence across status and run.
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -173,6 +173,6 @@ Plans:
 | 5. Real-Money Readiness & Operations | v1.0 | 5/5 | Complete | 2026-07-02 |
 | 6. Audit Evidence & Cycle Boundaries | v1.1 | 5/5 | Complete    | 2026-07-11 |
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
-| 8. Decision Reports & Operator Runbook | v1.1 | 3/5 | In Progress|  |
+| 8. Decision Reports & Operator Runbook | v1.1 | 4/5 | In Progress|  |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 0/TBD | Not started | - |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 0/TBD | Not started | - |
