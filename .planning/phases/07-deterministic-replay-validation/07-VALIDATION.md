@@ -37,6 +37,15 @@ created: 2026-07-12
 | REPLAY-03 | Funnel stages and action/block counts have explicit denominators; CLI/JSON disclaim profitability and omit performance metrics | unit/CLI | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'funnel or disclaimer or replay'` | ✅ 07-03-01, 07-03-02 |
 | REPLAY-04 | Catalog covers exact threshold edges, HOLD, SELL, malformed, stale, stop/take overrides, daily-loss block, sizing and hard look-ahead failure | parameterized boundary | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'boundary or catalog or lookahead'` | ✅ 07-01-01, 07-01-02 |
 
+## Gap Closure Evidence
+
+| Finding | Closed by | Executable selector | Status |
+|---------|-----------|---------------------|--------|
+| F-001 | Historical rows materially drive production screener ordering | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'historical_input_materially'` | PASS |
+| F-002 | Exact one-to-one required-boundary checks with full attribution | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'required_boundaries or boundary_bijection'` | PASS |
+| F-003 | Full-day realized-loss state progresses before later BUY gates | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'daily_loss_progresses'` | PASS |
+| F-004 | Helper and result object share the complete deterministic identity path | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'complete_result or deterministic_evidence or replay_command_is_offline'` | PASS |
+
 ## Required Invariants
 
 1. Reordering focused scenario files does not change an individual scenario outcome.

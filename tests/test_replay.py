@@ -1,6 +1,7 @@
 import json
 import hashlib
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -282,6 +283,31 @@ def test_complete_result_helper_matches_replay_result() -> None:
         result.manifest, result.outcomes, funnel=result.funnel,
         verification=result.verification, disclaimer=result.disclaimer,
     ) == result.result_id
+
+
+@pytest.mark.parametrize("component", ["funnel", "verification", "disclaimer"])
+def test_complete_result_identity_is_sensitive_to_all_deterministic_evidence(
+    component: str,
+) -> None:
+    outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "focused.json"))
+    funnel = build_replay_funnel(outcomes)
+    verification = verify_replay_expectations(outcomes)
+    baseline = ReplayResult(_static_manifest(), outcomes, {}, funnel, verification)
+    values = {
+        "funnel": replace(funnel, evaluated=replace(funnel.evaluated, numerator=999)),
+        "verification": replace(verification, passed=False),
+        "disclaimer": baseline.disclaimer + " fixed",
+    }
+    kwargs = {
+        "funnel": funnel,
+        "verification": verification,
+        "disclaimer": baseline.disclaimer,
+    }
+    kwargs[component] = values[component]
+    changed = ReplayResult(
+        baseline.manifest, baseline.outcomes, {"duration_ms": 999}, **kwargs
+    )
+    assert changed.result_id != baseline.result_id
 
 
 def test_full_day_uses_production_rank_and_fill_state() -> None:

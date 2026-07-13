@@ -514,6 +514,14 @@ def test_replay_command_is_offline_concise_and_writes_complete_json(
     assert document["evidence"]["funnel"]["evaluated"]["denominator"] > 0
     assert "decision-policy paths only" in document["evidence"]["disclaimer"]
 
+    repeated = CliRunner().invoke(
+        cli.app,
+        ["replay", str(REPLAY_FIXTURES / "focused.json"), "--output", str(tmp_path)],
+    )
+    assert repeated.exit_code == 0, repeated.output
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert document["result_id"] in repeated.stdout
+
 
 def test_replay_command_shows_only_mismatch_detail_and_exits_nonzero(tmp_path: Path) -> None:
     import trading_bot.cli as cli
