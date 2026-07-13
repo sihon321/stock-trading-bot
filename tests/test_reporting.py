@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,8 +28,22 @@ from trading_bot.reporting import (
     NotificationState,
     ReadOnlyAuditRepository,
     ReconciliationState,
+    build_replay_report,
     build_daily_report,
     build_period_report,
+    load_replay_results,
+    render_daily_report,
+    render_period_report,
+    render_replay_report,
+)
+from trading_bot.replay import (
+    NON_PROFITABILITY_DISCLAIMER,
+    ReplayCheck,
+    ReplayCount,
+    ReplayFunnel,
+    ReplayManifest,
+    ReplayResult,
+    ReplayVerification,
 )
 
 
@@ -384,3 +400,149 @@ def test_readonly_repository_refuses_missing_and_unsupported_databases(tmp_path:
     unsupported.write_bytes(b"")
     with pytest.raises(RuntimeError, match="schema"):
         ReadOnlyAuditRepository(unsupported).load_daily(DAY)
+
+
+def _manifest(**changes) -> ReplayManifest:
+    values = {
+        "scenario_hash": "1" * 64,
+        "ohlcv_hash": "2" * 64,
+        "raw_signal_hash": "3" * 64,
+        "policy": {"buy_confidence_threshold": 0.8},
+        "head_commit": "abc123",
+        "relevant_tracked_diff_hash": "4" * 64,
+        "code_state": "clean",
+        "initial_state": {"cash": 1_000_000, "positions": []},
+        "evaluation_time": "2026-07-14T09:10:00+09:00",
+        "trading_date": "20260714",
+        "fixture_schema_version": 1,
+    }
+    values.update(changes)
+    return ReplayManifest(**values)
+
+
+def _funnel(total: int = 1) -> ReplayFunnel:
+    return ReplayFunnel(
+        evaluated=ReplayCount(total, total),
+        selected=ReplayCount(total, total),
+        buy_signaled=ReplayCount(total, total),
+        confidence_qualified=ReplayCount(total, total),
+        risk_qualified=ReplayCount(total, total),
+        validly_sized=ReplayCount(total, total),
+        order_eligible=ReplayCount(total, total),
+        actions={
+            "BUY": ReplayCount(total, total),
+            "HOLD": ReplayCount(0, total),
+            "SELL": ReplayCount(0, total),
+        },
+        blocked_reasons={},
+    )
+
+
+def _result(path: Path, *, manifest: ReplayManifest | None = None) -> ReplayResult:
+    verification = ReplayVerification(
+        passed=True,
+        checks=(ReplayCheck("buy", "scenario", "005930", "action", "BUY", "BUY", True),),
+    )
+    result = ReplayResult(
+        manifest or _manifest(),
+        ({"ticker": "005930", "action": "BUY"},),
+        {"source": "test"},
+        _funnel(),
+        verification,
+    )
+    path.write_bytes(result.normalized_bytes())
+    return result
+
+
+def test_replay_identity_is_verified_and_duplicate_ids_count_once(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.json"
+    duplicate_path = tmp_path / "duplicate.json"
+    expected = _result(first_path)
+    duplicate_path.write_bytes(first_path.read_bytes())
+
+    loaded = load_replay_results((first_path, duplicate_path))
+    assert len(loaded) == 1
+    assert loaded[0].stable_result_id == expected.result_id
+    assert loaded[0].source_paths == (first_path.resolve(), duplicate_path.resolve())
+    assert loaded[0].verification_status == "PASSED"
+
+    forged = json.loads(first_path.read_text(encoding="utf-8"))
+    forged["result_id"] = "f" * 64
+    forged_path = tmp_path / "forged.json"
+    forged_path.write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(ValueError, match="identity"):
+        load_replay_results((forged_path,))
+
+
+@pytest.mark.parametrize("mutation", ["cardinality", "non_finite", "unknown_field"])
+def test_replay_malformed_funnel_fails_before_aggregation(
+    tmp_path: Path, mutation: str
+) -> None:
+    path = tmp_path / "result.json"
+    _result(path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "cardinality":
+        document["evidence"]["funnel"]["selected"]["numerator"] = 2
+    elif mutation == "non_finite":
+        document["evidence"]["funnel"]["selected"]["numerator"] = float("inf")
+    else:
+        document["evidence"]["funnel"]["extra"] = {"numerator": 0, "denominator": 0}
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_replay_results((path,))
+
+
+def test_replay_compatibility_groups_only_identical_basis_and_explains_mismatch(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    third_path = tmp_path / "third.json"
+    first = _result(first_path)
+    second = _result(second_path, manifest=replace(_manifest(), head_commit="other"))
+    third = _result(
+        third_path,
+        manifest=replace(_manifest(), policy={"buy_confidence_threshold": 0.9}),
+    )
+
+    report = build_replay_report(load_replay_results((first_path, second_path, third_path)))
+    assert len(report.results) == 3
+    assert len(report.groups) == 2
+    same_basis = next(group for group in report.groups if len(group.result_ids) == 2)
+    assert same_basis.result_ids == (first.result_id, second.result_id)
+    assert same_basis.aggregate_funnel.evaluated == ReplayCount(2, 2)
+    assert all("policy" in group.incompatible_fields for group in report.groups)
+    assert report.disclaimer == NON_PROFITABILITY_DISCLAIMER
+
+
+def test_daily_period_and_replay_renderers_are_summary_first_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "audit.db"
+    conn = sqlite_audit.connect(database)
+    _start(
+        conn,
+        "run",
+        kind=RunKind.RUN,
+        status=RunStatus.COMPLETED,
+        started_at="2026-07-14T00:10:00+00:00",
+    )
+    _outcome(conn, "run", "005930", reason=ReasonCode.LOW_CONFIDENCE)
+    _decision(conn, "run", "005930", "HOLD", 0.79)
+    conn.close()
+
+    repository = ReadOnlyAuditRepository(database)
+    daily = render_daily_report(build_daily_report(repository, DAY))
+    period = render_period_report(build_period_report(repository, DAY, DAY))
+    replay_path = tmp_path / "replay.json"
+    replay_result = _result(replay_path)
+    replay = render_replay_report(build_replay_report(load_replay_results((replay_path,))))
+
+    assert daily == render_daily_report(build_daily_report(repository, DAY))
+    assert daily.endswith("\n") and "\r" not in daily
+    assert daily.index("요약") < daily.index("상세") < daily.index("005930")
+    assert "LOW_CONFIDENCE — 신뢰도가 매수 기준보다 낮습니다" in daily
+    assert period.index("요약") < period.index("상세")
+    assert replay.index(replay_result.result_id) < replay.index("호환 그룹")
+    assert NON_PROFITABILITY_DISCLAIMER in replay
+    assert "P&L:" not in replay and "Sharpe:" not in replay
