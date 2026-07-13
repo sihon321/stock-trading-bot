@@ -32,7 +32,7 @@ created: 2026-07-12
 
 | Requirement | Secure behavior | Test type | Automated command | File status |
 |-------------|-----------------|-----------|-------------------|-------------|
-| REPLAY-01 | Fixture-only path invokes production screening and execution seams without `build_runtime`, network, providers, SQLite, or clock | integration/import-boundary | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'replay'` | ✅ 07-01-01, 07-03-02 |
+| REPLAY-01 | Raw fixture OHLCV invokes shipped `calculate_technicals`, production screening, and execution seams without `build_runtime`, network, providers, SQLite, or clock | integration/import-boundary | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'raw_ohlcv or historical_input_materially or replay'` | ✅ 07-01-01, 07-03-02, 07-06-01/02 |
 | REPLAY-02 | Manifest has all locked inputs, fixture hashes, HEAD+tracked-diff hash, ordered outcomes, and input+outcome result ID | unit/integration | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'manifest or identity or dirty'` | ✅ 07-02-01, 07-02-02 |
 | REPLAY-03 | Funnel stages and action/block counts have explicit denominators; CLI/JSON disclaim profitability and omit performance metrics | unit/CLI | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'funnel or disclaimer or replay'` | ✅ 07-03-01, 07-03-02 |
 | REPLAY-04 | Catalog covers exact threshold edges, HOLD, SELL, malformed, stale, stop/take overrides, daily-loss block, sizing and hard look-ahead failure | parameterized boundary | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'boundary or catalog or lookahead'` | ✅ 07-01-01, 07-01-02 |
@@ -41,7 +41,7 @@ created: 2026-07-12
 
 | Finding | Closed by | Executable selector | Status |
 |---------|-----------|---------------------|--------|
-| F-001 | Historical rows materially drive production screener ordering | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'historical_input_materially'` | PASS |
+| F-001 | Cutoff-safe raw close/high/low/volume traverses shipped indicators and materially drives production screener ordering | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'fixture_schema_uses_only_raw_ohlcv_inputs or calls_shipped_indicator_transform or historical_input_materially or future_ohlcv_fails_before_all_downstream_calls'` | PASS |
 | F-002 | Exact one-to-one required-boundary checks with full attribution | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'required_boundaries or boundary_bijection'` | PASS |
 | F-003 | Full-day realized-loss state progresses before later BUY gates | `.venv/bin/python -m pytest -q tests/test_replay.py -k 'daily_loss_progresses'` | PASS |
 | F-004 | Helper and result object share the complete deterministic identity path | `.venv/bin/python -m pytest -q tests/test_replay.py tests/test_cli.py -k 'complete_result or deterministic_evidence or replay_command_is_offline'` | PASS |
@@ -54,7 +54,7 @@ created: 2026-07-12
 4. A repeated replay from identical deterministic inputs produces identical ordered outcomes and result ID.
 5. Changing any fixture, policy, relevant tracked diff, initial state, fixed evaluation time, or normalized outcome changes the corresponding evidence hash/result ID.
 6. Invocation time, duration, and output path do not change result ID.
-7. Any query after evaluation date raises the dedicated future-access error.
+7. Any OHLCV observation after evaluation time raises the dedicated future-access error before indicators, screening, execution, or broker mutation.
 8. No normalized JSON key represents P&L, return, win rate, Sharpe, or profitability.
 
 ## Wave 0 Requirements

@@ -373,13 +373,69 @@ def test_historical_input_materially_drives_production_screener_rank(tmp_path: P
 
     for record in data["scenarios"][0]["market_history"]:
         if record["ticker"] == "000020":
-            record["technicals"]["atr_14"] = 80
-            record["technicals"]["historical_volatility"] = 0.5
+            mutated = (
+                (100, 1000),
+                (150, 1000),
+                (70, 1000),
+                (180, 10000),
+            )
+            for row, (close, volume) in zip(record["ohlcv"], mutated, strict=True):
+                row.update(
+                    open=close - 1,
+                    high=close + 10,
+                    low=close - 10,
+                    close=close,
+                    volume=volume,
+                )
+            assert "technicals" not in record
     path = tmp_path / "mutated-history.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
     mutated = run_replay_scenarios(load_replay_bundle(path))
     assert [outcome.ticker for outcome in mutated] == ["000020", "000010", "000030"]
+
+
+def test_future_ohlcv_fails_before_all_downstream_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = load_replay_bundle(FIXTURES / "full_day.json")[0]
+    history = json.loads(json.dumps(scenario.market_history))
+    history[0]["ohlcv"].append({
+        "observed_at": "2026-07-01T06:30:00.000Z",
+        "open": 100,
+        "high": 102,
+        "low": 99,
+        "close": 101,
+        "volume": 1000,
+    })
+    future_scenario = replace(scenario, market_history=tuple(history))
+    calls = {"indicator": 0, "screener": 0, "execution": 0, "broker": 0}
+
+    def forbidden(name: str):
+        def fail(*args, **kwargs):
+            calls[name] += 1
+            raise AssertionError(f"{name} must not run before future-data rejection")
+
+        return fail
+
+    monkeypatch.setattr(replay_module, "calculate_technicals", forbidden("indicator"))
+    monkeypatch.setattr(replay_module, "screen_candidates", forbidden("screener"))
+    monkeypatch.setattr(replay_module, "execute_signal_cycle", forbidden("execution"))
+    monkeypatch.setattr(replay_module.MockBroker, "place_order", forbidden("broker"))
+
+    with pytest.raises(FutureDataAccessError):
+        run_replay_scenarios((future_scenario,))
+    assert calls == {"indicator": 0, "screener": 0, "execution": 0, "broker": 0}
+
+    explicit = next(
+        scenario
+        for scenario in load_replay_bundle(FIXTURES / "focused.json")
+        if scenario.expected_error == "FUTURE_DATA_ACCESS"
+    )
+    outcome = run_replay_scenarios((explicit,))[0]
+    assert (outcome.action, outcome.blocked_reason) == (
+        "REJECTED", "FUTURE_DATA_ACCESS",
+    )
 
 
 def test_full_day_daily_loss_progresses_and_blocks_later_buy() -> None:
