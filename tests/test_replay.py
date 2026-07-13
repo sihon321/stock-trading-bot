@@ -20,6 +20,8 @@ from trading_bot.replay import (
     load_replay_bundle,
     run_replay_scenarios,
     write_replay_result,
+    REQUIRED_BOUNDARIES,
+    ReplayCheck,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "replay"
@@ -241,6 +243,45 @@ def test_boundary_catalog_matches_expected_actions() -> None:
     assert by_id["buy-below-threshold"].action == "HOLD"
     assert by_id["malformed-signal"].has_order is False
     assert by_id["stop-loss-override"].position_quantity_after == 0
+
+
+def test_required_boundaries_have_exactly_one_executed_attributed_check() -> None:
+    outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "focused.json"))
+    verification = verify_replay_expectations(outcomes)
+    assert verification.passed
+    assert {check.boundary_id for check in verification.checks} == REQUIRED_BOUNDARIES
+    assert len(verification.checks) == len(REQUIRED_BOUNDARIES)
+    assert all(
+        check.scenario_id and check.ticker and check.stage
+        and check.expected and check.actual
+        for check in verification.checks
+    )
+
+
+@pytest.mark.parametrize("kind", ["missing", "duplicate", "unknown"])
+def test_boundary_bijection_fails_closed(kind: str) -> None:
+    outcomes = list(run_replay_scenarios(load_replay_bundle(FIXTURES / "focused.json")))
+    if kind == "missing":
+        outcomes.pop()
+    elif kind == "duplicate":
+        outcomes.append(outcomes[0])
+    else:
+        outcomes[0] = outcomes[0].__class__(
+            **{**outcomes[0].__dict__, "boundary_id": "unknown"}
+        )
+    verification = verify_replay_expectations(outcomes)
+    assert verification.passed is False
+
+
+def test_complete_result_helper_matches_replay_result() -> None:
+    outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "focused.json"))
+    funnel = build_replay_funnel(outcomes)
+    verification = verify_replay_expectations(outcomes)
+    result = ReplayResult(_static_manifest(), outcomes, {}, funnel, verification)
+    assert compute_result_id(
+        result.manifest, result.outcomes, funnel=result.funnel,
+        verification=result.verification, disclaimer=result.disclaimer,
+    ) == result.result_id
 
 
 def test_full_day_uses_production_rank_and_fill_state() -> None:

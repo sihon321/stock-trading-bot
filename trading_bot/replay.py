@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import asdict, is_dataclass
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -106,12 +107,19 @@ def _deterministic_result_document(
     return document
 
 
-def compute_result_id(manifest: ReplayManifest, outcomes: Sequence[Any]) -> str:
-    """Hash deterministic inputs and ordered normalized outcomes."""
+def compute_result_id(
+    manifest: ReplayManifest,
+    outcomes: Sequence[Any],
+    *,
+    funnel: ReplayFunnel | None = None,
+    verification: ReplayVerification | None = None,
+    disclaimer: str = NON_PROFITABILITY_DISCLAIMER,
+) -> str:
+    """Hash the complete deterministic replay evidence document."""
     return hashlib.sha256(
         canonical_json_bytes(_deterministic_result_document(
-            manifest, outcomes, funnel=None, verification=None,
-            disclaimer=NON_PROFITABILITY_DISCLAIMER,
+            manifest, outcomes, funnel=funnel, verification=verification,
+            disclaimer=disclaimer,
         ))
     ).hexdigest()
 
@@ -134,7 +142,10 @@ class ReplayResult:
         object.__setattr__(self, "outcomes", normalized_outcomes)
         object.__setattr__(self, "observational_metadata", normalized_metadata)
         object.__setattr__(
-            self, "result_id", hashlib.sha256(self.deterministic_bytes()).hexdigest()
+            self, "result_id", compute_result_id(
+                self.manifest, self.outcomes, funnel=self.funnel,
+                verification=self.verification, disclaimer=self.disclaimer,
+            )
         )
 
     def deterministic_bytes(self) -> bytes:
@@ -263,6 +274,8 @@ class ReplayStep:
     fill: str
     market_row: Mapping[str, Any]
     expected_action: str
+    boundary_id: str
+    expected_stage: str = "action"
     realized_loss_after: float | None = None
 
 
@@ -278,6 +291,7 @@ class ReplayScenario:
     daily_loss: Mapping[str, float]
     market_history: tuple[Mapping[str, Any], ...]
     steps: tuple[ReplayStep, ...]
+    expected_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -301,6 +315,8 @@ class ReplayOutcome:
     order_eligible: bool = False
     blocked_reason: str | None = None
     realized_loss_after: float = 0.0
+    boundary_id: str = ""
+    expected_stage: str = "action"
 
 
 @dataclass(frozen=True)
@@ -324,6 +340,7 @@ class ReplayFunnel:
 
 @dataclass(frozen=True)
 class ReplayCheck:
+    boundary_id: str
     scenario_id: str
     ticker: str
     stage: str
@@ -370,12 +387,22 @@ def verify_replay_expectations(outcomes: Sequence[ReplayOutcome]) -> ReplayVerif
     """Compare frozen expected terminal actions with normalized replay outcomes."""
     checks = tuple(
         ReplayCheck(
-            outcome.scenario_id, outcome.ticker, "action", outcome.expected_action,
+            outcome.boundary_id, outcome.scenario_id, outcome.ticker,
+            outcome.expected_stage, outcome.expected_action,
             outcome.action, outcome.action == outcome.expected_action,
         )
         for outcome in outcomes
     )
-    return ReplayVerification(all(check.passed for check in checks), checks)
+    expected = Counter({boundary_id: 1 for boundary_id in REQUIRED_BOUNDARIES})
+    executed = Counter(check.boundary_id for check in checks)
+    attributed = all(
+        check.scenario_id and check.ticker and check.stage
+        and check.expected and check.actual for check in checks
+    )
+    return ReplayVerification(
+        all(check.passed for check in checks) and executed == expected and attributed,
+        checks,
+    )
 
 
 def guarded_historical_view(
@@ -417,11 +444,12 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
     if set(data["boundaries"]) != REQUIRED_BOUNDARIES:
         raise ValueError("fixture boundary catalog is incomplete or unknown")
     scenarios = []
-    scenario_fields = {"id", "mode", "trading_date", "evaluation_time", "policy", "initial_state", "market_history", "steps"}
-    step_fields = {"ticker", "raw_signal", "current_price", "fill", "market_row", "expected_action", "realized_loss_after"}
+    scenario_fields = {"id", "mode", "trading_date", "evaluation_time", "policy", "initial_state", "market_history", "steps", "expected_error"}
+    step_fields = {"ticker", "raw_signal", "current_price", "fill", "market_row", "expected_action", "boundary_id", "expected_stage", "realized_loss_after"}
     state_fields = {"cash", "positions", "daily_loss"}
     for raw in data["scenarios"]:
-        _keys(raw, scenario_fields, "scenario")
+        if set(raw) not in (scenario_fields, scenario_fields - {"expected_error"}):
+            raise ValueError("scenario fields mismatch")
         if raw["mode"] not in {"FOCUSED", "FULL_DAY"}:
             raise ValueError("mode must be FOCUSED or FULL_DAY")
         datetime.fromisoformat(raw["evaluation_time"])
@@ -438,7 +466,19 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
             _finite(position["average_price"], "average_price", minimum=0)
         _keys(state["daily_loss"], {"realized_loss", "threshold"}, "daily_loss")
         daily_loss = {k: _finite(v, k, minimum=0) for k, v in state["daily_loss"].items()}
-        history = guarded_historical_view(raw["market_history"], raw["evaluation_time"])
+        expected_error = raw.get("expected_error")
+        if expected_error not in {None, "FUTURE_DATA_ACCESS"}:
+            raise ValueError("unsupported expected_error")
+        if expected_error == "FUTURE_DATA_ACCESS":
+            try:
+                guarded_historical_view(raw["market_history"], raw["evaluation_time"])
+            except FutureDataAccessError:
+                pass
+            else:
+                raise ValueError("future-access scenario must contain a future row")
+            history = tuple(raw["market_history"])
+        else:
+            history = guarded_historical_view(raw["market_history"], raw["evaluation_time"])
         history_fields = {"observed_at", "ticker", "market", "state", "trading_value", "technicals", "health"}
         for record in history:
             _keys(record, history_fields, "market_history record")
@@ -446,7 +486,8 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
                 raise ValueError("invalid historical ticker")
         steps = []
         for step in raw["steps"]:
-            if set(step) not in (step_fields, step_fields - {"realized_loss_after"}):
+            required_step_fields = step_fields - {"realized_loss_after", "expected_stage", "boundary_id"}
+            if not required_step_fields.issubset(step) or not set(step).issubset(step_fields):
                 raise ValueError("step fields mismatch")
             if not _TICKER.fullmatch(step["ticker"]): raise ValueError("invalid ticker")
             if not isinstance(step["raw_signal"], str): raise ValueError("raw_signal must be a string")
@@ -459,10 +500,14 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
                     raise ValueError("realized_loss_after may not decrease")
                 if loss_after > daily_loss["threshold"]:
                     raise ValueError("realized_loss_after may not exceed policy threshold")
-            steps.append(ReplayStep(step["ticker"], step["raw_signal"], price, step["fill"], step["market_row"], step["expected_action"], loss_after))
+            steps.append(ReplayStep(
+                step["ticker"], step["raw_signal"], price, step["fill"],
+                step["market_row"], step["expected_action"], step.get("boundary_id", ""),
+                step.get("expected_stage", "action"), loss_after,
+            ))
         if raw["mode"] == "FULL_DAY" and any(s.realized_loss_after is None for s in steps):
             raise ValueError("FULL_DAY steps require explicit realized_loss_after")
-        scenarios.append(ReplayScenario(raw["id"], raw["mode"], raw["trading_date"], raw["evaluation_time"], raw["policy"], cash, positions, daily_loss, history, tuple(steps)))
+        scenarios.append(ReplayScenario(raw["id"], raw["mode"], raw["trading_date"], raw["evaluation_time"], raw["policy"], cash, positions, daily_loss, history, tuple(steps), expected_error))
     return tuple(scenarios)
 
 
@@ -474,7 +519,21 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
     """Run frozen scenarios through production screening and execution seams."""
     outcomes: list[ReplayOutcome] = []
     for scenario in scenarios:
-        history = guarded_historical_view(scenario.market_history, scenario.evaluation_time)
+        try:
+            history = guarded_historical_view(scenario.market_history, scenario.evaluation_time)
+        except FutureDataAccessError:
+            if scenario.expected_error != "FUTURE_DATA_ACCESS" or len(scenario.steps) != 1:
+                raise
+            step = scenario.steps[0]
+            outcomes.append(ReplayOutcome(
+                scenario.scenario_id, step.ticker, 0, "REJECTED", False, "NONE",
+                "future data access rejected", scenario.initial_cash, 0,
+                step.expected_action, step.expected_action == "REJECTED",
+                selected=False, blocked_reason="FUTURE_DATA_ACCESS",
+                realized_loss_after=float(scenario.daily_loss["realized_loss"]),
+                boundary_id=step.boundary_id, expected_stage=step.expected_stage,
+            ))
+            continue
         p = scenario.policy
         screener = ScreenerConfig(int(p["max_candidates"]), tuple(p["markets"]), float(p["min_trading_value"]), float(p["min_volume_ratio"]), tuple(p["excluded_states"]))
         risk = RiskConfig(float(p["stop_loss_pct"]), float(p["take_profit_pct"]))
@@ -497,7 +556,19 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
             health_raw = row.get("health", {})
             row["health"] = SourceHealth(source="fixture", status=SourceStatus(health_raw.get("status", "AVAILABLE")), reason=health_raw.get("reason", "fixture"), observed_date=health_raw.get("observed_date", scenario.trading_date), expected_date=scenario.trading_date)
             rows.append(row)
-        selected = screen_candidates(scenario.trading_date, rows, screener).candidates
+        screening = screen_candidates(scenario.trading_date, rows, screener)
+        selected = screening.candidates
+        selected_tickers = {candidate.ticker for candidate in selected}
+        for step in scenario.steps:
+            if step.ticker not in selected_tickers:
+                outcomes.append(ReplayOutcome(
+                    scenario.scenario_id, step.ticker, 0, "HOLD", False, "NONE",
+                    "excluded by production screener", broker.cash.amount, 0,
+                    step.expected_action, step.expected_action == "HOLD",
+                    selected=False, blocked_reason="SCREENER_EXCLUDED",
+                    realized_loss_after=daily.realized_loss,
+                    boundary_id=step.boundary_id, expected_stage=step.expected_stage,
+                ))
         for rank, candidate in enumerate(selected, 1):
             step = by_ticker[candidate.ticker]
             result = execute_signal_cycle(step.raw_signal, Ticker(step.ticker), Money(step.current_price, "KRW"), broker.cash.amount, broker, execution, risk, daily, dry_run=True)
@@ -530,6 +601,7 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
                 True, buy_signaled, confidence_qualified, risk_qualified,
                 validly_sized, validly_sized, blocked_reason,
                 step.realized_loss_after if step.realized_loss_after is not None else daily.realized_loss,
+                step.boundary_id, step.expected_stage,
             ))
             if step.realized_loss_after is not None:
                 if step.realized_loss_after < daily.realized_loss:
