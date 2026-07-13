@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 
 import sqlite3
 
 import pytest
 
 from trading_bot.audit_models import (
+    NotificationAttempt,
+    NotificationDeliveryStatus,
+    NotificationKind,
     OrderEvent,
     OrderEventType,
     ReasonCode,
@@ -176,20 +180,90 @@ def test_normalized_broker_fixture_has_no_raw_or_secret_fields() -> None:
     assert forbidden.isdisjoint(observation)
 
 
-def test_v1_migrates_to_v2_idempotently_without_row_loss(tmp_path) -> None:
+def test_v1_migrates_to_v3_idempotently_without_row_loss(tmp_path) -> None:
     from trading_bot import sqlite_audit
 
     path = tmp_path / "legacy.db"
     create_v1_audit_database(path).close()
     first = sqlite_audit.connect(path)
-    assert first.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert first.execute("PRAGMA user_version").fetchone()[0] == 3
     assert first.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert first.execute("SELECT run_id FROM runs").fetchall() == [("legacy-run",)]
     assert first.execute("SELECT ticker FROM decisions").fetchall() == [("005930",)]
     first.close()
     second = sqlite_audit.connect(path)
-    assert second.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert second.execute("PRAGMA user_version").fetchone()[0] == 3
     assert second.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
+def test_v2_migration_preserves_normalized_evidence(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+
+    path = tmp_path / "v2.db"
+    conn = create_v1_audit_database(path)
+    for name, definition in sqlite_audit._RUN_V2_COLUMNS:
+        conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+    conn.executescript(
+        """
+        CREATE TABLE ticker_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT NOT NULL,
+            outcome_code TEXT NOT NULL, reason_code TEXT NOT NULL, detail_json TEXT NOT NULL,
+            failed_stage TEXT, order_intent_id TEXT, final_order_state TEXT,
+            created_at TEXT NOT NULL, UNIQUE(run_id, ticker)
+        );
+        CREATE TABLE order_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_intent_id TEXT NOT NULL,
+            origin_run_id TEXT NOT NULL REFERENCES runs(run_id),
+            observer_run_id TEXT NOT NULL REFERENCES runs(run_id), ticker TEXT NOT NULL,
+            event_type TEXT NOT NULL, submission_id TEXT, broker_order_id TEXT, side TEXT,
+            requested_qty INTEGER, filled_qty INTEGER, unfilled_qty INTEGER,
+            broker_status TEXT, duplicate_of_intent_id TEXT, detail_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL
+        );
+        INSERT INTO ticker_outcomes (
+            run_id, ticker, outcome_code, reason_code, detail_json, created_at
+        ) VALUES ('legacy-run', '005930', 'NO_TRADE', 'HOLD_SIGNAL', '{}',
+                  '2026-07-10T00:00:02+00:00');
+        INSERT INTO order_events (
+            order_intent_id, origin_run_id, observer_run_id, ticker, event_type,
+            detail_json, observed_at
+        ) VALUES ('intent-legacy', 'legacy-run', 'legacy-run', '005930',
+                  'INTENT_CREATED', '{}', '2026-07-10T00:00:03+00:00');
+        PRAGMA user_version = 2;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = sqlite_audit.connect(path)
+    assert upgraded.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert upgraded.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    assert upgraded.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
+    assert upgraded.execute("SELECT COUNT(*) FROM ticker_outcomes").fetchone()[0] == 1
+    assert upgraded.execute("SELECT COUNT(*) FROM order_events").fetchone()[0] == 1
+    columns = {
+        row[1] for row in upgraded.execute("PRAGMA table_info(notification_attempts)")
+    }
+    assert columns == {
+        "id", "run_id", "ticker", "kind", "delivery_status",
+        "failure_category", "detail_json", "observed_at",
+    }
+
+
+def test_notification_contract_rejects_sensitive_and_non_scalar_detail() -> None:
+    base = dict(
+        run_id="run", ticker=None, kind=NotificationKind.FINAL_SUMMARY,
+        status=NotificationDeliveryStatus.FAILED,
+        failure_category="TRANSPORT_ERROR",
+        observed_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    with pytest.raises(ValueError, match="forbidden"):
+        NotificationAttempt(**base, detail={"webhook_url": "https://secret.test"})
+    with pytest.raises(TypeError, match="scalar"):
+        NotificationAttempt(**base, detail={"provider": {"status": 500}})
+    with pytest.raises(ValueError, match="failure_category"):
+        NotificationAttempt(**base, detail={}, failure_category="raw exception text " * 20)
 
 
 def test_migration_failure_rolls_back_and_reopen_retries(tmp_path) -> None:
