@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 08
 current_phase_name: decision-reports-operator-runbook
 status: executing
-stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-07-13T16:36:00.967Z"
+stopped_at: Completed 08-03-PLAN.md
+last_updated: "2026-07-13T16:45:15.289Z"
 last_activity: 2026-07-13
 last_activity_desc: Phase 08 execution started
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 16
-  completed_plans: 13
-  percent: 81
+  completed_plans: 14
+  percent: 88
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 08 (decision-reports-operator-runbook) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-07-13 — Phase 08 execution started
 
-Progress: [████████░░] 81%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -73,6 +73,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 08]: Notification attempt ordering uses integer insertion identity — Timezone-aware timestamps remain observational and may collide
 - [Phase 08]: 보고서는 실행 수명주기, 티커 완전성, 대상, reconciliation, 알림 전달을 서로 다른 증거 차원으로 유지한다.
 - [Phase 08]: Replay는 stable ID와 cardinality를 검증한 뒤 fixture schema, policy, scenario basis가 같은 결과만 집계한다.
+- [Phase 08]: 보고 CLI는 자격 증명 Settings와 분리된 audit_db_path 전용 ReportSettings만 사용한다. — 읽기 전용 보고가 KIS와 LLM 환경 변수 없이도 동작하게 한다.
+- [Phase 08]: 터미널과 파일은 하나의 LF 정규화 UTF-8 payload를 공유하고 기존 충돌 바이트를 덮어쓰지 않는다. — D-04의 동일 문서 계약과 감사 증거 보존을 보장한다.
 
 ### Pending Todos
 
@@ -98,11 +100,12 @@ None yet.
 | Phase 07 P06 | 7min | 2 tasks | 5 files |
 | Phase 08 P01 | 4 min | 2 tasks | 3 files |
 | Phase 08 P02 | 10min | 2 tasks | 2 files |
+| Phase 08 P03 | 6min | 2 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-07-13T16:36:00.960Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-07-13T16:45:03.288Z
+Stopped at: Completed 08-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
