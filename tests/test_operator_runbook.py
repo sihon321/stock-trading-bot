@@ -117,7 +117,7 @@ def test_recovery_prohibitions_and_resolution_contract() -> None:
         assert section.count(f"### {failure}\n") == 1
     assert "자동 재실행 금지" in section
     assert "blind resubmission 금지" in section
-    assert "`--parent-run-id <이전-run_id>`" in section
+    assert "`bot run --parent-run-id <이전-run_id>`" in section
     assert "감사 증거가 정상이고 주문 제출 가능성이 없음이 확인된 경우에만" in section
     assert "영향받은 티커만 동결" in section
     assert "KIS 주문·미체결·체결 증거" in section
