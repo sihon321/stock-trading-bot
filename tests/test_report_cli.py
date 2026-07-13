@@ -184,6 +184,13 @@ def test_report_writer_rejects_conflicts_symlinks_nonregular_and_escaping_paths(
     with pytest.raises(ValueError, match="symbolic link"):
         write_report_text(symlink_target, "보고서\n")
 
+    real_parent = tmp_path / "real-parent"
+    (real_parent / "nested").mkdir(parents=True)
+    parent_link = tmp_path / "parent-link"
+    parent_link.symlink_to(real_parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        write_report_text(parent_link / "nested" / "report.txt", "보고서\n")
+
     with pytest.raises(ValueError, match="ambiguous"):
         write_report_text(tmp_path / "nested" / ".." / "escape.txt", "보고서\n")
 

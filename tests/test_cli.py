@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -206,11 +207,7 @@ def test_report_group_is_discoverable_once_with_exact_nested_commands() -> None:
     assert top_level.exit_code == 0
     assert top_level.stdout.count("report") == 1
     assert nested.exit_code == 0
-    command_lines = [
-        line.strip().split()[0]
-        for line in nested.stdout.splitlines()
-        if line.strip().startswith(("daily", "period", "replay"))
-    ]
+    command_lines = re.findall(r"│\s+(daily|period|replay)\s", nested.stdout)
     assert command_lines == ["daily", "period", "replay"]
 
 

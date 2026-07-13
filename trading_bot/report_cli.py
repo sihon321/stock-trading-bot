@@ -64,6 +64,12 @@ def _validated_output_parent(output: Path) -> tuple[Path, Path]:
     if raw.is_symlink():
         raise ValueError("report output may not be a symbolic link")
 
+    current = Path(raw.anchor) if raw.is_absolute() else Path()
+    for part in raw.parts[1:] if raw.is_absolute() else raw.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError("report output path may not contain symbolic links")
+
     parent = raw.parent
     cursor = parent
     missing: list[Path] = []

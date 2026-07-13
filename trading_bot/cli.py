@@ -30,6 +30,7 @@ from trading_bot.pykrx_adapter import PykrxOhlcvAdapter
 from trading_bot.llm_provider import build_llm_provider, run_llm_cycle as _run_llm_cycle
 from trading_bot.mock_broker import MockBroker
 from trading_bot.notifier import build_notifier, format_run_summary
+from trading_bot.report_cli import report_app
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
@@ -43,6 +44,7 @@ from trading_bot.audit_models import (
 )
 
 app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator CLI.")
+app.add_typer(report_app, name="report")
 
 RunCycleFn = Callable[..., ExecutionResult]
 
