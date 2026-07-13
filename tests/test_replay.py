@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import trading_bot.replay as replay_module
+from trading_bot.data_models import IndicatorConfig
 from trading_bot.replay import (
     FutureDataAccessError,
     ReplayManifest,
@@ -213,6 +215,52 @@ def test_fixture_bundles_are_strict_and_catalog_is_enumerable() -> None:
     assert all(isinstance(step.raw_signal, str) for s in (*focused, *full_day) for step in s.steps)
     raw = json.loads((FIXTURES / "focused.json").read_text())
     assert len(raw["boundaries"]) == 11
+
+
+def test_fixture_schema_uses_only_raw_ohlcv_inputs() -> None:
+    expected_history_fields = {
+        "ticker", "market", "state", "trading_value", "health", "ohlcv",
+    }
+    expected_ohlcv_fields = {
+        "observed_at", "open", "high", "low", "close", "volume",
+    }
+    expected_indicator_fields = {
+        "sma_short_window", "sma_long_window", "rsi_window", "atr_window",
+        "historical_volatility_window", "volume_ratio_window",
+    }
+
+    for fixture_name in ("focused.json", "full_day.json"):
+        raw = json.loads((FIXTURES / fixture_name).read_text())
+        for scenario in raw["scenarios"]:
+            assert set(scenario["policy"]["indicator_config"]) == expected_indicator_fields
+            for record in scenario["market_history"]:
+                assert set(record) == expected_history_fields
+                assert "technicals" not in record
+                assert all(set(row) == expected_ohlcv_fields for row in record["ohlcv"])
+            assert all("market_row" not in step for step in scenario["steps"])
+
+
+def test_replay_calls_shipped_indicator_transform_with_explicit_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, IndicatorConfig]] = []
+    shipped = replay_module.calculate_technicals
+
+    def spy(frame: object, config: IndicatorConfig):
+        calls.append((frame, config))
+        return shipped(frame, config)
+
+    monkeypatch.setattr(replay_module, "calculate_technicals", spy)
+    scenarios = load_replay_bundle(FIXTURES / "full_day.json")
+    run_replay_scenarios(scenarios)
+
+    assert len(calls) == len(scenarios[0].market_history)
+    expected_config = IndicatorConfig(**scenarios[0].policy["indicator_config"])
+    for frame, config in calls:
+        assert list(frame.columns) == ["시가", "고가", "저가", "종가", "거래량"]
+        assert frame.index.is_monotonic_increasing
+        assert frame.index.is_unique
+        assert config == expected_config
 
 
 @pytest.mark.parametrize("mutation", [
