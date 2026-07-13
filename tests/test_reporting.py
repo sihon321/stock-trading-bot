@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,7 @@ from trading_bot.replay import (
     ReplayManifest,
     ReplayResult,
     ReplayVerification,
+    canonical_json_bytes,
 )
 
 
@@ -487,6 +489,10 @@ def test_replay_malformed_funnel_fails_before_aggregation(
         document["evidence"]["funnel"]["selected"]["numerator"] = float("inf")
     else:
         document["evidence"]["funnel"]["extra"] = {"numerator": 0, "denominator": 0}
+    if mutation != "non_finite":
+        document["result_id"] = hashlib.sha256(
+            canonical_json_bytes(document["evidence"])
+        ).hexdigest()
     path.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ValueError):
         load_replay_results((path,))

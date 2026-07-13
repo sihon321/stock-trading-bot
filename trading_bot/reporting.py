@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .audit_models import (
     NotificationDeliveryStatus,
@@ -19,6 +21,15 @@ from .audit_models import (
     TickerOutcomeCode,
 )
 from .sqlite_audit import SCHEMA_VERSION
+from .replay import (
+    NON_PROFITABILITY_DISCLAIMER,
+    ReplayCheck,
+    ReplayCount,
+    ReplayFunnel,
+    ReplayManifest,
+    ReplayVerification,
+    canonical_json_bytes,
+)
 
 
 class EvidenceState(StrEnum):
@@ -112,6 +123,30 @@ class PeriodReport:
     complete: DenominatorCount
     incomplete: DenominatorCount
     unknown: DenominatorCount
+
+
+@dataclass(frozen=True)
+class ReplayInputResult:
+    source_paths: tuple[Path, ...]
+    stable_result_id: str
+    verification_status: str
+    compatibility_signature: tuple[tuple[str, str], ...]
+    funnel: ReplayFunnel
+
+
+@dataclass(frozen=True)
+class ReplayCompatibilityGroup:
+    signature: tuple[tuple[str, str], ...]
+    result_ids: tuple[str, ...]
+    aggregate_funnel: ReplayFunnel
+    incompatible_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReplayReport:
+    results: tuple[ReplayInputResult, ...]
+    groups: tuple[ReplayCompatibilityGroup, ...]
+    disclaimer: str
 
 
 REASON_EXPLANATIONS_KO: Mapping[str, str] = MappingProxyType({
@@ -505,3 +540,390 @@ def build_period_report(
     return PeriodReport(
         start_date_kst, end_date_kst, runs, total, complete, incomplete, unknown
     )
+
+
+_REPLAY_TOP_LEVEL_FIELDS = {
+    "schema_version", "result_id", "evidence", "observational_metadata"
+}
+_REPLAY_EVIDENCE_FIELDS = {
+    "manifest", "outcomes", "funnel", "verification", "disclaimer"
+}
+_REPLAY_MANIFEST_FIELDS = {
+    "scenario_hash", "ohlcv_hash", "raw_signal_hash", "policy", "head_commit",
+    "relevant_tracked_diff_hash", "code_state", "initial_state",
+    "evaluation_time", "trading_date", "fixture_schema_version",
+}
+_FUNNEL_FIELDS = {
+    "evaluated", "selected", "buy_signaled", "confidence_qualified",
+    "risk_qualified", "validly_sized", "order_eligible", "actions",
+    "blocked_reasons",
+}
+_FUNNEL_STAGE_FIELDS = (
+    "evaluated", "selected", "buy_signaled", "confidence_qualified",
+    "risk_qualified", "validly_sized", "order_eligible",
+)
+_CHECK_FIELDS = {
+    "boundary_id", "scenario_id", "ticker", "stage", "expected", "actual", "passed"
+}
+_MAX_REPLAY_BYTES = 16 * 1024 * 1024
+
+
+def _exact_keys(value: object, expected: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f"{label} fields mismatch")
+    return value
+
+
+def _strict_json(path: Path) -> Mapping[str, Any]:
+    if path.is_symlink():
+        raise ValueError("replay input may not be a symbolic link")
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"replay result does not exist: {path}") from None
+    if not resolved.is_file():
+        raise ValueError("replay input must be a regular file")
+    if resolved.stat().st_size > _MAX_REPLAY_BYTES:
+        raise ValueError("replay input exceeds size limit")
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    try:
+        document = json.loads(
+            resolved.read_text(encoding="utf-8"), parse_constant=reject_constant
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid replay result JSON") from exc
+    return _exact_keys(document, _REPLAY_TOP_LEVEL_FIELDS, "replay result")
+
+
+def _replay_count(value: object, label: str) -> ReplayCount:
+    raw = _exact_keys(value, {"numerator", "denominator"}, label)
+    numerator = raw["numerator"]
+    denominator = raw["denominator"]
+    if (
+        isinstance(numerator, bool)
+        or isinstance(denominator, bool)
+        or not isinstance(numerator, int)
+        or not isinstance(denominator, int)
+        or numerator < 0
+        or denominator < 0
+        or numerator > denominator
+    ):
+        raise ValueError(f"invalid replay count: {label}")
+    return ReplayCount(numerator, denominator)
+
+
+def _replay_funnel(value: object, outcome_count: int) -> ReplayFunnel:
+    raw = _exact_keys(value, _FUNNEL_FIELDS, "replay funnel")
+    stages = {
+        name: _replay_count(raw[name], f"funnel.{name}")
+        for name in _FUNNEL_STAGE_FIELDS
+    }
+    actions_raw = _exact_keys(raw["actions"], {"BUY", "HOLD", "SELL"}, "actions")
+    actions = {
+        name: _replay_count(actions_raw[name], f"actions.{name}")
+        for name in ("BUY", "HOLD", "SELL")
+    }
+    blocked_raw = raw["blocked_reasons"]
+    if not isinstance(blocked_raw, Mapping) or not all(
+        isinstance(key, str) and key for key in blocked_raw
+    ):
+        raise ValueError("blocked_reasons must be an object of stable codes")
+    blocked = {
+        _bounded(name): _replay_count(blocked_raw[name], f"blocked_reasons.{name}")
+        for name in sorted(blocked_raw)
+    }
+    numerators = [stages[name].numerator for name in _FUNNEL_STAGE_FIELDS]
+    if numerators != sorted(numerators, reverse=True):
+        raise ValueError("replay funnel is not monotonic")
+    expected_denominators = (
+        outcome_count,
+        stages["evaluated"].numerator,
+        stages["selected"].numerator,
+        stages["buy_signaled"].numerator,
+        stages["confidence_qualified"].numerator,
+        stages["risk_qualified"].numerator,
+        stages["validly_sized"].numerator,
+    )
+    if stages["evaluated"] != ReplayCount(outcome_count, outcome_count) or tuple(
+        stages[name].denominator for name in _FUNNEL_STAGE_FIELDS
+    ) != expected_denominators:
+        raise ValueError("replay funnel denominator chain is inconsistent")
+    if any(count.denominator != outcome_count for count in actions.values()):
+        raise ValueError("replay action denominator is inconsistent")
+    if sum(count.numerator for count in actions.values()) != outcome_count:
+        raise ValueError("replay action counts do not reconcile")
+    if any(count.denominator != outcome_count for count in blocked.values()):
+        raise ValueError("replay block denominator is inconsistent")
+    return ReplayFunnel(
+        stages["evaluated"], stages["selected"], stages["buy_signaled"],
+        stages["confidence_qualified"], stages["risk_qualified"],
+        stages["validly_sized"], stages["order_eligible"], actions, blocked,
+    )
+
+
+def _replay_verification(value: object) -> ReplayVerification:
+    raw = _exact_keys(value, {"passed", "checks"}, "replay verification")
+    if not isinstance(raw["passed"], bool) or not isinstance(raw["checks"], list):
+        raise ValueError("invalid replay verification")
+    checks: list[ReplayCheck] = []
+    for item in raw["checks"]:
+        check = _exact_keys(item, _CHECK_FIELDS, "replay verification check")
+        if not isinstance(check["passed"], bool) or not all(
+            isinstance(check[name], str) and check[name]
+            for name in _CHECK_FIELDS - {"passed"}
+        ):
+            raise ValueError("invalid replay verification check")
+        checks.append(ReplayCheck(
+            _bounded(check["boundary_id"]), _bounded(check["scenario_id"]),
+            _bounded(check["ticker"], limit=24), _bounded(check["stage"]),
+            _bounded(check["expected"]), _bounded(check["actual"]), check["passed"],
+        ))
+    if raw["passed"] and not all(check.passed for check in checks):
+        raise ValueError("replay verification status contradicts checks")
+    return ReplayVerification(raw["passed"], tuple(checks))
+
+
+def _compatibility_signature(manifest: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    fields = {
+        "fixture_schema_version": manifest["fixture_schema_version"],
+        "policy": manifest["policy"],
+        "scenario_hash": manifest["scenario_hash"],
+        "ohlcv_hash": manifest["ohlcv_hash"],
+        "raw_signal_hash": manifest["raw_signal_hash"],
+        "initial_state": manifest["initial_state"],
+        "evaluation_time": manifest["evaluation_time"],
+        "trading_date": manifest["trading_date"],
+    }
+    return tuple(
+        (name, canonical_json_bytes(fields[name]).decode("utf-8"))
+        for name in sorted(fields)
+    )
+
+
+def _load_replay_result(path: Path) -> ReplayInputResult:
+    raw_path = Path(path)
+    document = _strict_json(raw_path)
+    if document["schema_version"] != 1:
+        raise ValueError("unsupported normalized replay schema version")
+    if not isinstance(document["result_id"], str) or len(document["result_id"]) != 64:
+        raise ValueError("invalid replay result identity")
+    if not isinstance(document["observational_metadata"], Mapping):
+        raise ValueError("observational_metadata must be an object")
+    evidence = _exact_keys(document["evidence"], _REPLAY_EVIDENCE_FIELDS, "replay evidence")
+    expected_identity = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+    if document["result_id"] != expected_identity:
+        raise ValueError("replay result identity mismatch")
+    manifest = _exact_keys(evidence["manifest"], _REPLAY_MANIFEST_FIELDS, "replay manifest")
+    if not isinstance(manifest["policy"], Mapping) or not isinstance(
+        manifest["initial_state"], Mapping
+    ):
+        raise ValueError("replay manifest policy/state must be objects")
+    if isinstance(manifest["fixture_schema_version"], bool) or not isinstance(
+        manifest["fixture_schema_version"], int
+    ):
+        raise ValueError("fixture_schema_version must be an integer")
+    if not all(
+        isinstance(manifest[name], str) and manifest[name]
+        for name in _REPLAY_MANIFEST_FIELDS
+        - {"policy", "initial_state", "fixture_schema_version"}
+    ):
+        raise ValueError("invalid replay manifest scalar")
+    outcomes = evidence["outcomes"]
+    if not isinstance(outcomes, list) or not all(isinstance(item, Mapping) for item in outcomes):
+        raise ValueError("replay outcomes must be an ordered object list")
+    funnel = _replay_funnel(evidence["funnel"], len(outcomes))
+    verification = _replay_verification(evidence["verification"])
+    if evidence["disclaimer"] != NON_PROFITABILITY_DISCLAIMER:
+        raise ValueError("replay non-profitability disclaimer mismatch")
+    return ReplayInputResult(
+        source_paths=(raw_path.resolve(),),
+        stable_result_id=document["result_id"],
+        verification_status="PASSED" if verification.passed else "FAILED",
+        compatibility_signature=_compatibility_signature(manifest),
+        funnel=funnel,
+    )
+
+
+def load_replay_results(paths: Sequence[Path]) -> tuple[ReplayInputResult, ...]:
+    """Strictly verify normalized replay files and deduplicate stable identities."""
+
+    by_id: dict[str, ReplayInputResult] = {}
+    order: list[str] = []
+    for path in paths:
+        loaded = _load_replay_result(Path(path))
+        existing = by_id.get(loaded.stable_result_id)
+        if existing is None:
+            by_id[loaded.stable_result_id] = loaded
+            order.append(loaded.stable_result_id)
+        else:
+            by_id[loaded.stable_result_id] = replace(
+                existing, source_paths=existing.source_paths + loaded.source_paths
+            )
+    return tuple(by_id[result_id] for result_id in order)
+
+
+def _sum_funnels(funnels: Sequence[ReplayFunnel]) -> ReplayFunnel:
+    def add_counts(counts: Sequence[ReplayCount]) -> ReplayCount:
+        return ReplayCount(
+            sum(count.numerator for count in counts),
+            sum(count.denominator for count in counts),
+        )
+
+    stages = {
+        name: add_counts([getattr(funnel, name) for funnel in funnels])
+        for name in _FUNNEL_STAGE_FIELDS
+    }
+    actions = {
+        name: add_counts([funnel.actions[name] for funnel in funnels])
+        for name in ("BUY", "HOLD", "SELL")
+    }
+    blocked_names = sorted({name for funnel in funnels for name in funnel.blocked_reasons})
+    blocked = {
+        name: add_counts([
+            funnel.blocked_reasons.get(name, ReplayCount(0, funnel.evaluated.denominator))
+            for funnel in funnels
+        ])
+        for name in blocked_names
+    }
+    return ReplayFunnel(
+        stages["evaluated"], stages["selected"], stages["buy_signaled"],
+        stages["confidence_qualified"], stages["risk_qualified"],
+        stages["validly_sized"], stages["order_eligible"], actions, blocked,
+    )
+
+
+def build_replay_report(results: Sequence[ReplayInputResult]) -> ReplayReport:
+    grouped: dict[tuple[tuple[str, str], ...], list[ReplayInputResult]] = {}
+    for result in results:
+        grouped.setdefault(result.compatibility_signature, []).append(result)
+    signatures = tuple(grouped)
+    varying_fields = tuple(
+        name
+        for name in (name for name, _ in signatures[0])
+        if len({dict(signature)[name] for signature in signatures}) > 1
+    ) if signatures else ()
+    groups = tuple(
+        ReplayCompatibilityGroup(
+            signature=signature,
+            result_ids=tuple(result.stable_result_id for result in grouped[signature]),
+            aggregate_funnel=_sum_funnels(
+                [result.funnel for result in grouped[signature]]
+            ),
+            incompatible_fields=varying_fields,
+        )
+        for signature in signatures
+    )
+    return ReplayReport(tuple(results), groups, NON_PROFITABILITY_DISCLAIMER)
+
+
+def _count_text(count: DenominatorCount) -> str:
+    return (
+        f"{count.numerator}/{count.total_denominator}"
+        f" (판정 가능 분모 {count.determinate_denominator})"
+    )
+
+
+def _render_runs(runs: Sequence[RunReportSection]) -> list[str]:
+    lines = ["상세"]
+    for run in runs:
+        lifecycle = run.run_status.value if run.run_status is not None else "UNKNOWN"
+        lines.append(
+            f"실행 {run.run_id} | 종류={run.run_kind} | 대상={run.target} | "
+            f"수명주기={lifecycle} | 증거={run.run_state.value} | "
+            f"최종알림={run.final_summary_notification_state.value}"
+        )
+        if run.preview_run_id is not None:
+            lines.append(
+                f"  미리보기={run.preview_run_id} | preview-only="
+                f"{','.join(run.preview_only_tickers) or '-'} | run-only="
+                f"{','.join(run.run_only_tickers) or '-'}"
+            )
+        for candidate in run.candidates:
+            confidence = "UNKNOWN" if candidate.confidence is None else f"{candidate.confidence:.6g}"
+            decision = candidate.decision or "UNKNOWN"
+            lines.append(
+                f"  {candidate.processing_id}. {candidate.ticker} | 결정={decision} | "
+                f"신뢰도={confidence} | 주문={candidate.order_state} | "
+                f"조정={candidate.reconciliation_state.value} | 증거={candidate.ticker_state.value} | "
+                f"{candidate.reason_code} — {candidate.reason_ko}"
+            )
+            for attempt in candidate.notification_attempts:
+                failure = attempt.failure_category or "-"
+                lines.append(
+                    f"    알림#{attempt.attempt_id} {attempt.kind.value} "
+                    f"{attempt.delivery_state.value} 실패분류={failure}"
+                )
+        for attempt in run.run_notification_attempts:
+            failure = attempt.failure_category or "-"
+            lines.append(
+                f"  실행알림#{attempt.attempt_id} {attempt.kind.value} "
+                f"{attempt.delivery_state.value} 실패분류={failure}"
+            )
+    return lines
+
+
+def render_daily_report(report: DailyReport) -> str:
+    lines = [
+        f"일일 의사결정 보고서 {report.trading_date_kst.isoformat()}",
+        "요약",
+        f"실행={len(report.runs)} 후보={report.total_candidates}",
+        f"완전={_count_text(report.complete)}",
+        f"불완전={_count_text(report.incomplete)}",
+        f"알수없음={_count_text(report.unknown)}",
+        *_render_runs(report.runs),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_period_report(report: PeriodReport) -> str:
+    lines = [
+        f"기간 의사결정 보고서 {report.start_date_kst.isoformat()} ~ "
+        f"{report.end_date_kst.isoformat()}",
+        "요약",
+        f"실행={len(report.runs)} 후보={report.total_candidates}",
+        f"완전={_count_text(report.complete)}",
+        f"불완전={_count_text(report.incomplete)}",
+        f"알수없음={_count_text(report.unknown)}",
+        *_render_runs(report.runs),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _replay_count_text(count: ReplayCount) -> str:
+    return f"{count.numerator}/{count.denominator}"
+
+
+def render_replay_report(report: ReplayReport) -> str:
+    lines = ["Replay 검증 보고서", "개별 결과"]
+    for result in report.results:
+        sources = ",".join(_bounded(path.name) for path in result.source_paths)
+        lines.append(
+            f"{result.stable_result_id} | 검증={result.verification_status} | 파일={sources}"
+        )
+    lines.append("호환 그룹")
+    for index, group in enumerate(report.groups, 1):
+        mismatch = ",".join(group.incompatible_fields) or "없음"
+        lines.append(
+            f"그룹 {index} | 결과={len(group.result_ids)} | 비호환필드={mismatch}"
+        )
+        lines.append(
+            "  evaluated=" + _replay_count_text(group.aggregate_funnel.evaluated)
+            + " selected=" + _replay_count_text(group.aggregate_funnel.selected)
+            + " buy-signaled=" + _replay_count_text(group.aggregate_funnel.buy_signaled)
+            + " confidence-qualified="
+            + _replay_count_text(group.aggregate_funnel.confidence_qualified)
+            + " risk-qualified=" + _replay_count_text(group.aggregate_funnel.risk_qualified)
+            + " validly-sized=" + _replay_count_text(group.aggregate_funnel.validly_sized)
+            + " order-eligible=" + _replay_count_text(group.aggregate_funnel.order_eligible)
+        )
+        lines.append(
+            "  actions=" + ",".join(
+                f"{name}:{_replay_count_text(group.aggregate_funnel.actions[name])}"
+                for name in ("BUY", "HOLD", "SELL")
+            )
+        )
+    lines.extend(("주의", report.disclaimer))
+    return "\n".join(lines) + "\n"
