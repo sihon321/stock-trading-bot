@@ -154,16 +154,6 @@ def test_shipped_v1_fixture_preserves_legacy_reads_and_writes(tmp_path) -> None:
     conn = create_v1_audit_database(path)
     conn.close()
 
-    interrupted = sqlite3.connect(path)
-    interrupted.execute("PRAGMA foreign_keys=ON")
-    with pytest.raises(RuntimeError, match="injected"):
-        sqlite_audit.migrate(interrupted, fail_after_step="notification_attempts")
-    assert interrupted.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert interrupted.execute(
-        "SELECT name FROM sqlite_master WHERE name='notification_attempts'"
-    ).fetchone() is None
-    interrupted.close()
-
     upgraded = sqlite_audit.connect(path)
     assert upgraded.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     assert upgraded.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
@@ -245,6 +235,16 @@ def test_v2_migration_preserves_normalized_evidence(tmp_path) -> None:
     )
     conn.commit()
     conn.close()
+
+    interrupted = sqlite3.connect(path)
+    interrupted.execute("PRAGMA foreign_keys=ON")
+    with pytest.raises(RuntimeError, match="injected"):
+        sqlite_audit.migrate(interrupted, fail_after_step="notification_attempts")
+    assert interrupted.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert interrupted.execute(
+        "SELECT name FROM sqlite_master WHERE name='notification_attempts'"
+    ).fetchone() is None
+    interrupted.close()
 
     upgraded = sqlite_audit.connect(path)
     assert upgraded.execute("PRAGMA user_version").fetchone()[0] == 3

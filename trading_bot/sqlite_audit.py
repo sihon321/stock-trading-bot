@@ -292,6 +292,47 @@ def append_order_event(conn: sqlite3.Connection, event: OrderEvent) -> int:
     return int(cursor.lastrowid)
 
 
+def append_notification_attempt(
+    conn: sqlite3.Connection,
+    attempt: NotificationAttempt,
+) -> int:
+    """Persist one sanitized delivery attempt without rewriting prior evidence."""
+
+    validated = NotificationAttempt(
+        run_id=attempt.run_id,
+        ticker=attempt.ticker,
+        kind=NotificationKind(attempt.kind),
+        status=NotificationDeliveryStatus(attempt.status),
+        failure_category=attempt.failure_category,
+        detail=attempt.detail,
+        observed_at=attempt.observed_at,
+    )
+    if conn.execute(
+        "SELECT 1 FROM runs WHERE run_id = ?", (validated.run_id,)
+    ).fetchone() is None:
+        raise sqlite3.IntegrityError("unknown run")
+    try:
+        cursor = conn.execute(
+            """INSERT INTO notification_attempts (
+               run_id, ticker, kind, delivery_status, failure_category,
+               detail_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                validated.run_id,
+                validated.ticker,
+                validated.kind.value,
+                validated.status.value,
+                validated.failure_category,
+                json.dumps(dict(validated.detail), sort_keys=True),
+                validated.observed_at.isoformat(),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return int(cursor.lastrowid)
+
+
 def write_decision(conn: sqlite3.Connection, run_id: str, event: Any, *,
                    confidence: float | None, current_price: float | None,
                    filled_qty: int | None = None, requested_qty: int | None = None,
@@ -311,6 +352,8 @@ def write_decision(conn: sqlite3.Connection, run_id: str, event: Any, *,
 
 
 __all__ = [
-    "RunStatus", "RunKind", "TickerOutcome", "OrderEvent", "migrate",
+    "RunStatus", "RunKind", "TickerOutcome", "OrderEvent",
+    "NotificationKind", "NotificationDeliveryStatus", "NotificationAttempt", "migrate",
     "recover_abandoned_runs", "finish_run", "write_ticker_outcome",
+    "append_order_event", "append_notification_attempt",
 ]
