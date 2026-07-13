@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 8
-current_phase_name: Decision Reports & Operator Runbook
+current_phase: 08
+current_phase_name: decision-reports-operator-runbook
 status: executing
-stopped_at: Phase 8 context gathered
-last_updated: "2026-07-13T15:44:33.199Z"
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-07-13T16:21:53.645Z"
 last_activity: 2026-07-13
-last_activity_desc: Phase 7 complete, transitioned to Phase 8
+last_activity_desc: Phase 08 execution started
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 11
-  completed_plans: 11
+  total_plans: 16
+  completed_plans: 12
   percent: 40
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 07 — Deterministic Replay Validation
+**Current focus:** Phase 08 — decision-reports-operator-runbook
 
 ## Current Position
 
-Phase: 8 — Decision Reports & Operator Runbook
-Plan: Not started
+Phase: 08 (decision-reports-operator-runbook) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-07-13 — Phase 7 complete, transitioned to Phase 8
+Last activity: 2026-07-13 — Phase 08 execution started
 
 Progress: [██████████] 100%
 
@@ -69,6 +69,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 07]: Compute replay result identity from canonical deterministic evidence only; persist invocation metadata outside identity.
 - [Phase 07]: Canonical replay technicals come only from cutoff-safe raw OHLCV passed through the shipped calculate_technicals function.
 - [Phase 07]: Explicit non-AVAILABLE fixture health overrides indicator health; otherwise the actual IndicatorResult health controls screening.
+- [Phase 08]: Notification failure categories use bounded uppercase stable codes — Raw exception text never crosses the durable evidence boundary
+- [Phase 08]: Notification attempt ordering uses integer insertion identity — Timezone-aware timestamps remain observational and may collide
 
 ### Pending Todos
 
@@ -92,12 +94,13 @@ None yet.
 | Phase 06 P05 | 10min | 3 tasks | 7 files |
 | Phase 07 P02 | 10min | 2 tasks | 2 files |
 | Phase 07 P06 | 7min | 2 tasks | 5 files |
+| Phase 08 P01 | 4 min | 2 tasks | 3 files |
 
 ## Session Continuity
 
-Last session: 2026-07-13T13:59:45.222Z
-Stopped at: Phase 8 context gathered
-Resume file: .planning/phases/08-decision-reports-operator-runbook/08-CONTEXT.md
+Last session: 2026-07-13T16:21:20.517Z
+Stopped at: Completed 08-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

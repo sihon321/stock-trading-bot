@@ -23,10 +23,10 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ### Reports & Runbook
 
-- [ ] **REP-01**: Operator can generate a daily decision report from SQLite showing candidates, signal decisions, confidence, order outcomes, and no-trade reasons.
-- [ ] **REP-02**: Operator can generate period and replay summaries with explicit denominators, incomplete or unknown states, execution target, and reconciliation status.
+- [x] **REP-01**: Operator can generate a daily decision report from SQLite showing candidates, signal decisions, confidence, order outcomes, and no-trade reasons.
+- [x] **REP-02**: Operator can generate period and replay summaries with explicit denominators, incomplete or unknown states, execution target, and reconciliation status.
 - [ ] **RUN-01**: Operator can follow a runbook for `bot status`, `bot screen`, `bot run`, and report review at fixed market-session times.
-- [ ] **RUN-02**: Operator can follow documented failure triage for stale data, API failure, timeout, ambiguous order, duplicate order, notification failure, and audit failure.
+- [x] **RUN-02**: Operator can follow documented failure triage for stale data, API failure, timeout, ambiguous order, duplicate order, notification failure, and audit failure.
 
 ### KIS Mock Soak
 
@@ -79,10 +79,10 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | REPLAY-02 | Phase 7 | Complete |
 | REPLAY-03 | Phase 7 | Complete |
 | REPLAY-04 | Phase 7 | Complete |
-| REP-01 | Phase 8 | Pending |
-| REP-02 | Phase 8 | Pending |
+| REP-01 | Phase 8 | Complete |
+| REP-02 | Phase 8 | Complete |
 | RUN-01 | Phase 8 | Pending |
-| RUN-02 | Phase 8 | Pending |
+| RUN-02 | Phase 8 | Complete |
 | SOAK-01 | Phase 9 | Pending |
 | SOAK-02 | Phase 9 | Pending |
 | SOAK-03 | Phase 9 | Pending |
