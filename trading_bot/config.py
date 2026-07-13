@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Tuple
 
 from pydantic import BaseModel, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ReportSettings(BaseSettings):
+    """Credential-free settings used only by read-only report commands."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    audit_db_path: Path = Path("./data/audit.db")
 
 
 class TradingMode(str, Enum):
