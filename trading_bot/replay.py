@@ -263,6 +263,7 @@ class ReplayStep:
     fill: str
     market_row: Mapping[str, Any]
     expected_action: str
+    realized_loss_after: float | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,7 @@ class ReplayOutcome:
     validly_sized: bool = False
     order_eligible: bool = False
     blocked_reason: str | None = None
+    realized_loss_after: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -416,7 +418,7 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
         raise ValueError("fixture boundary catalog is incomplete or unknown")
     scenarios = []
     scenario_fields = {"id", "mode", "trading_date", "evaluation_time", "policy", "initial_state", "market_history", "steps"}
-    step_fields = {"ticker", "raw_signal", "current_price", "fill", "market_row", "expected_action"}
+    step_fields = {"ticker", "raw_signal", "current_price", "fill", "market_row", "expected_action", "realized_loss_after"}
     state_fields = {"cash", "positions", "daily_loss"}
     for raw in data["scenarios"]:
         _keys(raw, scenario_fields, "scenario")
@@ -437,14 +439,29 @@ def load_replay_bundle(path: str | Path) -> tuple[ReplayScenario, ...]:
         _keys(state["daily_loss"], {"realized_loss", "threshold"}, "daily_loss")
         daily_loss = {k: _finite(v, k, minimum=0) for k, v in state["daily_loss"].items()}
         history = guarded_historical_view(raw["market_history"], raw["evaluation_time"])
+        history_fields = {"observed_at", "ticker", "market", "state", "trading_value", "technicals", "health"}
+        for record in history:
+            _keys(record, history_fields, "market_history record")
+            if not _TICKER.fullmatch(str(record["ticker"])):
+                raise ValueError("invalid historical ticker")
         steps = []
         for step in raw["steps"]:
-            _keys(step, step_fields, "step")
+            if set(step) not in (step_fields, step_fields - {"realized_loss_after"}):
+                raise ValueError("step fields mismatch")
             if not _TICKER.fullmatch(step["ticker"]): raise ValueError("invalid ticker")
             if not isinstance(step["raw_signal"], str): raise ValueError("raw_signal must be a string")
             if step["fill"] not in {"COMPLETE", "NONE"}: raise ValueError("unsupported fill")
             price = _finite(step["current_price"], "current_price", minimum=0)
-            steps.append(ReplayStep(step["ticker"], step["raw_signal"], price, step["fill"], step["market_row"], step["expected_action"]))
+            loss_after = step.get("realized_loss_after")
+            if loss_after is not None:
+                loss_after = _finite(loss_after, "realized_loss_after", minimum=0)
+                if loss_after < daily_loss["realized_loss"]:
+                    raise ValueError("realized_loss_after may not decrease")
+                if loss_after > daily_loss["threshold"]:
+                    raise ValueError("realized_loss_after may not exceed policy threshold")
+            steps.append(ReplayStep(step["ticker"], step["raw_signal"], price, step["fill"], step["market_row"], step["expected_action"], loss_after))
+        if raw["mode"] == "FULL_DAY" and any(s.realized_loss_after is None for s in steps):
+            raise ValueError("FULL_DAY steps require explicit realized_loss_after")
         scenarios.append(ReplayScenario(raw["id"], raw["mode"], raw["trading_date"], raw["evaluation_time"], raw["policy"], cash, positions, daily_loss, history, tuple(steps)))
     return tuple(scenarios)
 
@@ -457,7 +474,7 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
     """Run frozen scenarios through production screening and execution seams."""
     outcomes: list[ReplayOutcome] = []
     for scenario in scenarios:
-        guarded_historical_view(scenario.market_history, scenario.evaluation_time)
+        history = guarded_historical_view(scenario.market_history, scenario.evaluation_time)
         p = scenario.policy
         screener = ScreenerConfig(int(p["max_candidates"]), tuple(p["markets"]), float(p["min_trading_value"]), float(p["min_volume_ratio"]), tuple(p["excluded_states"]))
         risk = RiskConfig(float(p["stop_loss_pct"]), float(p["take_profit_pct"]))
@@ -465,11 +482,18 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
         broker = MockBroker(Money(scenario.initial_cash, "KRW"), [_position(x) for x in scenario.initial_positions])
         daily = DailyLossState(float(scenario.daily_loss["realized_loss"]), float(scenario.daily_loss["threshold"]))
         by_ticker = {s.ticker: s for s in scenario.steps}
+        latest_by_ticker: dict[str, Mapping[str, Any]] = {}
+        for record in history:
+            ticker = str(record["ticker"])
+            previous = latest_by_ticker.get(ticker)
+            if previous is None or str(record["observed_at"]) > str(previous["observed_at"]):
+                latest_by_ticker[ticker] = record
         rows = []
         for step in scenario.steps:
-            row = dict(step.market_row)
-            observed = row.pop("observed_at", scenario.evaluation_time)
-            guarded_historical_view(({"observed_at": observed},), scenario.evaluation_time)
+            if step.ticker not in latest_by_ticker:
+                raise ValueError(f"missing historical screener input for ticker {step.ticker}")
+            row = dict(latest_by_ticker[step.ticker])
+            row.pop("observed_at")
             health_raw = row.get("health", {})
             row["health"] = SourceHealth(source="fixture", status=SourceStatus(health_raw.get("status", "AVAILABLE")), reason=health_raw.get("reason", "fixture"), observed_date=health_raw.get("observed_date", scenario.trading_date), expected_date=scenario.trading_date)
             rows.append(row)
@@ -505,5 +529,10 @@ def run_replay_scenarios(scenarios: Sequence[ReplayScenario]) -> tuple[ReplayOut
                 step.expected_action, action == step.expected_action,
                 True, buy_signaled, confidence_qualified, risk_qualified,
                 validly_sized, validly_sized, blocked_reason,
+                step.realized_loss_after if step.realized_loss_after is not None else daily.realized_loss,
             ))
+            if step.realized_loss_after is not None:
+                if step.realized_loss_after < daily.realized_loss:
+                    raise ValueError("realized_loss_after may not decrease")
+                daily = DailyLossState(step.realized_loss_after, daily.threshold)
     return tuple(outcomes)

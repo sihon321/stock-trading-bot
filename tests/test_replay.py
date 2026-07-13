@@ -245,10 +245,34 @@ def test_boundary_catalog_matches_expected_actions() -> None:
 
 def test_full_day_uses_production_rank_and_fill_state() -> None:
     outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "full_day.json"))
-    assert [x.ticker for x in outcomes] == ["000010", "000020"]
+    assert [x.ticker for x in outcomes] == ["000010", "000020", "000030"]
     assert outcomes[0].cash_after < 10_000_000
     assert outcomes[1].cash_after == outcomes[0].cash_after
     assert outcomes[1].position_quantity_after == 0
+
+
+def test_historical_input_materially_drives_production_screener_rank(tmp_path: Path) -> None:
+    data = json.loads((FIXTURES / "full_day.json").read_text())
+    baseline = run_replay_scenarios(load_replay_bundle(FIXTURES / "full_day.json"))
+    assert [outcome.ticker for outcome in baseline] == ["000010", "000020", "000030"]
+
+    for record in data["scenarios"][0]["market_history"]:
+        if record["ticker"] == "000020":
+            record["technicals"]["atr_14"] = 80
+            record["technicals"]["historical_volatility"] = 0.5
+    path = tmp_path / "mutated-history.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    mutated = run_replay_scenarios(load_replay_bundle(path))
+    assert [outcome.ticker for outcome in mutated] == ["000020", "000010", "000030"]
+
+
+def test_full_day_daily_loss_progresses_and_blocks_later_buy() -> None:
+    outcomes = run_replay_scenarios(load_replay_bundle(FIXTURES / "full_day.json"))
+    assert [outcome.realized_loss_after for outcome in outcomes] == [500_000, 500_000, 500_000]
+    assert outcomes[-1].ticker == "000030"
+    assert outcomes[-1].action == "HOLD"
+    assert outcomes[-1].blocked_reason == "RISK_BLOCK"
 
 
 def test_fixture_rejects_future_rows_before_replay(tmp_path: Path) -> None:
