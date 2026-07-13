@@ -324,15 +324,16 @@ def test_missing_final_summary_notification_is_unknown(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("delivered", "expected"),
+    ("delivery", "expected"),
     [
-        (True, NotificationState.DELIVERED),
-        (False, NotificationState.FAILED),
+        ("delivered", NotificationState.DELIVERED),
+        ("failed", NotificationState.FAILED),
+        ("disabled", NotificationState.DISABLED),
     ],
 )
 def test_cli_produced_notification_rows_project_to_exact_scope(
     tmp_path: Path,
-    delivered: bool,
+    delivery: str,
     expected: NotificationState,
 ) -> None:
     from conftest import make_data_context, make_settings
@@ -351,7 +352,7 @@ def test_cli_produced_notification_rows_project_to_exact_scope(
 
     class Notifier:
         def send(self, summary: str) -> bool:
-            return delivered
+            return delivery == "delivered"
 
     class Broker:
         cash = Money(10_000_000, "KRW")
@@ -377,10 +378,16 @@ def test_cli_produced_notification_rows_project_to_exact_scope(
 
     path = tmp_path / "audit.db"
     conn = sqlite_audit.connect(path)
+    if delivery == "disabled":
+        from trading_bot.notifier import NoopNotifier
+
+        notifier = NoopNotifier()
+    else:
+        notifier = Notifier()
     run_cycle(
         settings=make_settings(audit_db_path=str(path)),
         data_source=Source(), llm_provider=object(), broker=Broker(),
-        audit_conn=conn, notifier=Notifier(), run_cycle=cycle,
+        audit_conn=conn, notifier=notifier, run_cycle=cycle,
         trading_date="20260714", run_id="producer-run",
         preflight_result=PreflightResult((), True, {}),
     )

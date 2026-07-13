@@ -151,3 +151,22 @@ def test_preflight_evidence_is_immutable() -> None:
         result.frozen_tickers["005930"] = ReasonCode.DUPLICATE_ORDER  # type: ignore[index]
     with pytest.raises(TypeError):
         result.checks[0].facts["target"] = "real"  # type: ignore[index]
+
+
+def test_audit_health_probe_is_rollback_only(tmp_path) -> None:
+    from trading_bot import sqlite_audit
+    from trading_bot.cli import _read_audit_health
+
+    path = tmp_path / "audit.db"
+    conn = sqlite_audit.connect(path)
+    conn.close()
+
+    evidence = _read_audit_health(str(path))
+
+    assert evidence.healthy is True
+    check = sqlite_audit.connect(path)
+    assert check.execute("SELECT COUNT(*) FROM runs").fetchone() == (0,)
+    assert check.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE '%preflight%'"
+    ).fetchall() == []
+    check.close()

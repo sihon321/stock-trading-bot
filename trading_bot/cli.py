@@ -10,7 +10,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -29,12 +29,25 @@ from trading_bot.market_cycle import MarketCycleEvidence, MarketCyclePolicy
 from trading_bot.pykrx_adapter import PykrxOhlcvAdapter
 from trading_bot.llm_provider import build_llm_provider, run_llm_cycle as _run_llm_cycle
 from trading_bot.mock_broker import MockBroker
-from trading_bot.notifier import build_notifier, format_run_summary
+from trading_bot.notifier import NoopNotifier, build_notifier, format_run_summary
+from trading_bot.preflight import (
+    AuditHealthEvidence,
+    MockTargetEvidence,
+    PreflightResult,
+    UnresolvedOrderEvidence,
+    UnresolvedOrderScan,
+    evaluate_preflight,
+    render_preflight,
+)
 from trading_bot.report_cli import report_app
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
     FailedStage,
+    NotificationAttempt,
+    NotificationDeliveryStatus,
+    NotificationKind,
+    OrderEventType,
     ReasonCode,
     RunKind,
     RunStatus,
@@ -228,11 +241,148 @@ def build_runtime(
     )
 
 
-def _safe_send(notifier: Any, summary: str) -> bool:
+def _notification_attempt(
+    notifier: Any,
+    summary: str,
+) -> tuple[NotificationDeliveryStatus, str | None]:
+    """Return a bounded delivery verdict without allowing transport failure to escape."""
+
+    if isinstance(notifier, NoopNotifier):
+        notifier.send(summary)
+        return NotificationDeliveryStatus.DISABLED, None
     try:
-        return bool(notifier.send(summary))
-    except Exception:  # noqa: BLE001 - notification is deliberately fail-soft.
-        return False
+        delivered = bool(notifier.send(summary))
+    except Exception:  # noqa: BLE001 - transport failure is durable, not fatal.
+        return NotificationDeliveryStatus.FAILED, "TRANSPORT_EXCEPTION"
+    if delivered:
+        return NotificationDeliveryStatus.DELIVERED, None
+    return NotificationDeliveryStatus.FAILED, "TRANSPORT_FAILED"
+
+
+def _send_and_record_notification(
+    *,
+    conn: sqlite3.Connection,
+    notifier: Any,
+    run_id: str,
+    ticker: str | None,
+    kind: NotificationKind,
+    summary: str,
+) -> None:
+    """Persist exactly one row for one logical delivery attempt.
+
+    Transport remains fail-soft. The append is deliberately outside that safety
+    envelope so evidence-write failure stops the caller.
+    """
+
+    status, failure_category = _notification_attempt(notifier, summary)
+    sqlite_audit.append_notification_attempt(
+        conn,
+        NotificationAttempt(
+            run_id=run_id,
+            ticker=ticker,
+            kind=kind,
+            status=status,
+            failure_category=failure_category,
+            detail={},
+            observed_at=datetime.now(timezone.utc),
+        ),
+    )
+
+
+def _audit_connection(path: str, *, read_only: bool) -> sqlite3.Connection:
+    resolved = Path(path).resolve(strict=True)
+    if not resolved.is_file():
+        raise ValueError("audit database path must be a regular file")
+    mode = "ro" if read_only else "rw"
+    return sqlite3.connect(f"{resolved.as_uri()}?mode={mode}", uri=True)
+
+
+def _read_audit_health(path: str) -> AuditHealthEvidence:
+    """Probe supported schema, integrity, FK enforcement, and rollback-only write access."""
+
+    conn = _audit_connection(path, read_only=False)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        integrity_ok = conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        foreign_keys_on = conn.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        writable = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE runs SET status = status WHERE 0")
+            conn.rollback()
+            writable = True
+        except Exception:
+            conn.rollback()
+        healthy = (
+            schema_version == sqlite_audit.SCHEMA_VERSION
+            and integrity_ok
+            and foreign_keys_on
+            and writable
+        )
+        return AuditHealthEvidence(healthy, schema_version, integrity_ok, writable)
+    finally:
+        conn.close()
+
+
+def _read_unresolved_orders(path: str) -> UnresolvedOrderScan:
+    """Reduce append-only local evidence without claiming authenticated broker truth."""
+
+    conn = _audit_connection(path, read_only=True)
+    try:
+        rows = conn.execute(
+            """SELECT order_intent_id, ticker, event_type, duplicate_of_intent_id
+               FROM order_events ORDER BY id"""
+        ).fetchall()
+    finally:
+        conn.close()
+    unresolved: dict[str, UnresolvedOrderEvidence] = {}
+    for intent_id, ticker, event_type, duplicate_of in rows:
+        try:
+            event = OrderEventType(str(event_type))
+        except ValueError:
+            return UnresolvedOrderScan(False, ())
+        key = str(intent_id)
+        if event is OrderEventType.RECONCILED:
+            unresolved.pop(key, None)
+        elif duplicate_of is not None:
+            unresolved[key] = UnresolvedOrderEvidence(
+                str(ticker) if ticker else None,
+                ReasonCode.DUPLICATE_ORDER,
+                key,
+            )
+        elif event is OrderEventType.SUBMISSION_AMBIGUOUS:
+            unresolved[key] = UnresolvedOrderEvidence(
+                str(ticker) if ticker else None,
+                ReasonCode.AMBIGUOUS_SUBMISSION,
+                key,
+            )
+    return UnresolvedOrderScan(True, tuple(unresolved.values()))
+
+
+def build_preflight_result(settings: Settings | None = None) -> PreflightResult:
+    """Build the production D-11 evidence result shared by status and run."""
+
+    resolved = settings or Settings()
+
+    def market_reader() -> MarketCycleEvidence:
+        adapter = PykrxOhlcvAdapter(
+            adjusted=resolved.ohlcv_adjusted,
+            request_timeout_seconds=resolved.pykrx_request_timeout_seconds,
+        )
+        policy = MarketCyclePolicy(ObservedKRXCalendar(adapter))
+        return policy.classify(datetime.now(ZoneInfo("Asia/Seoul")))
+
+    return evaluate_preflight(
+        lambda: MockTargetEvidence(
+            resolved.trading_mode is TradingMode.MOCK
+            and resolved.active_kis == resolved.kis_mock,
+            resolved.trading_mode.value,
+        ),
+        lambda: _read_audit_health(resolved.audit_db_path),
+        market_reader,
+        lambda: _read_unresolved_orders(resolved.audit_db_path),
+    )
 
 
 def _outcome_from_result(
@@ -314,6 +464,7 @@ def run_cycle(
     run_id: Optional[str] = None,
     parent_run_id: Optional[str] = None,
     kis_account: Optional[KisOrderAccount] = None,
+    preflight_result: Optional[PreflightResult] = None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
 
@@ -329,6 +480,25 @@ def run_cycle(
         raise SystemExit("real execute requires --live-confirm")
 
     resolved_trading_date = trading_date or _today_kst()
+    fully_injected = all(
+        item is not None
+        for item in (data_source, llm_provider, broker, audit_conn, notifier)
+    )
+    resolved_preflight = preflight_result
+    if resolved_preflight is None:
+        resolved_preflight = (
+            PreflightResult((), True, {})
+            if fully_injected
+            else build_preflight_result(resolved_settings)
+        )
+    if not resolved_preflight.global_executable:
+        blocking_codes = sorted({
+            check.code.value
+            for check in resolved_preflight.checks
+            if check.stops_run and check.state.value != "PASS"
+        })
+        raise SystemExit("preflight blocked: " + ",".join(blocking_codes))
+
     runtime: Optional[_Runtime] = None
     if any(item is None for item in (data_source, llm_provider, broker, audit_conn, notifier)):
         runtime = build_runtime(
@@ -388,10 +558,6 @@ def run_cycle(
 
     outcomes: list[dict[str, Any]] = []
     try:
-        if execute and runtime is not None and (
-            runtime.cycle_evidence is None or not runtime.cycle_evidence.executable
-        ):
-            raise RuntimeError("KRX session is not authoritatively executable")
         if ticker is not None:
             tickers = [_validate_ticker(ticker)]
         else:
@@ -400,6 +566,40 @@ def run_cycle(
             )
         for symbol in tickers:
             correlation_id = f"{resolved_run_id}:{symbol}"
+            frozen_reason = resolved_preflight.frozen_tickers.get(symbol)
+            if frozen_reason is not None:
+                explanation = (
+                    "로컬 감사 증거의 미해결 주문으로 이 티커가 동결되었습니다. "
+                    "KIS 원장 확인 및 조정 증거 전에는 재주문하지 않습니다."
+                )
+                outcomes.append({
+                    "ticker": symbol,
+                    "status": "frozen",
+                    "final_action": "HOLD",
+                    "parsed_decision": None,
+                    "confidence": None,
+                    "broker_order_id": None,
+                    "order_reason": explanation,
+                    "requested_qty": None,
+                    "filled_qty": None,
+                    "current_price": None,
+                    "correlation_id": correlation_id,
+                })
+                sqlite_audit.write_ticker_outcome(
+                    resolved_audit_conn,
+                    TickerOutcome(
+                        run_id=resolved_run_id,
+                        ticker=symbol,
+                        outcome_code=TickerOutcomeCode.NO_TRADE,
+                        reason_code=frozen_reason,
+                        detail={
+                            "correlation_id": correlation_id,
+                            "freeze_scope": "local_audit_only",
+                        },
+                        final_order_state="FROZEN",
+                    ),
+                )
+                continue
             terminal: TickerOutcome | None = None
             try:
                 context = resolved_data_source.build_context(Ticker(symbol))
@@ -483,7 +683,14 @@ def run_cycle(
                         if isinstance(exc, AmbiguousSubmissionError) else None
                     ),
                 )
-                _safe_send(resolved_notifier, f"ERROR {symbol}: {type(exc).__name__}: {exc}")
+                _send_and_record_notification(
+                    conn=resolved_audit_conn,
+                    notifier=resolved_notifier,
+                    run_id=resolved_run_id,
+                    ticker=symbol,
+                    kind=NotificationKind.IMMEDIATE_ERROR,
+                    summary=f"ERROR {symbol}: {type(exc).__name__}: {exc}",
+                )
             finally:
                 if terminal is not None:
                     sqlite_audit.write_ticker_outcome(resolved_audit_conn, terminal)
@@ -512,7 +719,14 @@ def run_cycle(
         dry_run=dry_run,
         outcomes=outcomes,
     )
-    _safe_send(resolved_notifier, summary)
+    _send_and_record_notification(
+        conn=resolved_audit_conn,
+        notifier=resolved_notifier,
+        run_id=resolved_run_id,
+        ticker=None,
+        kind=NotificationKind.FINAL_SUMMARY,
+        summary=summary,
+    )
     return {
         "run_id": resolved_run_id,
         "dry_run": dry_run,
@@ -698,12 +912,6 @@ def screen_command(
 
 @app.command("status")
 def status_command() -> None:
-    """Print a minimal local broker status snapshot."""
+    """Render the exact D-11 safety result enforced by mutable runs."""
 
-    runtime = build_runtime(trading_date=_today_kst())
-    cash = getattr(runtime.broker, "cash", None)
-    if cash is not None:
-        typer.echo(f"Cash: {cash.amount:.0f} {cash.currency}")
-    else:
-        typer.echo(f"Trading mode: {runtime.settings.trading_mode.value}")
-        typer.echo("Broker status: KIS account reconciliation is available during order runs")
+    typer.echo(render_preflight(build_preflight_result()))

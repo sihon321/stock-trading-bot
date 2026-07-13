@@ -282,6 +282,32 @@ def test_status_renders_the_same_preflight_contract_without_live_runtime(monkeyp
     assert "실행 가능: 아니오" in invoked.stdout
 
 
+def test_notification_evidence_write_failure_is_fail_closed(monkeypatch) -> None:
+    import trading_bot.cli as cli
+
+    conn = sqlite3.connect(":memory:")
+    notifier = _Notifier()
+
+    def fail_append(*args, **kwargs):
+        raise sqlite3.OperationalError("audit unavailable")
+
+    monkeypatch.setattr(cli.sqlite_audit, "append_notification_attempt", fail_append)
+    with pytest.raises(sqlite3.OperationalError, match="audit unavailable"):
+        cli.run_cycle(
+            settings=make_settings(),
+            data_source=_DataSource(("005930",), fail_on="005930"),
+            llm_provider=_Provider(), broker=_Broker(), audit_conn=conn,
+            notifier=notifier, trading_date="20260702", run_id="evidence-failure",
+            preflight_result=_preflight(),
+        )
+
+    assert len(notifier.messages) == 1
+    assert conn.execute(
+        "SELECT status FROM runs WHERE run_id='evidence-failure'"
+    ).fetchone() == ("FAILED",)
+    assert conn.execute("SELECT COUNT(*) FROM notification_attempts").fetchone() == (0,)
+
+
 def test_real_execute_requires_live_confirm() -> None:
     from trading_bot.cli import app
 
