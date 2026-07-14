@@ -176,6 +176,6 @@ Plans:
 | 5. Real-Money Readiness & Operations | v1.0 | 5/5 | Complete | 2026-07-02 |
 | 6. Audit Evidence & Cycle Boundaries | v1.1 | 5/5 | Complete    | 2026-07-11 |
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
-| 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete   | 2026-07-14 |
+| 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 0/TBD | Not started | - |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 0/TBD | Not started | - |
