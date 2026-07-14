@@ -8,8 +8,9 @@
 
 | KST | 수동 명령 | 목적 | 완료 조건 |
 |---|---|---|---|
-| 08:50 | `bot status` | 실제 `bot run`과 같은 사전 점검 결과를 읽는다. | 전역 점검이 모두 `PASS`이고 `실행 가능: 예`인지 확인한다. |
+| 08:50 | `bot status` | 실행 허가가 아닌 개장 전 준비 상태를 관찰한다. | 정상 거래일이면 `PRE_OPEN`, `KRX_SESSION_BLOCKED`/`BLOCK`, `실행 가능: 아니오`를 확인하고, 모의투자 대상·감사 건강성·미해결 주문 스캔은 각각 `PASS`인지 확인한다. |
 | 09:05 | `bot screen` | 당일 후보를 미리 본다. 주문은 제출하지 않는다. | SCREEN 실행과 각 후보 결과가 감사 DB에 terminal 증거로 남는다. |
+| 09:10 직전 | `bot status` | 09:00 이후 실제 실행 가능 상태를 새로 확인한다. | `CONTINUOUS`, `KRX_SESSION_OPEN`/`PASS`, 모든 전역 중단 점검 `PASS`, `실행 가능: 예`를 확인한다. |
 | 09:10 | `bot run` | 실행 시점의 새로운 screen 결과로 평가 주기를 시작한다. 기본은 dry-run이며 주문이 필요한 모의투자 실행만 명시적으로 `--execute`를 쓴다. | 출력된 `run_id`를 기록하고 실행이 terminal 상태가 될 때까지 확인한다. |
 | 즉시 | `bot report daily` | 현재 KST 거래일의 실행·티커·주문·알림 증거를 직접 검토한다. | 아래 완료 판정의 모든 항목을 충족한다. |
 
@@ -17,9 +18,10 @@
 
 ### 08:50 사전 점검 판정
 
-`bot status`는 모의투자 대상, 감사 저장소 건강성, KRX 거래일·연속매매 세션, 로컬 미해결 주문 스캔을 `PASS`, `BLOCK`, `UNKNOWN`으로 표시한다. `UNKNOWN`은 성공으로 추정하지 않는다.
+`bot status`는 모의투자 대상, 감사 저장소 건강성, KRX 거래일·연속매매 세션, 로컬 미해결 주문 스캔을 `PASS`, `BLOCK`, `UNKNOWN`으로 표시한다. `UNKNOWN`은 성공으로 추정하지 않는다. 08:50 점검은 실행 허가가 아니라 개장 전 준비 상태 관찰이다.
 
-- `MOCK_TARGET_CONFIRMED`와 `AUDIT_HEALTHY`, `KRX_SESSION_OPEN`, `UNRESOLVED_SCAN_CLEAR`를 확인한다.
+- 정상 거래일 08:50에는 `PRE_OPEN`, `KRX_SESSION_BLOCKED`/`BLOCK`, `실행 가능: 아니오`가 예상된다. 이때도 `MOCK_TARGET_CONFIRMED`, `AUDIT_HEALTHY`, `UNRESOLVED_SCAN_CLEAR`는 각각 `PASS`여야 하며, 이 준비 상태만으로 `bot run`을 허가하지 않는다.
+- 09:00 이후 09:10 실행 직전에 `bot status`를 다시 실행한다. `CONTINUOUS`, `KRX_SESSION_OPEN`/`PASS`, 모든 전역 중단 점검 `PASS`, `실행 가능: 예`가 모두 확인될 때만 `bot run`으로 진행한다.
 - `MOCK_TARGET_BLOCKED`, `AUDIT_UNHEALTHY`, `KRX_SESSION_BLOCKED`, `UNRESOLVED_SCAN_UNKNOWN` 중 하나라도 전역 `BLOCK` 또는 `UNKNOWN`이면 `bot run`을 중단한다. `bot status`와 과거 `bot report ...` 읽기는 계속할 수 있다.
 - `TICKER_FROZEN_UNRESOLVED_ORDER`는 전역 실행 중단이 아니라 표시된 티커만 동결한다. 로컬 증거만 확인한 상태이므로 KIS 원장이 확정됐다고 해석하지 않는다.
 

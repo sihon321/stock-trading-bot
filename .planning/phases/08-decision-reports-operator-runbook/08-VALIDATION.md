@@ -48,6 +48,8 @@ created: 2026-07-13
 | 08-04-02 | 08-04 | 4 | RUN-01, RUN-02, REP-02 | T-08-14, T-08-15, T-08-16, T-08-17 | Shared gate prevents global mutation and freezes only affected candidates; each immediate error persists exactly once with its candidate ticker, each FINAL_SUMMARY persists exactly once with NULL ticker, and report projections keep those scopes disjoint while deriving DELIVERED/FAILED/DISABLED/UNKNOWN | CLI + projection integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_preflight.py tests/test_cli.py tests/test_notifier.py tests/test_reporting.py` | inline TDD extends `tests/test_preflight.py`, `tests/test_cli.py`, `tests/test_notifier.py`, `tests/test_reporting.py` | ✅ green |
 | 08-05-01 | 08-05 | 5 | RUN-01, RUN-02, REP-01, REP-02 | T-08-18, T-08-19, T-08-20, T-08-21 | Documentation contract fixes schedule, completion, seven triage rows, prohibitions, and safe resolution semantics | docs contract | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_operator_runbook.py` | inline TDD creates `tests/test_operator_runbook.py` | ✅ green |
 | 08-05-02 | 08-05 | 5 | RUN-01, RUN-02, REP-01, REP-02 | T-08-18, T-08-19, T-08-20, T-08-21 | Korean runbook matches shipped commands/codes and all targeted evidence remains green | docs + integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_operator_runbook.py tests/test_preflight.py tests/test_reporting.py tests/test_report_cli.py tests/test_sqlite_audit.py tests/test_cli.py tests/test_replay.py tests/test_notifier.py` | Task creates runbook; prior inline TDD creates tests | ✅ green |
+| 08-06-01 | 08-06 | 6 | RUN-01 | T-08-22, T-08-23 | Fixed-time contract executes shipped market-cycle and preflight policy for non-executable 08:50 readiness and executable post-open status | semantic docs contract | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_operator_runbook.py -x` | extends `tests/test_operator_runbook.py` | ✅ green |
+| 08-06-02 | 08-06 | 6 | RUN-01 | T-08-22, T-08-23, T-08-24 | Corrected runbook preserves recovery evidence while requiring a distinct final executable preflight | docs + regression | `PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q tests/test_operator_runbook.py tests/test_preflight.py tests/test_market_cycle.py`<br>`PYTHONUSERBASE="$PWD/.python-userbase" .venv/bin/python -m pytest -q` | extends runbook and validation map | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -72,6 +74,6 @@ All Phase 8 behaviors have automated unit, CLI integration, or documentation-con
 - [x] No Wave 0/MISSING references; inline TDD creation contracts are mapped above
 - [x] No watch-mode flags
 - [x] Expected feedback latency < 30 seconds
-- [x] `nyquist_compliant: true` set in frontmatter
+- [x] `nyquist_compliant: true` set in frontmatter after the declared targeted and full-suite commands pass
 
-**Approval:** approved — targeted Phase 8 suite 135 passed; full suite 471 passed on 2026-07-14.
+**Approval:** approved — 08-06 contract 6 passed, targeted regression 39 passed, and full suite 472 passed on 2026-07-14.
