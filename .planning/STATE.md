@@ -5,15 +5,15 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 08
 current_phase_name: decision-reports-operator-runbook
 status: executing
-stopped_at: Completed 08-05-PLAN.md
-last_updated: "2026-07-14T01:11:41.876Z"
-last_activity: 2026-07-13
-last_activity_desc: Phase 08 execution started
+stopped_at: Completed 08-06-PLAN.md
+last_updated: "2026-07-14T01:21:01.754Z"
+last_activity: 2026-07-14
+last_activity_desc: Phase 08 gap closure execution complete
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 16
-  completed_plans: 16
+  total_plans: 17
+  completed_plans: 17
   percent: 60
 ---
 
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 08 (decision-reports-operator-runbook) — EXECUTING
-Plan: 5 of 5
-Status: Ready to execute
-Last activity: 2026-07-13 — Phase 08 execution started
+Plan: 6 of 6
+Status: Execution complete — awaiting verification
+Last activity: 2026-07-14 — Phase 08 gap closure execution complete
 
-Progress: [█████████░] 94%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -78,6 +78,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 08]: 전역 실행 가능 여부는 stops_run이 설정된 전역 점검만 결정하며 확정된 미해결 주문은 해당 티커만 동결한다. — D-11 전역 안전 증명과 D-16 티커 귀속을 분리한다.
 - [Phase 08]: 알림 transport 실패는 거래 결과를 바꾸지 않지만 알림 증거 저장 실패는 호출자에게 전파한다. — D-17의 fail-soft transport와 fail-closed evidence 경계를 보존한다.
 - [Phase 08]: Phase 8 unresolved-order 점검은 로컬 append-only 증거만 축약한다. — Phase 9 이전에 인증된 KIS broker truth를 주장하지 않는다.
+- [Phase 08]: 08:50 bot status는 비실행 PRE_OPEN 준비 관찰이며, 실행 권한은 post-open CONTINUOUS 전역 PASS 점검에서만 부여한다. — 런북과 반개구간 시장 정책의 의미를 일치시키고 pre-open 거래 허가를 방지한다.
 
 ### Pending Todos
 
@@ -106,11 +107,12 @@ None yet.
 | Phase 08 P03 | 6min | 2 tasks | 5 files |
 | Phase 08 P04 | 8min | 2 tasks | 6 files |
 | Phase 08 P05 | 4min | 2 tasks | 3 files |
+| Phase 08 P06 | 4 min | 2 tasks | 3 files |
 
 ## Session Continuity
 
-Last session: 2026-07-13T17:08:22.396Z
-Stopped at: Completed 08-05-PLAN.md
+Last session: 2026-07-14T01:21:01.748Z
+Stopped at: Completed 08-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
