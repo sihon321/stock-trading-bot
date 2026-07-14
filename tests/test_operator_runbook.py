@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
+
+from trading_bot.market_cycle import KST, MarketCyclePolicy, MarketSession
+from trading_bot.preflight import (
+    AuditHealthEvidence,
+    MockTargetEvidence,
+    PreflightCode,
+    PreflightState,
+    UnresolvedOrderScan,
+    evaluate_preflight,
+)
 
 
 RUNBOOK = Path(__file__).resolve().parents[1] / "docs" / "operator-runbook.md"
@@ -62,6 +73,7 @@ def test_manual_schedule_contract() -> None:
     assert [(row["KST"], row["수동 명령"]) for row in rows] == [
         ("08:50", "`bot status`"),
         ("09:05", "`bot screen`"),
+        ("09:10 직전", "`bot status`"),
         ("09:10", "`bot run`"),
         ("즉시", "`bot report daily`"),
     ]
@@ -70,6 +82,70 @@ def test_manual_schedule_contract() -> None:
     assert "예약 실행이나 스케줄링이 아니다" in section
     assert "09:05 화면은 미리보기" in section
     assert "09:10 실행은 후보를 새로 선별" in section
+
+
+def test_schedule_semantics_match_market_cycle_and_preflight() -> None:
+    class ConfirmedTradingDayCalendar:
+        def is_trading_day(self, day: date) -> bool:
+            return True
+
+        def previous_trading_day(self, day: date) -> date:
+            return date.fromordinal(day.toordinal() - 1)
+
+    policy = MarketCyclePolicy(ConfirmedTradingDayCalendar())
+    observations = {
+        "readiness": datetime(2026, 7, 14, 8, 50, tzinfo=KST),
+        "execution": datetime(2026, 7, 14, 9, 10, tzinfo=KST),
+    }
+    cycles = {name: policy.classify(observed_at) for name, observed_at in observations.items()}
+
+    def preflight(cycle_name: str):
+        return evaluate_preflight(
+            lambda: MockTargetEvidence(confirmed=True, target="mock"),
+            lambda: AuditHealthEvidence(
+                healthy=True,
+                schema_version=3,
+                integrity_ok=True,
+                writable=True,
+            ),
+            lambda: cycles[cycle_name],
+            lambda: UnresolvedOrderScan(complete=True, entries=()),
+        )
+
+    readiness = preflight("readiness")
+    execution = preflight("execution")
+    readiness_checks = {check.code: check for check in readiness.checks}
+    execution_checks = {check.code: check for check in execution.checks}
+
+    assert cycles["readiness"].session is MarketSession.PRE_OPEN
+    assert cycles["readiness"].executable is False
+    assert readiness_checks[PreflightCode.KRX_SESSION_BLOCKED].state is PreflightState.BLOCK
+    assert readiness.global_executable is False
+    for code in (
+        PreflightCode.MOCK_TARGET_CONFIRMED,
+        PreflightCode.AUDIT_HEALTHY,
+        PreflightCode.UNRESOLVED_SCAN_CLEAR,
+    ):
+        assert readiness_checks[code].state is PreflightState.PASS
+
+    assert cycles["execution"].session is MarketSession.CONTINUOUS
+    assert cycles["execution"].executable is True
+    assert execution_checks[PreflightCode.KRX_SESSION_OPEN].state is PreflightState.PASS
+    assert all(check.state is PreflightState.PASS for check in execution.checks)
+    assert execution.global_executable is True
+
+    _, schedule = _table(_section(_text(), "일일 수동 운영 절차"))
+    rows = {(row["KST"], row["수동 명령"]): row for row in schedule}
+    readiness_row = rows[("08:50", "`bot status`")]
+    execution_row = rows[("09:10 직전", "`bot status`")]
+    assert "PRE_OPEN" in readiness_row["완료 조건"]
+    assert "KRX_SESSION_BLOCKED" in readiness_row["완료 조건"]
+    assert "`BLOCK`" in readiness_row["완료 조건"]
+    assert "실행 가능: 아니오" in readiness_row["완료 조건"]
+    assert "CONTINUOUS" in execution_row["완료 조건"]
+    assert "KRX_SESSION_OPEN" in execution_row["완료 조건"]
+    assert "`PASS`" in execution_row["완료 조건"]
+    assert "실행 가능: 예" in execution_row["완료 조건"]
 
 
 def test_daily_completion_contract() -> None:
