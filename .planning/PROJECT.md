@@ -43,6 +43,8 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 - [x] EVID-02: every attempted screen/run ticker records exactly one normalized terminal outcome — Phase 6
 - [x] EVID-03: order intent, submission, ambiguity, duplicate suppression, and reconciliation remain attributable to ticker and run — Phase 6
 - [x] EVID-04: executable cycles enforce and record KRX session, completed-bar cutoff, and pre-submit quote freshness — Phase 6
+- [x] RUN-01/RUN-02: Korean fixed-session operator runbook defines preflight, execution, evidence review, failure triage, and safe recovery — Phase 8
+- [x] REP-01/REP-02: SQLite audit history and replay evidence produce deterministic daily, period, and replay decision reports with explicit denominators and unknown states — Phase 8
 
 - [x] CFG-01: typed gitignored settings load KIS and LLM secrets without leaking them to logs — Phase 1
 - [x] CFG-02: trading mode atomically selects mock or real KIS credentials, endpoint, and TR_ID — Phase 1
@@ -68,13 +70,10 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 
 ### Active
 
-- [ ] Daily mock-operation runbook defines when and how the operator runs `bot run`, `bot screen`,
-  and `bot status`, and where to look when a cycle fails.
 - [ ] Historical replay can run screener + fixture signal + execution gate without live LLM calls to
   evaluate whether BUY policy is too strict or too loose.
 - [ ] Mock-account soak workflow supports repeated dry-run/mock execution with audit persistence and
   observable handling for duplicate orders, API failures, stale data, and timeouts.
-- [ ] Audit history can be summarized into human-readable daily decision reports.
 - [ ] Risk policy and real-money promotion readiness can be reviewed from collected replay/soak data.
 
 ### Out of Scope
@@ -142,4 +141,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after completing Phase 6 — Audit Evidence & Cycle Boundaries*
+*Last updated: 2026-07-14 after completing Phase 8 — Decision Reports & Operator Runbook*
