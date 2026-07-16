@@ -40,8 +40,10 @@ class DayCreditState(StrEnum):
 
 class ReconciliationStage(StrEnum):
     STARTUP = "STARTUP"
+    RESUME = "RESUME"
     PRE_RUN = "PRE_RUN"
     POST_SUBMISSION = "POST_SUBMISSION"
+    PRE_FINALIZE = "PRE_FINALIZE"
     PRE_FINALIZATION = "PRE_FINALIZATION"
 
 
@@ -135,4 +137,3 @@ class BrokerPageEnvelope:
         object.__setattr__(self, "completeness", PageCompleteness(self.completeness))
         object.__setattr__(self, "rows", tuple(MappingProxyType(dict(row)) for row in self.rows))
         object.__setattr__(self, "summary", MappingProxyType(dict(self.summary)))
-

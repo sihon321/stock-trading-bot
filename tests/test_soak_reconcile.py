@@ -6,9 +6,11 @@ from test_kis_order import DOMAIN, _FakeClient, _FakeTokenManager
 from trading_bot.kis_order import KisOrderAccount, KisOrderAdapter
 from trading_bot.soak_compat import probe_mock_profile
 from trading_bot.soak_models import (
+    BrokerPageEnvelope,
     CompatibilityState,
     MockTrProfile,
     PageCompleteness,
+    ReconciliationVerdict,
     SoakEvidenceClass,
 )
 from trading_bot.soak_reconcile import (
@@ -269,4 +271,4 @@ def test_complete_contradiction_is_dimensioned_and_permanently_latches_campaign(
     persisted = conn.execute(
         "SELECT snapshot_id,run_id,ticker,order_intent_id FROM soak_comparisons"
     ).fetchone()
-    assert persisted == ("snapshot-contradiction", "run-1", "005930", "intent-1")
+    assert tuple(persisted) == ("snapshot-contradiction", "run-1", "005930", "intent-1")
