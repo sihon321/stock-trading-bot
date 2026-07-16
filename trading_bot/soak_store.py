@@ -51,7 +51,8 @@ def fingerprint_accepted_profile(profile: Mapping[str, Any]) -> str:
 
 
 _TABLES: tuple[str, ...] = (
-    "soak_identity_receipts", "soak_days", "soak_events", "soak_snapshot_orders",
+    "soak_identity_receipts", "soak_days", "soak_events", "soak_snapshots",
+    "soak_snapshot_orders",
     "soak_snapshot_fills", "soak_snapshot_holdings", "soak_snapshot_accounts",
     "soak_comparisons", "soak_ambiguity_observations", "soak_ticker_freezes",
     "soak_drill_links",
@@ -78,6 +79,7 @@ def migrate_soak_store(
                 availability_failure_budget INTEGER NOT NULL CHECK(availability_failure_budget > 0),
                 availability_failures_used INTEGER NOT NULL DEFAULT 0 CHECK(availability_failures_used >= 0),
                 safety_failure_code TEXT,
+                availability_failure_code TEXT,
                 accepted_profile_fingerprint TEXT NOT NULL,
                 accepted_profile_version TEXT NOT NULL,
                 field_contract_version TEXT NOT NULL,
@@ -87,7 +89,8 @@ def migrate_soak_store(
                 ambiguity_max_observations INTEGER NOT NULL CHECK(ambiguity_max_observations > 0),
                 created_at TEXT NOT NULL,
                 CHECK(ambiguity_poll_cadence_seconds <= ambiguity_window_seconds),
-                CHECK(state != 'FAILED' OR safety_failure_code IS NOT NULL)
+                CHECK(state != 'FAILED' OR safety_failure_code IS NOT NULL
+                      OR availability_failure_code IS NOT NULL)
             )"""
         )
         conn.execute(
@@ -111,6 +114,20 @@ def migrate_soak_store(
             BEGIN SELECT RAISE(ABORT, 'failed campaign is terminal'); END"""
         )
         conn.execute(
+            """CREATE TRIGGER soak_campaign_latches_monotonic
+            BEFORE UPDATE ON soak_campaigns
+            WHEN NEW.availability_failures_used < OLD.availability_failures_used
+              OR (OLD.safety_failure_code IS NOT NULL
+                  AND NEW.safety_failure_code IS NOT OLD.safety_failure_code)
+              OR (OLD.availability_failure_code IS NOT NULL
+                  AND NEW.availability_failure_code IS NOT OLD.availability_failure_code)
+            BEGIN SELECT RAISE(ABORT, 'campaign latches are monotonic'); END"""
+        )
+        conn.execute(
+            """CREATE TRIGGER soak_campaign_no_delete BEFORE DELETE ON soak_campaigns
+            BEGIN SELECT RAISE(ABORT, 'campaign evidence cannot be deleted'); END"""
+        )
+        conn.execute(
             """CREATE TABLE soak_identity_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 receipt_id TEXT NOT NULL UNIQUE,
@@ -119,6 +136,14 @@ def migrate_soak_store(
                 account_suffix TEXT NOT NULL, profile_version TEXT NOT NULL,
                 policy_version TEXT NOT NULL, detail_json TEXT NOT NULL, observed_at TEXT NOT NULL
             )"""
+        )
+        conn.execute(
+            """CREATE TRIGGER soak_identity_profile_matches_campaign
+            BEFORE INSERT ON soak_identity_receipts
+            WHEN NEW.profile_version != (
+                SELECT accepted_profile_version FROM soak_campaigns
+                WHERE campaign_id=NEW.campaign_id)
+            BEGIN SELECT RAISE(ABORT, 'identity profile does not match campaign'); END"""
         )
         conn.execute(
             """CREATE TABLE soak_days (
@@ -274,19 +299,23 @@ def create_campaign(
 ) -> dict[str, Any]:
     if not campaign_id or not accepted_profile_fingerprint:
         raise ValueError("campaign_id and accepted profile fingerprint are required")
-    conn.execute(
-        """INSERT INTO soak_campaigns (
-        campaign_id,state,target_eligible_days,availability_failure_budget,
-        accepted_profile_fingerprint,accepted_profile_version,field_contract_version,
-        ambiguity_policy_version,ambiguity_window_seconds,ambiguity_poll_cadence_seconds,
-        ambiguity_max_observations,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (campaign_id, CampaignState.ACTIVE.value, target_eligible_days,
-         availability_failure_budget, accepted_profile_fingerprint,
-         accepted_profile_version, field_contract_version, ambiguity_policy_version,
-         ambiguity_window_seconds, ambiguity_poll_cadence_seconds,
-         ambiguity_max_observations, created_at or _now()),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            """INSERT INTO soak_campaigns (
+            campaign_id,state,target_eligible_days,availability_failure_budget,
+            accepted_profile_fingerprint,accepted_profile_version,field_contract_version,
+            ambiguity_policy_version,ambiguity_window_seconds,ambiguity_poll_cadence_seconds,
+            ambiguity_max_observations,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (campaign_id, CampaignState.ACTIVE.value, target_eligible_days,
+             availability_failure_budget, accepted_profile_fingerprint,
+             accepted_profile_version, field_contract_version, ambiguity_policy_version,
+             ambiguity_window_seconds, ambiguity_poll_cadence_seconds,
+             ambiguity_max_observations, created_at or _now()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return load_campaign_state(conn, campaign_id=campaign_id)
 
 
@@ -298,6 +327,8 @@ def append_identity_receipt(
 ) -> int:
     if target != "mock":
         raise ValueError("soak identity target must be mock")
+    if re.fullmatch(r"[0-9]{4}", account_suffix) is None:
+        raise ValueError("account_suffix must contain exactly four digits")
     return _write(conn, """INSERT INTO soak_identity_receipts
         (receipt_id,campaign_id,target,domain_class,account_suffix,profile_version,
          policy_version,detail_json,observed_at) VALUES (?,?,?,?,?,?,?,?,?)""",
@@ -336,6 +367,85 @@ def append_campaign_event(
          evidence_class,detail_json,observed_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (observation_id,campaign_id,run_id,ticker,order_intent_id,drill_id,event_code,
          evidence,_detail(detail),observed_at or _now()))
+
+
+def consume_availability_failure(
+    conn: sqlite3.Connection, *, campaign_id: str, reason_code: str,
+    run_id: str | None = None, observed_at: str | None = None,
+) -> dict[str, Any]:
+    """Consume one D-08 budget unit without setting the safety-breach latch."""
+
+    _code(reason_code, "reason_code")
+    timestamp = observed_at or _now()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT state, availability_failures_used, availability_failure_budget
+               FROM soak_campaigns WHERE campaign_id=?""", (campaign_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(campaign_id)
+        if row[0] != CampaignState.ACTIVE.value:
+            raise ValueError("campaign is not active")
+        used = int(row[1]) + 1
+        exceeded = used > int(row[2])
+        conn.execute(
+            """UPDATE soak_campaigns SET availability_failures_used=?,
+               state=?, availability_failure_code=? WHERE campaign_id=?""",
+            (used, CampaignState.FAILED.value if exceeded else CampaignState.ACTIVE.value,
+             "D08_BUDGET_EXCEEDED" if exceeded else None, campaign_id),
+        )
+        conn.execute(
+            """INSERT INTO soak_events
+               (campaign_id,run_id,event_code,detail_json,observed_at)
+               VALUES (?,?,?,?,?)""",
+            (campaign_id,run_id,
+             "AVAILABILITY_BUDGET_EXCEEDED" if exceeded else "AVAILABILITY_FAILURE_CONSUMED",
+             _detail({"reason_code": reason_code, "failures_used": used}), timestamp),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return load_campaign_state(conn, campaign_id=campaign_id)
+
+
+def latch_safety_failure(
+    conn: sqlite3.Connection, *, campaign_id: str, reason_code: str,
+    run_id: str | None = None, ticker: str | None = None,
+    order_intent_id: str | None = None, observed_at: str | None = None,
+) -> dict[str, Any]:
+    """Permanently latch one stable D-09 safety breach."""
+
+    code = _code(reason_code, "reason_code")
+    if not code.startswith("D09_"):
+        raise ValueError("safety failure reason must be a D09 stable code")
+    timestamp = observed_at or _now()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT state FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(campaign_id)
+        if row[0] != CampaignState.ACTIVE.value:
+            raise ValueError("campaign is not active")
+        conn.execute(
+            """UPDATE soak_campaigns SET state='FAILED', safety_failure_code=?
+               WHERE campaign_id=? AND state='ACTIVE'""", (code,campaign_id),
+        )
+        conn.execute(
+            """INSERT INTO soak_events
+               (campaign_id,run_id,ticker,order_intent_id,event_code,detail_json,observed_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (campaign_id,run_id,ticker,order_intent_id,"SAFETY_FAILURE_LATCHED",
+             _detail({"reason_code": code}),timestamp),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return load_campaign_state(conn, campaign_id=campaign_id)
 
 
 def append_snapshot(
@@ -455,6 +565,80 @@ def append_drill_link(
          _detail(detail),observed_at or _now()))
 
 
+def freeze_ticker(
+    conn: sqlite3.Connection, *, freeze_id: str, campaign_id: str, ticker: str,
+    freeze_kind: str, order_intent_id: str | None = None,
+    detail: Mapping[str, Any] | None = None, observed_at: str | None = None,
+) -> int:
+    if freeze_kind not in {"AMBIGUITY", "REMAINING_ORDER"}:
+        raise ValueError("freeze_kind must be AMBIGUITY or REMAINING_ORDER")
+    active = conn.execute(
+        """SELECT 1 FROM soak_ticker_freezes f WHERE f.campaign_id=? AND f.ticker=?
+           AND f.state='FROZEN' AND NOT EXISTS (
+             SELECT 1 FROM soak_ticker_freezes r
+             WHERE r.freeze_id=f.freeze_id AND r.state='RELEASED')""",
+        (campaign_id,ticker),
+    ).fetchone()
+    if active is not None:
+        raise ValueError("ticker already has an active freeze")
+    return _write(conn, """INSERT INTO soak_ticker_freezes
+        (freeze_id,campaign_id,ticker,order_intent_id,freeze_kind,state,
+         detail_json,observed_at) VALUES (?,?,?,?,?,'FROZEN',?,?)""",
+        (freeze_id,campaign_id,ticker,order_intent_id,freeze_kind,
+         _detail(detail),observed_at or _now()))
+
+
+def transition_freeze(
+    conn: sqlite3.Connection, *, freeze_id: str, release_evidence_type: str,
+    release_evidence_id: str, detail: Mapping[str, Any] | None = None,
+    observed_at: str | None = None,
+) -> int:
+    """Append a RELEASED transition only for determinate terminal broker truth."""
+
+    frozen = conn.execute(
+        """SELECT id,campaign_id,ticker,order_intent_id,freeze_kind
+           FROM soak_ticker_freezes WHERE freeze_id=? AND state='FROZEN'""",
+        (freeze_id,),
+    ).fetchone()
+    if frozen is None:
+        raise ValueError("freeze does not exist")
+    if conn.execute(
+        "SELECT 1 FROM soak_ticker_freezes WHERE freeze_id=? AND state='RELEASED'",
+        (freeze_id,),
+    ).fetchone() is not None:
+        raise ValueError("freeze is already released")
+    if release_evidence_type == "COMPARISON":
+        evidence = conn.execute(
+            """SELECT campaign_id,ticker,order_intent_id,verdict,remaining_order_terminal
+               FROM soak_comparisons WHERE comparison_id=?""", (release_evidence_id,)
+        ).fetchone()
+        determinate = evidence is not None and evidence[3] == ReconciliationVerdict.MATCHED.value
+    elif release_evidence_type == "AMBIGUITY_OBSERVATION":
+        evidence = conn.execute(
+            """SELECT campaign_id,ticker,order_intent_id,verdict,remaining_order_terminal
+               FROM soak_ambiguity_observations WHERE observation_id=?""",
+            (release_evidence_id,),
+        ).fetchone()
+        determinate = evidence is not None and evidence[3] in {
+            AmbiguityVerdict.NO_MATCH_CONFIRMED.value,
+            AmbiguityVerdict.ONE_MATCH_DETERMINATE.value,
+        }
+    else:
+        raise ValueError("unknown release evidence type")
+    same_subject = evidence is not None and (
+        evidence[0] == frozen[1] and evidence[1] == frozen[2]
+        and evidence[2] == frozen[3]
+    )
+    if not determinate or not same_subject or not bool(evidence[4]):
+        raise ValueError("freeze release requires determinate terminal broker evidence")
+    return _write(conn, """INSERT INTO soak_ticker_freezes
+        (freeze_id,campaign_id,ticker,order_intent_id,freeze_kind,state,
+         prior_transition_id,release_evidence_type,release_evidence_id,detail_json,observed_at)
+        VALUES (?,?,?,?,?,'RELEASED',?,?,?,?,?)""",
+        (freeze_id,frozen[1],frozen[2],frozen[3],frozen[4],frozen[0],
+         release_evidence_type,release_evidence_id,_detail(detail),observed_at or _now()))
+
+
 def load_campaign_state(conn: sqlite3.Connection, *, campaign_id: str) -> dict[str, Any]:
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)).fetchone()
@@ -492,7 +676,8 @@ def bind(conn: sqlite3.Connection) -> _BoundStore:
 __all__ = [
     "SOAK_SCHEMA_VERSION", "connect_soak_store", "migrate_soak_store",
     "fingerprint_accepted_profile", "create_campaign", "append_identity_receipt",
-    "designate_day", "append_campaign_event", "append_snapshot", "read_snapshot",
+    "designate_day", "append_campaign_event", "consume_availability_failure",
+    "latch_safety_failure", "append_snapshot", "read_snapshot",
     "append_comparison", "append_ambiguity_observation", "append_drill_link",
-    "load_campaign_state", "bind",
+    "freeze_ticker", "transition_freeze", "load_campaign_state", "bind",
 ]
