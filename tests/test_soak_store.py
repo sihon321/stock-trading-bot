@@ -80,7 +80,11 @@ def test_immutable_campaign_policy_and_terminal_failure_are_database_enforced(tm
     for column, value in immutable_columns.items():
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(f"UPDATE soak_campaigns SET {column}=? WHERE campaign_id='campaign-1'", (value,))
-    soak_store.latch_safety_failure(conn, campaign_id="campaign-1", reason_code="D09_DUPLICATE_ORDER")
+    conn.execute(
+        "UPDATE soak_campaigns SET state='FAILED', safety_failure_code='D09_DUPLICATE_ORDER' "
+        "WHERE campaign_id='campaign-1'"
+    )
+    conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE soak_campaigns SET state='ACTIVE' WHERE campaign_id='campaign-1'")
 
