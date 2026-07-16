@@ -150,16 +150,44 @@ Plans:
 **Plans**: 10 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 09-01-PLAN.md — Establish mock-only contracts and deterministic KIS compatibility probing.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 09-02-PLAN.md — Authenticate and approve the accepted mock profile using read-only calls.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 09-03-PLAN.md — Build the immutable campaign and broker-evidence ledger.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 09-04-PLAN.md — Implement complete broker-truth reconciliation and restart freezes.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 09-09-PLAN.md — Implement the durable non-credit single-shot proof-order service and CLI path.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [ ] 09-10-PLAN.md — Approve one authenticated proof order through the implemented durable path.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
 - [ ] 09-05-PLAN.md — Orchestrate explicit mock soak campaign commands and day accounting.
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
 - [ ] 09-06-PLAN.md — Add the independent fault controller and all required drills.
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
 - [ ] 09-07-PLAN.md — Publish read-only soak reports and the Korean operator procedure.
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
 - [ ] 09-08-PLAN.md — Complete authenticated designated-day, drill, and 20-day UAT gates.
 
 ### Phase 10: Advisory Risk Calibration & Promotion Readiness
