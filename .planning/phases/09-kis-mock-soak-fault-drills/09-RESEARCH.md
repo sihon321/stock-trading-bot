@@ -410,7 +410,7 @@ The planner should keep these as multiple small PLAN.md files with the adapter c
    - Consumption contract: Plan 03 persists its profile fingerprint/version at campaign creation; Plans 04, 09, and all campaign work must reject any different runtime profile.
 
 2. **What exact normalized fields are present for mock open/no-fill/partial-fill and available cash? — RESOLVED BY TWO BLOCKING ARTIFACTS**
-   - `accepted-profile.json` freezes the authenticated allowlisted field-name/value-shape contract; `proof-order.json`, created by 09-09 only after Plans 03–04, freezes one durable order/fill/open-quantity/holding/cash comparison and its stable cross-store IDs.
+   - `accepted-profile.json` freezes the authenticated allowlisted field-name/value-shape contract; Plan 09 implements the durable proof path after Plans 03–04, and `proof-order.json`, created by the 09-10 authenticated checkpoint through that path, freezes one durable order/fill/open-quantity/holding/cash comparison and its stable cross-store IDs.
    - Unknown/missing semantics at either checkpoint block approval; raw payloads and unrelated account rows are never retained.
 
 3. **What bounded ambiguity inquiry window and cadence are justified? — RESOLVED AS VERSIONED CAMPAIGN POLICY**

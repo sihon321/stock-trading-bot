@@ -1,8 +1,8 @@
 # Phase 9: KIS Mock Soak & Fault Drills - Pattern Map
 
 **Mapped:** 2026-07-16
-**Files analyzed:** 21 new/modified files
-**Analogs found:** 21 / 21
+**Files analyzed:** 23 new/modified files
+**Analogs found:** 23 / 23
 
 ## File Classification
 
@@ -14,6 +14,7 @@
 | `trading_bot/kis_order.py` | provider / adapter | request-response / paginated batch | existing `KisOrderAdapter` query legs | in-place extension; current contract is incomplete |
 | `trading_bot/soak_store.py` | store | CRUD / append-only file-I/O | `trading_bot/sqlite_audit.py` | exact role and flow |
 | `trading_bot/soak_reconcile.py` | service | request-response / transform / batch | `trading_bot/kis_broker.py` reconciliation path | exact domain, broader broker-truth projection |
+| `trading_bot/soak_proof.py` | service / fixture exporter | event-driven / request-response / file-I/O | `trading_bot/kis_broker.py` + replay fixture conflict checks | combined analog, strengthened pre-attempt durability and cross-store validation |
 | `trading_bot/soak_campaign.py` | service / state machine | event-driven / CRUD | `trading_bot/market_cycle.py` + `trading_bot/sqlite_audit.py` | role-match |
 | `trading_bot/soak_drills.py` | service / registry | event-driven | `trading_bot/cli.py` injected-collaborator orchestration | role-match |
 | `trading_bot/soak_controller.py` | store / controller | append-only file-I/O / event-driven | `trading_bot/sqlite_audit.py` | exact storage pattern, stronger durability policy |
@@ -23,6 +24,7 @@
 | `tests/test_soak_config.py` | test | request-response | `tests/test_config.py` | exact role |
 | `tests/test_soak_store.py` | test | CRUD / file-I/O | `tests/test_sqlite_audit.py` | exact role and flow |
 | `tests/test_soak_reconcile.py` | test | request-response / batch | `tests/test_kis_order.py` + `tests/test_kis_broker.py` | exact domain |
+| `tests/test_soak_proof.py` | test | event-driven / CRUD / restart / file-I/O | `tests/test_kis_broker.py` + `tests/test_sqlite_audit.py` + replay fixture tests | combined analog for one-POST durability proof |
 | `tests/test_soak_campaign.py` | test | event-driven / CRUD | `tests/test_sqlite_audit.py` + `tests/test_reporting.py` | role-match |
 | `tests/test_soak_drills.py` | test | event-driven / subprocess | `tests/test_kis_broker.py` + `tests/test_cli.py` | role-match; subprocess restart is new |
 | `tests/test_soak_cli.py` | test | request-response | `tests/test_cli.py` | exact role and flow |
@@ -290,6 +292,16 @@ The current `_find_existing_order` first-match loop (`trading_bot/kis_broker.py:
 
 ---
 
+### `trading_bot/soak_proof.py` (service / fixture exporter, event-driven / request-response / file-I/O)
+
+**Analogs:** append-before-POST ordering in `trading_bot/kis_broker.py`, immediate-commit/read-back evidence in `trading_bot/sqlite_audit.py`, and conflict-safe replay fixture publication.
+
+Create a dedicated proof composition/service rather than making the checkpoint assemble lower-level calls. The service creates or loads a durable `PROOF_ORDER` campaign that is database-enforced non-credit, freezes the accepted-profile fingerprint and every versioned ambiguity-policy field, commits primary intent/attempt evidence, verifies it through a fresh connection, and only then releases a single-use mock POST capability. Every acknowledgement path delegates to Plan 04 comparison; restart performs freeze reconstruction and has no submission capability for an existing intent.
+
+Before returning success or publishing the fixture, resolve campaign/snapshot/comparison/freeze IDs in the soak store and run/ticker/order-intent/submission IDs in the primary audit store. Fixture publication follows the existing stable-content pattern: versioned allowlist, recursive sanitizer, deterministic bytes, exclusive/atomic publication, identical-byte idempotency, and conflict refusal. Authenticated provenance is mandatory; synthetic evidence can exercise tests but cannot be exported as observed proof.
+
+---
+
 ### `trading_bot/soak_campaign.py` (service / state machine, event-driven / CRUD)
 
 **Analogs:** pure injected policy in `trading_bot/market_cycle.py` and guarded transitions in `trading_bot/sqlite_audit.py`.
@@ -467,6 +479,10 @@ assert adapter.post_attempts == 1
 assert broker.last_reconciliation.remaining_qty == 3
 ```
 
+### `tests/test_soak_proof.py`
+
+Combine the broker event-order/cardinality tests with SQLite second-connection/reopen checks. Assert primary intent and `SUBMISSION_ATTEMPTED` rows are committed and independently readable before the guarded adapter receives its sole call; accepted-then-timeout still totals one POST, and every later reconciliation/restart branch totals zero. Cover immutable policy drift, permanent non-credit proof kind, ambiguity cardinality, freeze reconstruction, missing/wrong-store IDs, recursive secret/full-account/raw-provider/unrelated-row rejection, forged provenance, atomic publication, identical-byte reuse, and conflict refusal.
+
 ### `tests/test_soak_campaign.py`
 
 Use table-driven policy tests like the lifecycle matrix in `tests/test_reporting.py:211-220`, plus real SQLite state transitions. Cover HOLD/zero-order credit, closed/unknown dates, reruns, drill/dry-run exclusion, availability budget without clean-streak reset, budget exceed failure, and irreversibility of every D-09 breach.
@@ -553,6 +569,7 @@ In particular:
 5. Do not grant day credit until terminal daily report and final authenticated reconciliation are complete.
 6. Do not let determinate partial/no-fill evidence clear a still-open ticker freeze.
 7. Automated/synthetic tests do not satisfy authenticated `KIS_OBSERVED` evidence or the 20 eligible-day campaign.
+8. Implement and test the durable non-credit proof service/CLI before the authenticated proof checkpoint; the checkpoint executes the service and does not manually wire persistence, POST, reconciliation, or export.
 
 ## Metadata
 

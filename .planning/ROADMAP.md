@@ -147,7 +147,7 @@ Plans:
   3. Operator can reconcile mock orders, fills, open orders, and account state to broker truth after duplicate reruns, ambiguous submissions, and process restarts.
   4. Operator can execute and retain evidence for the required stale-data, LLM, KIS, accepted-then-timeout, throttling, fill, interruption, notification, and audit fault drills, with synthetic drills distinguished from KIS-observed evidence.
 
-**Plans**: 9 plans
+**Plans**: 10 plans
 
 Plans:
 
@@ -155,7 +155,8 @@ Plans:
 - [ ] 09-02-PLAN.md — Authenticate and approve the accepted mock profile using read-only calls.
 - [ ] 09-03-PLAN.md — Build the immutable campaign and broker-evidence ledger.
 - [ ] 09-04-PLAN.md — Implement complete broker-truth reconciliation and restart freezes.
-- [ ] 09-09-PLAN.md — Approve one durable single-shot proof order after storage and reconciliation exist.
+- [ ] 09-09-PLAN.md — Implement the durable non-credit single-shot proof-order service and CLI path.
+- [ ] 09-10-PLAN.md — Approve one authenticated proof order through the implemented durable path.
 - [ ] 09-05-PLAN.md — Orchestrate explicit mock soak campaign commands and day accounting.
 - [ ] 09-06-PLAN.md — Add the independent fault controller and all required drills.
 - [ ] 09-07-PLAN.md — Publish read-only soak reports and the Korean operator procedure.
@@ -189,5 +190,5 @@ Plans:
 | 6. Audit Evidence & Cycle Boundaries | v1.1 | 5/5 | Complete    | 2026-07-11 |
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
-| 9. KIS Mock Soak & Fault Drills | v1.1 | 0/9 | Planned | - |
+| 9. KIS Mock Soak & Fault Drills | v1.1 | 0/10 | Planned | - |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 0/TBD | Not started | - |

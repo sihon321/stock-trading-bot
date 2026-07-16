@@ -16,7 +16,7 @@ updated: 2026-07-16
 |----------|-------|
 | **Framework** | pytest 8.4.2 |
 | **Config file** | `pyproject.toml` |
-| **Quick run command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_soak_config.py tests/test_soak_store.py tests/test_soak_reconcile.py -x` |
+| **Quick run command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_soak_config.py tests/test_soak_store.py tests/test_soak_reconcile.py tests/test_soak_proof.py -x` |
 | **Full suite command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` |
 | **Estimated runtime** | focused checks <60 seconds; full suite after every wave |
 
@@ -39,15 +39,17 @@ updated: 2026-07-16
 | 09-03-02 | 09-03 | 3 | SOAK-02, SOAK-03 | T-09-08,09 | Accounting and freezes remain irreversible across restart. | `pytest -q tests/test_soak_store.py -k 'campaign or budget or failure or freeze or restart'` | same |
 | 09-04-01 | 09-04 | 4 | SOAK-03 | T-09-13,15,16 | Complete touched-state snapshots reconcile every required dimension. | `pytest -q tests/test_soak_reconcile.py -k 'snapshot or pagination or comparison or unrelated'` | same |
 | 09-04-02 | 09-04 | 4 | SOAK-03 | T-09-12,14 | Immutable-policy ambiguity/restart reconciliation never POSTs. | `pytest -q tests/test_soak_reconcile.py tests/test_kis_broker.py -k 'ambiguous or partial or restart or post'` | same |
-| 09-09-01 | 09-09 | 5 | SOAK-01, SOAK-03 | T-09-34–37 | One authenticated proof POST is durably reconciled or truthfully frozen. | Focused 09-09 command + blocking manual approval | `proof-order.json` |
-| 09-05-01 | 09-05 | 6 | SOAK-01–03 | T-09-18,20 | Day, budget, safety, and freeze dimensions remain independent. | `pytest -q tests/test_soak_campaign.py tests/test_soak_store.py -x` | `tests/test_soak_campaign.py` |
-| 09-05-02 | 09-05 | 6 | SOAK-01–03 | T-09-17,19 | Triple-store commands execute reconciliation in exact order. | `pytest -q tests/test_soak_cli.py tests/test_soak_campaign.py tests/test_cli.py -x` | `tests/test_soak_cli.py` |
-| 09-06-01 | 09-06 | 7 | SOAK-04 | T-09-22,25 | Controller commits/read-backs before injection and survives failures. | `pytest -q tests/test_soak_drills.py -k 'controller or journal or wal or restart or alias'` | `tests/test_soak_drills.py` |
-| 09-06-02 | 09-06 | 7 | SOAK-04 | T-09-21,23,24 | FaultName registry injects one boundary with correct POST count. | `pytest -q tests/test_soak_drills.py tests/test_soak_cli.py -x` | same |
-| 09-07-01 | 09-07 | 8 | SOAK-02–04 | T-09-26–28 | Reporting opens all stores read-only and validates primary references. | `pytest -q tests/test_soak_reporting.py tests/test_reporting.py -x` | `tests/test_soak_reporting.py` |
-| 09-07-02 | 09-07 | 8 | SOAK-02–04 | T-09-29 | Status/runbook match registry, gates, recovery, and prohibitions. | `pytest -q tests/test_soak_cli.py tests/test_operator_runbook.py tests/test_soak_reporting.py -x` | `tests/test_operator_runbook.py` |
-| 09-08-01 | 09-08 | 9 | SOAK-01–04 | T-09-30,32 | One real day and all drills have complete three-store evidence. | Full suite + blocking manual UAT | runtime three-store evidence |
-| 09-08-02 | 09-08 | 9 | SOAK-01–04 | T-09-31,33 | Twenty eligible days finish within budget with zero breach. | Full suite + elapsed blocking manual UAT | runtime three-store evidence |
+| 09-09-01 | 09-09 | 5 | SOAK-01, SOAK-03 | T-09-34–36 | Durable non-credit proof campaign commits/read-backs primary attempt evidence before one POST and reconstructs freezes without resubmission. | `pytest -q tests/test_soak_proof.py tests/test_soak_store.py tests/test_soak_reconcile.py tests/test_kis_broker.py -x` | `tests/test_soak_proof.py` |
+| 09-09-02 | 09-09 | 5 | SOAK-01, SOAK-03 | T-09-36,37 | Explicit proof CLI is mock-only and fixture export validates cross-IDs/provenance/sanitation atomically. | `pytest -q tests/test_soak_proof.py tests/test_soak_cli.py tests/test_cli.py -x` | same |
+| 09-10-01 | 09-10 | 6 | SOAK-01, SOAK-03 | T-09-38–40 | One authenticated execution of the implemented route is durably reconciled or truthfully frozen. | Focused 09-10 command + blocking manual approval | `proof-order.json` |
+| 09-05-01 | 09-05 | 7 | SOAK-01–03 | T-09-18,20 | Day, budget, safety, and freeze dimensions remain independent. | `pytest -q tests/test_soak_campaign.py tests/test_soak_store.py -x` | `tests/test_soak_campaign.py` |
+| 09-05-02 | 09-05 | 7 | SOAK-01–03 | T-09-17,19 | Triple-store commands execute reconciliation in exact order. | `pytest -q tests/test_soak_cli.py tests/test_soak_campaign.py tests/test_cli.py -x` | `tests/test_soak_cli.py` |
+| 09-06-01 | 09-06 | 8 | SOAK-04 | T-09-22,25 | Controller commits/read-backs before injection and survives failures. | `pytest -q tests/test_soak_drills.py -k 'controller or journal or wal or restart or alias'` | `tests/test_soak_drills.py` |
+| 09-06-02 | 09-06 | 8 | SOAK-04 | T-09-21,23,24 | FaultName registry injects one boundary with correct POST count. | `pytest -q tests/test_soak_drills.py tests/test_soak_cli.py -x` | same |
+| 09-07-01 | 09-07 | 9 | SOAK-02–04 | T-09-26–28 | Reporting opens all stores read-only and validates primary references. | `pytest -q tests/test_soak_reporting.py tests/test_reporting.py -x` | `tests/test_soak_reporting.py` |
+| 09-07-02 | 09-07 | 9 | SOAK-02–04 | T-09-29 | Status/runbook match registry, gates, recovery, and prohibitions. | `pytest -q tests/test_soak_cli.py tests/test_operator_runbook.py tests/test_soak_reporting.py -x` | `tests/test_operator_runbook.py` |
+| 09-08-01 | 09-08 | 10 | SOAK-01–04 | T-09-30,32 | One real day and all drills have complete three-store evidence. | Full suite + blocking manual UAT | runtime three-store evidence |
+| 09-08-02 | 09-08 | 10 | SOAK-01–04 | T-09-31,33 | Twenty eligible days finish within budget with zero breach. | Full suite + elapsed blocking manual UAT | runtime three-store evidence |
 
 All commands above use `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m` before `pytest` when executed.
 
@@ -56,13 +58,14 @@ All commands above use `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m` befor
 - [ ] `tests/test_soak_config.py`
 - [ ] `tests/test_soak_store.py`
 - [ ] `tests/test_soak_reconcile.py`
+- [ ] `tests/test_soak_proof.py`
 - [ ] `tests/test_soak_campaign.py`
 - [ ] `tests/test_soak_drills.py`
 - [ ] `tests/test_soak_cli.py`
 - [ ] `tests/test_soak_reporting.py`
 - [ ] `tests/test_operator_runbook.py`
 - [ ] `tests/fixtures/kis_mock/accepted-profile.json` via 09-02 blocking authenticated read-only checkpoint
-- [ ] `tests/fixtures/kis_mock/proof-order.json` via 09-09 blocking authenticated proof checkpoint
+- [ ] `tests/fixtures/kis_mock/proof-order.json` via 09-10 blocking authenticated proof checkpoint
 
 `wave_0_complete` remains false until these artifacts exist; `nyquist_compliant` is true because every final task has a bounded automated check and every irreducibly external behavior has an explicit blocking checkpoint.
 
@@ -71,7 +74,7 @@ All commands above use `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m` befor
 | Plan/Task | Behavior | Blocking evidence |
 |-----------|----------|-------------------|
 | 09-02-01 | Accepted profile and fields | Sanitized complete POST-free authenticated fixture |
-| 09-09-01 | One proof order | Exactly one POST plus durable primary/soak comparison or persistent ambiguity freeze |
+| 09-10-01 | One proof order | Exactly one POST through the implemented Plan 09 service plus durable primary/soak comparison or persistent ambiguity freeze |
 | 09-08-01 | One designated day and all controlled drills | Complete KIS + primary/soak/controller report |
 | 09-08-02 | Twenty eligible days | Target/budget/permanent-safety final report with no unknown references |
 
