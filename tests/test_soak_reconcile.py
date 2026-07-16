@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 
@@ -14,15 +14,26 @@ from trading_bot.soak_models import (
     SoakEvidenceClass,
 )
 from trading_bot.soak_reconcile import (
+    AmbiguityPolicy,
+    AmbiguousIntent,
     BrokerSnapshot,
     ComparisonState,
+    ObservationWindow,
     SnapshotCampaign,
     SnapshotWindow,
     collect_broker_snapshot,
     compare_broker_truth,
+    match_ambiguous_intent,
     persist_reconciliation,
+    rebuild_ticker_freezes,
+    reconcile_ambiguous_submission,
 )
-from trading_bot.soak_store import connect_soak_store, create_campaign, load_campaign_state
+from trading_bot.soak_store import (
+    connect_soak_store,
+    create_campaign,
+    freeze_ticker,
+    load_campaign_state,
+)
 
 
 PROFILE = MockTrProfile(
@@ -272,3 +283,151 @@ def test_complete_contradiction_is_dimensioned_and_permanently_latches_campaign(
         "SELECT snapshot_id,run_id,ticker,order_intent_id FROM soak_comparisons"
     ).fetchone()
     assert tuple(persisted) == ("snapshot-contradiction", "run-1", "005930", "intent-1")
+
+
+def _intent() -> AmbiguousIntent:
+    return AmbiguousIntent(
+        campaign_id="campaign-1",
+        run_id="run-1",
+        order_intent_id="intent-1",
+        submission_id="submission-1",
+        account_suffix="5678",
+        ticker="005930",
+        side="BUY",
+        quantity=5,
+        snapped_price=70000,
+        submitted_at=datetime(2026, 7, 16, 1, 15, tzinfo=timezone.utc),
+    )
+
+
+def _ambiguity_snapshot(order_ids=(), *, complete=True, terminal=True) -> BrokerSnapshot:
+    orders = tuple(
+        {
+            "order_id": order_id, "ticker": "005930", "side": "BUY",
+            "ordered_qty": 5, "filled_qty": 5 if terminal else 2,
+            "remaining_qty": 0 if terminal else 3, "snapped_price": 70000,
+            "status": "FILLED" if terminal else "PARTIAL",
+            "order_date": "20260716", "order_time": "101500",
+        }
+        for order_id in order_ids
+    )
+    return BrokerSnapshot.from_normalized(
+        snapshot_id=f"snapshot-{'-'.join(order_ids) or 'none'}-{int(complete)}-{int(terminal)}",
+        campaign=_campaign(), stage="POST_SUBMISSION", window=_window(), orders=orders,
+        holdings=({"ticker": "005930", "quantity": 5 if terminal else 2, "available_quantity": 5 if terminal else 2, "average_price": 70000},),
+        account={"account_suffix": "5678", "available_cash": 900000, "total_value": 1250000},
+        completeness=PageCompleteness.COMPLETE if complete else PageCompleteness.INCOMPLETE,
+        reason_code="COMPLETE" if complete else "QUERY_UNAVAILABLE",
+    )
+
+
+def test_ambiguity_matcher_preserves_exact_three_way_cardinality() -> None:
+    window = ObservationWindow(
+        started_at=datetime(2026, 7, 16, 1, 14, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 7, 16, 1, 16, tzinfo=timezone.utc),
+        complete=True,
+    )
+
+    assert match_ambiguous_intent(_intent(), _ambiguity_snapshot(()), window).verdict is AmbiguityVerdict.NO_MATCH_CONFIRMED
+    one = match_ambiguous_intent(_intent(), _ambiguity_snapshot(("ORDER-1",)), window)
+    assert one.verdict is AmbiguityVerdict.ONE_MATCH_DETERMINATE
+    assert one.matched_order_ids == ("ORDER-1",)
+    assert match_ambiguous_intent(_intent(), _ambiguity_snapshot(("ORDER-1", "ORDER-2")), window).verdict is AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE
+    assert match_ambiguous_intent(_intent(), _ambiguity_snapshot(("ORDER-1",), complete=False), window).verdict is AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE
+
+
+class _SnapshotSequenceAdapter:
+    def __init__(self, snapshots) -> None:
+        self.snapshots = list(snapshots)
+        self.post_attempts = 1
+        self._active = None
+
+    def query_daily_ccld_pages(self, **kwargs):
+        self._active = self.snapshots.pop(0)
+        rows = tuple(
+            {
+                "odno": order.order_id, "pdno": order.ticker,
+                "sll_buy_dvsn_cd": "02", "ord_qty": str(order.ordered_qty),
+                "ord_unpr": str(int(order.snapped_price)),
+                "tot_ccld_qty": str(order.filled_qty), "rmn_qty": str(order.remaining_qty),
+                "ord_dt": order.order_date, "ord_tmd": order.order_time,
+            }
+            for order in self._active.orders
+        )
+        return BrokerPageEnvelope(
+            rows=rows, page_count=1, completeness=self._active.completeness,
+            reason_code=self._active.reason_code,
+        )
+
+    def query_balance_pages(self, **kwargs):
+        snapshot = self._active
+        return BrokerPageEnvelope(
+            rows=tuple(
+                {"pdno": item.ticker, "hldg_qty": str(item.quantity), "ord_psbl_qty": str(item.available_quantity), "pchs_avg_pric": str(item.average_price)}
+                for item in snapshot.holdings
+            ),
+            summary={"dnca_tot_amt": str(snapshot.account.available_cash), "tot_evlu_amt": str(snapshot.account.total_value)},
+            page_count=1, completeness=snapshot.completeness, reason_code=snapshot.reason_code,
+        )
+
+
+def test_ambiguity_reconciliation_appends_every_observation_and_never_posts(tmp_path) -> None:
+    conn = connect_soak_store(tmp_path / "soak.db")
+    create_campaign(
+        conn, campaign_id="campaign-1", accepted_profile_fingerprint="sha256:test",
+        accepted_profile_version=PROFILE.version, field_contract_version="fields-v1",
+        ambiguity_policy_version="ambiguity-v1", ambiguity_window_seconds=6,
+        ambiguity_poll_cadence_seconds=2, ambiguity_max_observations=3,
+    )
+    freeze_ticker(
+        conn, freeze_id="freeze-ambiguity", campaign_id="campaign-1",
+        ticker="005930", freeze_kind="AMBIGUITY", order_intent_id="intent-1",
+    )
+    adapter = _SnapshotSequenceAdapter([
+        _ambiguity_snapshot(("ORDER-1",)),
+        _ambiguity_snapshot(("ORDER-1",)),
+        _ambiguity_snapshot(("ORDER-1",)),
+    ])
+    sleeps = []
+
+    result = reconcile_ambiguous_submission(
+        conn=conn,
+        adapter=adapter,
+        campaign=_campaign(),
+        intent=_intent(),
+        query_window=_window(),
+        sleeper=sleeps.append,
+    )
+
+    assert result.verdict is AmbiguityVerdict.ONE_MATCH_DETERMINATE
+    assert result.matched_order_id == "ORDER-1"
+    assert result.reconciliation_complete is True
+    assert result.freeze_released is True
+    assert conn.execute("SELECT COUNT(*) FROM soak_ambiguity_observations").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM soak_snapshots").fetchone()[0] == 3
+    assert sleeps == [2, 2]
+    assert adapter.post_attempts == 1
+
+
+def test_partial_fill_freeze_rebuild_survives_reopen_and_day_credit_is_separate(tmp_path) -> None:
+    path = tmp_path / "soak.db"
+    conn = connect_soak_store(path)
+    create_campaign(
+        conn, campaign_id="campaign-1", accepted_profile_fingerprint="sha256:test",
+        accepted_profile_version=PROFILE.version, field_contract_version="fields-v1",
+        ambiguity_policy_version="ambiguity-v1", ambiguity_window_seconds=60,
+        ambiguity_poll_cadence_seconds=5, ambiguity_max_observations=12,
+    )
+    freeze_ticker(
+        conn, freeze_id="freeze-partial", campaign_id="campaign-1", ticker="005930",
+        freeze_kind="REMAINING_ORDER", order_intent_id="intent-1",
+    )
+    conn.close()
+
+    reopened = connect_soak_store(path)
+    rebuilt = rebuild_ticker_freezes(reopened, "campaign-1")
+
+    assert rebuilt["005930"].freeze_kind == "REMAINING_ORDER"
+    assert rebuilt["005930"].order_intent_id == "intent-1"
+    assert rebuilt["005930"].reconciliation_complete is False
+    assert load_campaign_state(reopened, campaign_id="campaign-1")["credited_days"] == 0
