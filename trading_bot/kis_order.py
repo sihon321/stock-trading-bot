@@ -11,7 +11,8 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from datetime import date
+from typing import Any, Mapping, Optional, Union
 
 from tenacity import (
     retry,
@@ -23,6 +24,7 @@ from tenacity import (
 from trading_bot.data_models import SourceHealth, SourceStatus
 from trading_bot.domain import Order, OrderSide
 from trading_bot.kis_auth import KisAuthError, KisTokenManager
+from trading_bot.soak_models import BrokerPageEnvelope, MockTrProfile, PageCompleteness
 
 _SOURCE = "kis_order"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
@@ -67,6 +69,24 @@ class KisOrderTrIds:
     sell: str
     daily_fills: str
     balance: str
+
+
+MOCK_TR_PROFILE_CANDIDATES = (
+    MockTrProfile(
+        version="repository-legacy-v1",
+        buy_tr_id="VTTC0802U",
+        sell_tr_id="VTTC0801U",
+        daily_ccld_tr_id="VTTC8001R",
+        balance_tr_id="VTTC8434R",
+    ),
+    MockTrProfile(
+        version="official-example-v1",
+        buy_tr_id="VTTC0012U",
+        sell_tr_id="VTTC0011U",
+        daily_ccld_tr_id="VTTC0081R",
+        balance_tr_id="VTTC8434R",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -240,6 +260,162 @@ class KisOrderAdapter:
             return _unavailable(str(exc))
         return self._parse_query_output(body, expected_shape=dict)
 
+    def query_daily_ccld_pages(
+        self,
+        *,
+        account: KisOrderAccount,
+        profile: MockTrProfile,
+        start_date: date,
+        end_date: date,
+        ticker: str = "",
+        side_code: str = "00",
+        fill_code: str = "00",
+        page_cap: int = 10,
+    ) -> BrokerPageEnvelope:
+        """Read every mock order/fill page or return explicit incompleteness."""
+
+        if page_cap <= 0:
+            raise ValueError("page_cap must be positive")
+        if ticker and not _is_valid_ticker(ticker):
+            return self._incomplete_envelope("INVALID_TICKER")
+        params = {
+            "CANO": account.cano,
+            "ACNT_PRDT_CD": account.account_product_code,
+            "INQR_STRT_DT": start_date.strftime("%Y%m%d"),
+            "INQR_END_DT": end_date.strftime("%Y%m%d"),
+            "SLL_BUY_DVSN_CD": side_code,
+            "INQR_DVSN": "00",
+            "PDNO": ticker,
+            "CCLD_DVSN": fill_code,
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        return self._query_pages(
+            path=_DAILY_CCLD_PATH,
+            tr_id=profile.daily_ccld_tr_id,
+            params=params,
+            page_cap=page_cap,
+            rows_key="output1",
+            row_allowlist={
+                "odno", "pdno", "sll_buy_dvsn_cd", "ord_qty", "ord_unpr",
+                "tot_ccld_qty", "avg_prvs", "rmn_qty", "ord_tmd", "ord_dt",
+            },
+            summary_key=None,
+            summary_allowlist=set(),
+        )
+
+    def query_balance_pages(
+        self,
+        *,
+        account: KisOrderAccount,
+        profile: MockTrProfile,
+        page_cap: int = 10,
+    ) -> BrokerPageEnvelope:
+        """Read all balance holdings pages and their allowlisted summary."""
+
+        if page_cap <= 0:
+            raise ValueError("page_cap must be positive")
+        params = self._balance_params() | {
+            "CANO": account.cano,
+            "ACNT_PRDT_CD": account.account_product_code,
+        }
+        return self._query_pages(
+            path=_BALANCE_PATH,
+            tr_id=profile.balance_tr_id,
+            params=params,
+            page_cap=page_cap,
+            rows_key="output1",
+            row_allowlist={"pdno", "prdt_name", "hldg_qty", "ord_psbl_qty", "pchs_avg_pric"},
+            summary_key="output2",
+            summary_allowlist={"dnca_tot_amt", "nxdy_excc_amt", "prvs_rcdl_excc_amt", "tot_evlu_amt"},
+        )
+
+    def _query_pages(
+        self,
+        *,
+        path: str,
+        tr_id: str,
+        params: dict[str, str],
+        page_cap: int,
+        rows_key: str,
+        row_allowlist: set[str],
+        summary_key: str | None,
+        summary_allowlist: set[str],
+    ) -> BrokerPageEnvelope:
+        rows: list[Mapping[str, str | int | float | bool | None]] = []
+        summary: dict[str, str | int | float | bool | None] = {}
+        seen_tokens: set[tuple[str, str]] = set()
+        try:
+            token = self._token_manager.get_token()
+        except KisAuthError:
+            return self._incomplete_envelope("AUTH_UNAVAILABLE")
+
+        for page_number in range(1, page_cap + 1):
+            try:
+                body, response_headers = self._fetch_query_page(
+                    path=path, tr_id=tr_id, params=params, token=token
+                )
+                if not isinstance(body, dict) or str(body.get("rt_cd", "0")) != "0":
+                    return self._incomplete_envelope("PROVIDER_ERROR", rows, summary, page_number)
+                page_rows = body.get(rows_key)
+                if not isinstance(page_rows, list) or any(not isinstance(row, dict) for row in page_rows):
+                    return self._incomplete_envelope("PARSE_ERROR", rows, summary, page_number)
+                rows.extend(self._allowlisted(row, row_allowlist) for row in page_rows)
+                if summary_key is not None:
+                    raw_summary = body.get(summary_key, [])
+                    if not isinstance(raw_summary, (list, dict)):
+                        return self._incomplete_envelope("PARSE_ERROR", rows, summary, page_number)
+                    item = raw_summary[0] if isinstance(raw_summary, list) and raw_summary else raw_summary
+                    if isinstance(item, dict):
+                        summary.update(self._allowlisted(item, summary_allowlist))
+                fk = str(body.get("ctx_area_fk100") or body.get("CTX_AREA_FK100") or "")
+                nk = str(body.get("ctx_area_nk100") or body.get("CTX_AREA_NK100") or "")
+                has_more = str(response_headers.get("tr_cont", "")).upper() in {"M", "F"}
+                if not has_more:
+                    return BrokerPageEnvelope(
+                        rows=tuple(rows), summary=summary, page_count=page_number,
+                        completeness=PageCompleteness.COMPLETE, reason_code="COMPLETE",
+                    )
+                continuation = (fk, nk)
+                if not any(continuation) or continuation in seen_tokens:
+                    return self._incomplete_envelope(
+                        "REPEATED_CONTINUATION_TOKEN", rows, summary, page_number
+                    )
+                seen_tokens.add(continuation)
+                params = params | {"CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk}
+            except _TransientOrderQueryError:
+                return self._incomplete_envelope("QUERY_UNAVAILABLE", rows, summary, page_number)
+        return self._incomplete_envelope("PAGE_CAP_REACHED", rows, summary, page_cap)
+
+    @staticmethod
+    def _allowlisted(
+        values: Mapping[str, Any], allowlist: set[str]
+    ) -> dict[str, str | int | float | bool | None]:
+        clean: dict[str, str | int | float | bool | None] = {}
+        for key, value in values.items():
+            normalized = str(key).lower()
+            if normalized not in allowlist:
+                continue
+            if value is None or isinstance(value, (str, int, float, bool)):
+                clean[normalized] = value
+        return clean
+
+    @staticmethod
+    def _incomplete_envelope(
+        reason: str,
+        rows: list[Mapping[str, str | int | float | bool | None]] | None = None,
+        summary: Mapping[str, str | int | float | bool | None] | None = None,
+        page_count: int = 0,
+    ) -> BrokerPageEnvelope:
+        return BrokerPageEnvelope(
+            rows=tuple(rows or ()), summary=summary or {}, page_count=page_count,
+            completeness=PageCompleteness.INCOMPLETE, reason_code=reason,
+        )
+
     def place_order_cash(
         self, *, account: KisOrderAccount, order: Order, snapped_price: int
     ) -> KisOrderPostResult:
@@ -355,6 +531,39 @@ class KisOrderAdapter:
         )
         def _attempt() -> Any:
             return self._query_request(path=path, tr_id=tr_id, params=params, token=token)
+
+        return _attempt()
+
+    def _fetch_query_page(
+        self, *, path: str, tr_id: str, params: dict, token: str
+    ) -> tuple[Any, Mapping[str, str]]:
+        @retry(
+            reraise=True,
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_backoff_seconds),
+            retry=retry_if_exception_type(_TransientOrderQueryError),
+        )
+        def _attempt() -> tuple[Any, Mapping[str, str]]:
+            self._respect_min_interval()
+            url = self._domain.rstrip("/") + path
+            try:
+                response = self._client.get(
+                    url,
+                    params=params,
+                    headers=self._headers(token=token, tr_id=tr_id),
+                    timeout=self._timeout_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise _TransientOrderQueryError(
+                    f"order query failed: {type(exc).__name__}"
+                ) from None
+            status = getattr(response, "status_code", None)
+            if status is None or int(status) >= 400:
+                raise _TransientOrderQueryError(f"order query returned HTTP {status}")
+            try:
+                return response.json(), response.headers
+            except Exception:
+                return {"__nonjson__": True}, response.headers
 
         return _attempt()
 
