@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import uuid
@@ -495,6 +496,51 @@ def export_proof_fixture(destination: Path, fixture: Mapping[str, Any]) -> Path:
     }
     if set(fixture) != required or fixture.get("provenance") != "KIS_OBSERVED":
         raise ValueError("proof fixture is not the versioned allowlisted shape")
+    nested_shapes = {
+        "identity": {"target", "domain_class", "account_suffix", "profile_version", "ticker"},
+        "cross_ids": {
+            "proof_id", "campaign_id", "run_id", "order_intent_id", "submission_id",
+            "broker_order_id", "snapshot_id", "comparison_id",
+        },
+        "comparison": {"stage", "cross_ids_validated"},
+        "freeze": {"active"},
+    }
+    for key, shape in nested_shapes.items():
+        value = fixture.get(key)
+        if not isinstance(value, Mapping) or set(value) != shape:
+            raise ValueError("proof fixture is not the versioned allowlisted shape")
+    identity = fixture["identity"]
+    assert isinstance(identity, Mapping)
+    if (
+        identity.get("target") != "mock"
+        or identity.get("domain_class") != "KIS_MOCK_VTS"
+        or re.fullmatch(r"[0-9]{4}", str(identity.get("account_suffix", ""))) is None
+        or re.fullmatch(r"[0-9]{6}", str(identity.get("ticker", ""))) is None
+    ):
+        raise ValueError("proof fixture identity is invalid")
+    forbidden_markers = (
+        "secret", "token", "authorization", "credential", "app_key", "app-key",
+        "payload", "header", "response", "request",
+    )
+
+    def validate_scalar(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for nested_key, nested_value in value.items():
+                lowered = str(nested_key).lower()
+                if any(marker in lowered for marker in forbidden_markers):
+                    raise ValueError("proof fixture contains forbidden material")
+                validate_scalar(nested_value)
+            return
+        if isinstance(value, (list, tuple, set)):
+            raise ValueError("proof fixture cannot contain provider rows")
+        if isinstance(value, str):
+            lowered = value.lower()
+            if any(marker in lowered for marker in forbidden_markers):
+                raise ValueError("proof fixture contains forbidden material")
+            if len(value) > 128:
+                raise ValueError("proof fixture scalar is too long")
+
+    validate_scalar(fixture)
     payload = (
         json.dumps(dict(fixture), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")

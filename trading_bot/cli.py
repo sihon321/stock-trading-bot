@@ -47,7 +47,16 @@ from trading_bot.soak_config import (
     SoakSettings,
     build_soak_identity_receipt,
     render_mock_identity_receipt,
+    validate_store_topology,
 )
+from trading_bot.soak_proof import (
+    ProofOrderRequest,
+    ProofOrderService,
+    build_proof_fixture,
+    export_proof_fixture,
+)
+from trading_bot.soak_reconcile import AmbiguityPolicy
+from trading_bot.soak_store import fingerprint_accepted_profile
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
@@ -71,6 +80,7 @@ app.add_typer(soak_app, name="soak")
 
 _soak_settings_factory = SoakSettings
 _soak_probe = probe_mock_profile
+_proof_service_factory = ProofOrderService
 
 RunCycleFn = Callable[..., ExecutionResult]
 
@@ -782,6 +792,12 @@ def soak_start_command(
     probe_only: bool = typer.Option(False, "--probe-only", help="Run authenticated GET-only compatibility probing."),
     proof_order: bool = typer.Option(False, "--proof-order", help="Request the separately gated one-order proof workflow."),
     fixture: Optional[Path] = typer.Option(None, "--fixture", dir_okay=False, help="Exclusive-create sanitized compatibility fixture."),
+    ticker: Optional[str] = typer.Option(None, "--ticker", help="Explicit six-digit proof-order ticker."),
+    side: Optional[str] = typer.Option(None, "--side", help="Explicit BUY or SELL proof-order side."),
+    quantity: Optional[int] = typer.Option(None, "--quantity", min=1, max=10, help="Explicit small proof-order quantity."),
+    price: Optional[float] = typer.Option(None, "--price", min=1, max=100_000_000, help="Explicit proof-order limit price."),
+    accepted_profile: Optional[Path] = typer.Option(None, "--accepted-profile", dir_okay=False, help="Approved authenticated compatibility fixture."),
+    confirmation: Optional[str] = typer.Option(None, "--confirm", help="Exact mock proof confirmation; prompted when omitted."),
 ) -> None:
     """Validate mock identity, then run only the explicitly selected safe path."""
 
@@ -800,10 +816,72 @@ def soak_start_command(
         receipt = build_soak_identity_receipt(settings, campaign_id, selected[0])
         typer.echo(render_mock_identity_receipt(receipt))
         if proof_order:
-            # The POST capability is intentionally absent until Plans 02/03/04/09
-            # have supplied accepted-profile, persistence, reconciliation, and
-            # exact-confirmation prerequisites.
-            raise ValueError("PROOF_ORDER_PREREQUISITES_MISSING")
+            if any(value is None for value in (ticker, side, quantity, price, accepted_profile)):
+                raise ValueError("PROOF_ORDER_PREREQUISITES_MISSING")
+            assert ticker is not None and side is not None and quantity is not None
+            assert price is not None and accepted_profile is not None
+            if not settings.primary_audit_db_path.is_file() or not settings.soak_db_path.is_file():
+                raise ValueError("PROOF_ORDER_STORES_MUST_EXIST")
+            validate_store_topology(
+                settings.primary_audit_db_path,
+                settings.soak_db_path,
+                settings.controller_db_path,
+            )
+            try:
+                profile_document = json.loads(accepted_profile.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ValueError("PROOF_ORDER_ACCEPTED_PROFILE_INVALID") from None
+            if not isinstance(profile_document, dict) or (
+                profile_document.get("state") != "ACCEPTED"
+                or profile_document.get("evidence_class") != "KIS_OBSERVED"
+                or profile_document.get("profile_version") != receipt.profile_version
+                or profile_document.get("schema_version") != "kis-mock-compat-v1"
+            ):
+                raise ValueError("PROOF_ORDER_ACCEPTED_PROFILE_INVALID")
+            expected_confirmation = (
+                f"PROOF MOCK {receipt.account_suffix} {ticker} {quantity}"
+            )
+            supplied_confirmation = confirmation
+            if supplied_confirmation is None:
+                supplied_confirmation = typer.prompt(
+                    f"Type exactly '{expected_confirmation}' to authorize one mock POST"
+                )
+            if supplied_confirmation != expected_confirmation:
+                raise ValueError("PROOF_ORDER_CONFIRMATION_MISMATCH")
+            policy = AmbiguityPolicy(
+                version="ambiguity-v1",
+                duration_seconds=60,
+                poll_seconds=5,
+                max_observations=12,
+                profile_version=receipt.profile_version,
+                field_contract_version="kis-mock-compat-v1",
+            )
+            adapter = _build_soak_adapter(settings)
+            service = _proof_service_factory(adapter=adapter)
+            proof_result = service.run(ProofOrderRequest(
+                campaign_id=campaign_id,
+                ticker=ticker,
+                side=side,
+                quantity=quantity,
+                price=price,
+                account=KisOrderAccount(
+                    cano=settings.kis_mock_account_cano.get_secret_value(),
+                    account_product_code=settings.kis_mock_account_product_code,
+                ),
+                receipt=receipt,
+                primary_audit_db_path=settings.primary_audit_db_path,
+                soak_db_path=settings.soak_db_path,
+                controller_db_path=settings.controller_db_path,
+                accepted_profile_fingerprint=fingerprint_accepted_profile(profile_document),
+                field_contract_version="kis-mock-compat-v1",
+                ambiguity_policy=policy,
+            ))
+            if fixture is not None:
+                typer.echo(
+                    f"fixture={export_proof_fixture(fixture, build_proof_fixture(proof_result))}"
+                )
+            typer.echo("proof_order=COMPLETE")
+            return
         adapter = _build_soak_adapter(settings)
         result = _soak_probe(
             adapter,
