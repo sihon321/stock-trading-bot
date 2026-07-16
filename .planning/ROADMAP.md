@@ -147,7 +147,18 @@ Plans:
   3. Operator can reconcile mock orders, fills, open orders, and account state to broker truth after duplicate reruns, ambiguous submissions, and process restarts.
   4. Operator can execute and retain evidence for the required stale-data, LLM, KIS, accepted-then-timeout, throttling, fill, interruption, notification, and audit fault drills, with synthetic drills distinguished from KIS-observed evidence.
 
-**Plans**: TBD
+**Plans**: 8 plans
+
+Plans:
+
+- [ ] 09-01-PLAN.md — Establish mock-only contracts and deterministic KIS compatibility probing.
+- [ ] 09-02-PLAN.md — Authenticate and approve the accepted mock profile and one proof order.
+- [ ] 09-03-PLAN.md — Build the immutable campaign and broker-evidence ledger.
+- [ ] 09-04-PLAN.md — Implement complete broker-truth reconciliation and restart freezes.
+- [ ] 09-05-PLAN.md — Orchestrate explicit mock soak campaign commands and day accounting.
+- [ ] 09-06-PLAN.md — Add the independent fault controller and all required drills.
+- [ ] 09-07-PLAN.md — Publish read-only soak reports and the Korean operator procedure.
+- [ ] 09-08-PLAN.md — Complete authenticated designated-day, drill, and 20-day UAT gates.
 
 ### Phase 10: Advisory Risk Calibration & Promotion Readiness
 
