@@ -228,7 +228,7 @@ Open a separate controller database, insert the drill contract, commit it, verif
 | KRX eligible-day inference | Weekday/holiday arithmetic | Existing observed KRX calendar and market-cycle evidence | Existing policy already fails closed on unknown days. [VERIFIED: `market_cycle.py`] |
 | Retry/backoff | Custom sleep loops scattered across adapters | Existing Tenacity query pattern plus one centralized KIS rate limiter | Keeps bounded query retry distinct from forbidden POST retry. [VERIFIED: `kis_order.py`] |
 | Secret filtering | Ad hoc string redaction | Existing allowlisted scalar `sanitize_detail`, extended for soak models | Raw payload/credential keys are already rejected. [VERIFIED: `audit_models.py`] |
-| Fault-specific orchestration copies | Nine separate run implementations | Registry of named fault specs over injected protocol boundaries | One containment contract prevents scenario drift. [INFERENCE] |
+| Fault-specific orchestration copies | Separate run implementation per fault | Registry derived exhaustively from canonical `FaultName` values over injected protocol boundaries | One containment contract prevents scenario drift and avoids hard-coded count drift. [INFERENCE] |
 | Controller durability format | Bespoke JSON append/recovery parser | Separate stdlib SQLite database with explicit transactions | Existing project operational skill and integrity checks transfer directly. [VERIFIED: `sqlite_audit.py`; cited Python sqlite3 docs] |
 | Broker idempotency | Local client key presented as broker guarantee | Single-shot POST plus broker inquiry and freeze | Current local ref is explicitly not a KIS idempotency key. [VERIFIED: `kis_broker.py`] |
 
@@ -265,8 +265,9 @@ class SoakSettings(BaseSettings):
     kis_mock: KisCredentialGroup
     kis_mock_account_cano: SecretStr
     kis_mock_account_product_code: str = "01"
-    audit_db_path: Path = Path("./data/audit.db")
-    soak_controller_db_path: Path = Path("./data/soak-controller.db")
+    primary_audit_db_path: Path = Path("./data/audit.db")
+    soak_db_path: Path = Path("./data/soak.db")
+    controller_db_path: Path = Path("./data/soak-controller.db")
 
     # Deliberately no kis_real, trading_mode, or confirm_real_trading fields.
 ```
@@ -306,7 +307,7 @@ else:
 2. **Campaign persistence:** additive schema/migrations for campaigns, immutable policy, designated days, campaign events, reconciliation snapshots, freezes, and permanent failure latch. [INFERENCE from D-05–D-16]
 3. **Reconciliation service:** paginated order/fill/balance normalization, touched-state projection, comparison verdicts, ambiguity cardinality, partial/no-fill terminality, and restart reconstruction. [INFERENCE]
 4. **Soak orchestration and CLI:** `start/run/resume/status` with identity and reconciliation gates at every required boundary; designated run delegates to existing run-cycle collaborators but uses genuine KIS mock broker. [VERIFIED integration seams in `cli.py`/`kis_broker.py`]
-5. **Controller and fault registry:** independent database plus all nine named controlled injections, prohibited-action assertions, restart drills, and evidence-class separation. [INFERENCE]
+5. **Controller and fault registry:** independent database plus every canonical `FaultName` controlled injection, prohibited-action assertions, restart drills, and evidence-class separation. [INFERENCE]
 6. **Reports and runbook:** campaign status/day denominators, reconciliation completeness, freezes, drill matrix split by provenance, authenticated compatibility procedure, and manual UAT. [VERIFIED existing report/runbook patterns]
 
 The planner should keep these as multiple small PLAN.md files with the adapter compatibility work in the first wave; otherwise later campaign tests will encode an unverified KIS contract. [INFERENCE]
@@ -402,27 +403,24 @@ The planner should keep these as multiple small PLAN.md files with the adapter c
 | A1 | KIS exposes no safe client idempotency key/order-POST retry contract. | Throttling and ambiguity | If an official key exists, matching could be stronger; no-retry remains safe. |
 | A2 | Broker visibility can lag long enough that one immediate `NO_MATCH` is insufficient. | Anti-patterns | Inquiry window/cadence may be over-conservative; authenticated characterization must set it. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Which TR-ID profile does the operator's KIS mock account currently accept?**
-   - What we know: current official examples and repository constants diverge. [CITED/VERIFIED]
-   - What's unclear: KIS portal/account rollout compatibility and whether legacy IDs remain accepted.
-   - Recommendation: first plan adds a read-only profile probe, then one explicitly operator-run mock order with sanitized evidence before locking `mock-tr-profile-vN`.
+1. **Which TR-ID profile does the operator's KIS mock account currently accept? — RESOLVED BY BLOCKING CHECKPOINT**
+   - Immutable answer artifact: `tests/fixtures/kis_mock/accepted-profile.json`, created only by 09-02 Task 1 after authenticated read-only complete pagination and explicit approval.
+   - Consumption contract: Plan 03 persists its profile fingerprint/version at campaign creation; Plans 04, 09, and all campaign work must reject any different runtime profile.
 
-2. **What exact normalized fields are present for mock open/no-fill/partial-fill and available cash?**
-   - What we know: official examples define inquiry filters, page caps, and separate balance outputs. [CITED]
-   - What's unclear: live mock payload field presence/semantics for all terminal states.
-   - Recommendation: capture allowlisted field-name/value-shape fixtures from authenticated calls; never retain raw payloads.
+2. **What exact normalized fields are present for mock open/no-fill/partial-fill and available cash? — RESOLVED BY TWO BLOCKING ARTIFACTS**
+   - `accepted-profile.json` freezes the authenticated allowlisted field-name/value-shape contract; `proof-order.json`, created by 09-09 only after Plans 03–04, freezes one durable order/fill/open-quantity/holding/cash comparison and its stable cross-store IDs.
+   - Unknown/missing semantics at either checkpoint block approval; raw payloads and unrelated account rows are never retained.
 
-3. **What bounded ambiguity inquiry window and cadence are justified?**
-   - What we know: mock limits are lower and queries support date/order/ticker filters. [CITED]
-   - What's unclear: visibility latency and throttling behavior after accepted-then-timeout.
-   - Recommendation: make duration/cadence policy-versioned and configurable only at campaign creation; start conservatively, record every observation, never auto-resubmit.
+3. **What bounded ambiguity inquiry window and cadence are justified? — RESOLVED AS VERSIONED CAMPAIGN POLICY**
+   - Plan 03 requires explicit `ambiguity_policy_version`, duration, poll cadence, maximum observations, accepted profile version, and field-contract version at campaign creation and makes them immutable.
+   - Plan 04 loads that persisted policy and rejects per-call overrides; Plan 09 records the exact policy in proof evidence. Authenticated observations may inform a later new policy version/new campaign, never mutate an active campaign or authorize resubmission.
 
-4. **Can a mock-only cancel/open-order endpoint be proven?**
+4. **Can a mock-only cancel/open-order endpoint be proven? — RESOLVED FOR PHASE 9**
    - What we know: the current official `inquire_psbl_rvsecncl` example is real-only. [CITED]
    - What's unclear: portal-only or alternative mock support.
-   - Recommendation: do not depend on it for the first plan; derive open quantity from supported same-day inquiry, then extend only after authenticated proof.
+   - Binding Phase 9 policy: do not depend on an unproven cancel/open-order endpoint. Derive open quantity from the accepted same-day inquiry contract; any future endpoint requires a new authenticated profile artifact and policy version outside the active campaign.
 
 ## Sources
 

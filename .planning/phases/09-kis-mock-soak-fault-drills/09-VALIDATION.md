@@ -1,17 +1,14 @@
 ---
 phase: 09
 slug: kis-mock-soak-fault-drills
-status: draft
-nyquist_compliant: false
+status: ready
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-16
+updated: 2026-07-16
 ---
 
 # Phase 09 — Validation Strategy
-
-> Per-phase validation contract for feedback sampling during execution.
-
----
 
 ## Test Infrastructure
 
@@ -19,65 +16,71 @@ created: 2026-07-16
 |----------|-------|
 | **Framework** | pytest 8.4.2 |
 | **Config file** | `pyproject.toml` |
-| **Quick run command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_soak_config.py tests/test_soak_campaign.py tests/test_soak_reconcile.py -x` |
+| **Quick run command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_soak_config.py tests/test_soak_store.py tests/test_soak_reconcile.py -x` |
 | **Full suite command** | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` |
-| **Estimated runtime** | ~20 seconds before Phase 9 growth |
-
----
+| **Estimated runtime** | focused checks <60 seconds; full suite after every wave |
 
 ## Sampling Rate
 
-- **After every task commit:** Run the focused new soak test file plus affected existing KIS, audit, and CLI tests.
-- **After every plan wave:** Run `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q`.
-- **Before `$gsd-verify-work`:** The full suite must be green, followed by authenticated KIS mock UAT.
-- **Max feedback latency:** 30 seconds for automated task-level checks.
-
----
+- After every task commit: focused command from the task row.
+- After every wave: full deterministic suite.
+- Before `$gsd-verify-work`: full suite, authenticated profile/proof-order checkpoints, one designated day/all drills, then elapsed 20-day checkpoint.
+- No three consecutive implementation tasks lack automated verification; no watch-mode command is used.
 
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 09-TBD-01 | TBD | TBD | SOAK-01 | T-09-01 | Real-target configuration is unrepresentable or rejected before mutation. | unit + CLI integration | `python3 -m pytest -q tests/test_soak_config.py tests/test_soak_cli.py -x` | ❌ W0 | ⬜ pending |
-| 09-TBD-02 | TBD | TBD | SOAK-02 | Campaign targets and failure budgets are immutable; invariant breaches permanently fail. | unit + SQLite integration | `python3 -m pytest -q tests/test_soak_campaign.py tests/test_soak_store.py -x` | ❌ W0 | ⬜ pending |
-| 09-TBD-03 | TBD | TBD | SOAK-03 | Ambiguous submissions are not retried and ticker freezes survive restart until broker truth is determinate. | unit + integration + subprocess | `python3 -m pytest -q tests/test_soak_reconcile.py -x` | ❌ W0 | ⬜ pending |
-| 09-TBD-04 | TBD | TBD | SOAK-04 | Exactly one named fault is injected and containment, provenance, recovery, and prohibited-action checks are durable. | unit + CLI + subprocess | `python3 -m pytest -q tests/test_soak_drills.py tests/test_soak_cli.py -x` | ❌ W0 | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Automated / Manual Verification | Wave-0 Artifact |
+|---------|------|------|-------------|------------|-----------------|-------------------------------|-----------------|
+| 09-01-01 | 09-01 | 1 | SOAK-01, SOAK-03 | T-09-01,02 | Mock capability and all DB paths are structurally safe and secret-free. | `pytest -q tests/test_soak_config.py -x` | `tests/test_soak_config.py` |
+| 09-01-02 | 09-01 | 1 | SOAK-03 | T-09-03,04 | Profile probing paginates completely while order POST stays single-shot. | `pytest -q tests/test_soak_reconcile.py tests/test_kis_order.py -x` | `tests/test_soak_reconcile.py` |
+| 09-01-03 | 09-01 | 1 | SOAK-01 | T-09-01,02 | Probe-only CLI cannot construct general runtime or mutate stores. | `pytest -q tests/test_soak_cli.py tests/test_cli.py -x` | `tests/test_soak_cli.py` |
+| 09-02-01 | 09-02 | 2 | SOAK-01, SOAK-03 | T-09-05,06,07 | Accepted authenticated profile is complete, sanitized, and POST-free. | Focused 09-02 command + blocking manual approval | `accepted-profile.json` |
+| 09-03-01 | 09-03 | 3 | SOAK-02, SOAK-03 | T-09-08,10,11 | Soak schema migrates atomically and stores immutable policy/cross-IDs. | `pytest -q tests/test_soak_store.py -k 'migration or immutable or append or reopen or unique'` | `tests/test_soak_store.py` |
+| 09-03-02 | 09-03 | 3 | SOAK-02, SOAK-03 | T-09-08,09 | Accounting and freezes remain irreversible across restart. | `pytest -q tests/test_soak_store.py -k 'campaign or budget or failure or freeze or restart'` | same |
+| 09-04-01 | 09-04 | 4 | SOAK-03 | T-09-13,15,16 | Complete touched-state snapshots reconcile every required dimension. | `pytest -q tests/test_soak_reconcile.py -k 'snapshot or pagination or comparison or unrelated'` | same |
+| 09-04-02 | 09-04 | 4 | SOAK-03 | T-09-12,14 | Immutable-policy ambiguity/restart reconciliation never POSTs. | `pytest -q tests/test_soak_reconcile.py tests/test_kis_broker.py -k 'ambiguous or partial or restart or post'` | same |
+| 09-09-01 | 09-09 | 5 | SOAK-01, SOAK-03 | T-09-34–37 | One authenticated proof POST is durably reconciled or truthfully frozen. | Focused 09-09 command + blocking manual approval | `proof-order.json` |
+| 09-05-01 | 09-05 | 6 | SOAK-01–03 | T-09-18,20 | Day, budget, safety, and freeze dimensions remain independent. | `pytest -q tests/test_soak_campaign.py tests/test_soak_store.py -x` | `tests/test_soak_campaign.py` |
+| 09-05-02 | 09-05 | 6 | SOAK-01–03 | T-09-17,19 | Triple-store commands execute reconciliation in exact order. | `pytest -q tests/test_soak_cli.py tests/test_soak_campaign.py tests/test_cli.py -x` | `tests/test_soak_cli.py` |
+| 09-06-01 | 09-06 | 7 | SOAK-04 | T-09-22,25 | Controller commits/read-backs before injection and survives failures. | `pytest -q tests/test_soak_drills.py -k 'controller or journal or wal or restart or alias'` | `tests/test_soak_drills.py` |
+| 09-06-02 | 09-06 | 7 | SOAK-04 | T-09-21,23,24 | FaultName registry injects one boundary with correct POST count. | `pytest -q tests/test_soak_drills.py tests/test_soak_cli.py -x` | same |
+| 09-07-01 | 09-07 | 8 | SOAK-02–04 | T-09-26–28 | Reporting opens all stores read-only and validates primary references. | `pytest -q tests/test_soak_reporting.py tests/test_reporting.py -x` | `tests/test_soak_reporting.py` |
+| 09-07-02 | 09-07 | 8 | SOAK-02–04 | T-09-29 | Status/runbook match registry, gates, recovery, and prohibitions. | `pytest -q tests/test_soak_cli.py tests/test_operator_runbook.py tests/test_soak_reporting.py -x` | `tests/test_operator_runbook.py` |
+| 09-08-01 | 09-08 | 9 | SOAK-01–04 | T-09-30,32 | One real day and all drills have complete three-store evidence. | Full suite + blocking manual UAT | runtime three-store evidence |
+| 09-08-02 | 09-08 | 9 | SOAK-01–04 | T-09-31,33 | Twenty eligible days finish within budget with zero breach. | Full suite + elapsed blocking manual UAT | runtime three-store evidence |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
-
----
+All commands above use `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m` before `pytest` when executed.
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_soak_config.py` — mock-only construction and identity-receipt gate for SOAK-01.
-- [ ] `tests/test_soak_store.py` — migrations, immutability, uniqueness, and permanent campaign failure for SOAK-02.
-- [ ] `tests/test_soak_reconcile.py` — multi-page broker fixtures, ambiguity cardinality, account comparison, and restart freeze for SOAK-03.
-- [ ] `tests/test_soak_campaign.py` — eligible-day, budget, and clean-streak state machine for SOAK-02.
-- [ ] `tests/test_soak_drills.py` — fault registry and controller-journal durability/recovery for SOAK-04.
-- [ ] `tests/test_soak_cli.py` — command isolation and end-to-end injected collaborators for SOAK-01 and SOAK-04.
-- [ ] Sanitized authenticated KIS mock fixtures for the accepted TR-ID profile and paginated response shapes; no secrets, raw payloads, or unrelated account data.
+- [ ] `tests/test_soak_config.py`
+- [ ] `tests/test_soak_store.py`
+- [ ] `tests/test_soak_reconcile.py`
+- [ ] `tests/test_soak_campaign.py`
+- [ ] `tests/test_soak_drills.py`
+- [ ] `tests/test_soak_cli.py`
+- [ ] `tests/test_soak_reporting.py`
+- [ ] `tests/test_operator_runbook.py`
+- [ ] `tests/fixtures/kis_mock/accepted-profile.json` via 09-02 blocking authenticated read-only checkpoint
+- [ ] `tests/fixtures/kis_mock/proof-order.json` via 09-09 blocking authenticated proof checkpoint
 
----
+`wave_0_complete` remains false until these artifacts exist; `nyquist_compliant` is true because every final task has a bounded automated check and every irreducibly external behavior has an explicit blocking checkpoint.
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| Current TR-ID profile and normalized fields work against the operator's authenticated KIS mock account. | SOAK-01, SOAK-03 | The external mock service and credentials are unavailable to deterministic tests. | Run the compatibility command with mock-only credentials, retain the sanitized identity receipt and normalized fixtures, and verify no real domain/account/TR-ID can be resolved. |
-| A designated eligible-KRX-day run reconciles orders, fills, open orders, holdings, and cash before day credit. | SOAK-02, SOAK-03 | Broker timing and account truth require the live KIS mock environment. | Execute one designated mock run, inspect the daily report and reconciliation snapshot, and confirm credit is granted only after complete evidence. |
-| The full 20-eligible-day campaign meets the immutable target and availability budget without safety breaches. | SOAK-02 | Calendar duration cannot be compressed into automated execution. | Run the operator campaign over 20 confirmed eligible KRX dates and verify the final campaign report denominators, budget, clean streak, and permanent-failure latch. |
-
----
+| Plan/Task | Behavior | Blocking evidence |
+|-----------|----------|-------------------|
+| 09-02-01 | Accepted profile and fields | Sanitized complete POST-free authenticated fixture |
+| 09-09-01 | One proof order | Exactly one POST plus durable primary/soak comparison or persistent ambiguity freeze |
+| 09-08-01 | One designated day and all controlled drills | Complete KIS + primary/soak/controller report |
+| 09-08-02 | Twenty eligible days | Target/budget/permanent-safety final report with no unknown references |
 
 ## Validation Sign-Off
 
-- [ ] Planner replaces `09-TBD-*` entries with final task IDs, plans, and waves.
-- [ ] All tasks have `<automated>` verification or explicit Wave 0 dependencies.
-- [ ] Sampling continuity: no three consecutive implementation tasks without automated verification.
-- [ ] Wave 0 covers every missing test and sanitized fixture reference.
-- [ ] No watch-mode flags.
-- [ ] Automated feedback latency remains below 30 seconds.
-- [ ] Authenticated KIS mock checkpoints remain manual and cannot be substituted with synthetic evidence.
-- [ ] `nyquist_compliant: true` and `wave_0_complete: true` are set only after the final task map and fixtures exist.
+- [x] Every final task ID, plan, wave, requirement, threat, and automated/manual checkpoint is mapped.
+- [x] Reporting and runbook tests are included.
+- [x] All Wave-0 artifacts are listed.
+- [x] Sampling continuity and phase-gate commands are explicit.
+- [x] Synthetic evidence cannot replace authenticated or elapsed-day evidence.
 
-**Approval:** pending
+**Approval:** ready for execution; Wave-0/runtime/manual rows remain pending
