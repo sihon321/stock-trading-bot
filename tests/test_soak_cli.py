@@ -94,6 +94,71 @@ def test_proof_order_is_explicit_and_fails_closed_until_prerequisites_exist(tmp_
     assert "PROOF_ORDER_PREREQUISITES_MISSING" in result.stderr
 
 
+def test_proof_order_uses_dedicated_service_after_exact_confirmation(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import trading_bot.cli as cli
+
+    settings = _settings(tmp_path)
+    settings.primary_audit_db_path.touch()
+    settings.soak_db_path.touch()
+    accepted = tmp_path / "accepted.json"
+    accepted.write_text(json.dumps({
+        "schema_version": "kis-mock-compat-v1", "state": "ACCEPTED",
+        "evidence_class": "KIS_OBSERVED", "profile_version": "official-example-v1",
+    }), encoding="utf-8")
+    calls: list[object] = []
+
+    class Service:
+        def __init__(self, *, adapter):
+            calls.append(adapter)
+
+        def run(self, request):
+            calls.append(request)
+            return type("Result", (), {"cross_ids_validated": True})()
+
+    monkeypatch.setattr(cli, "_soak_settings_factory", lambda: settings)
+    monkeypatch.setattr(cli, "_build_soak_adapter", lambda value: "mock-adapter")
+    monkeypatch.setattr(cli, "_proof_service_factory", Service)
+    monkeypatch.setattr(cli, "build_runtime", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("general runtime called")))
+    result = CliRunner().invoke(cli.app, [
+        "soak", "start", "--campaign-id", "proof-1", "--proof-order",
+        "--ticker", "005930", "--side", "BUY", "--quantity", "1", "--price", "70000",
+        "--accepted-profile", str(accepted), "--confirm", "PROOF MOCK 5678 005930 1",
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == "mock-adapter"
+    assert len(calls) == 2
+
+
+def test_bad_proof_confirmation_has_zero_service_and_zero_campaign_mutation(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import sqlite3
+    import trading_bot.cli as cli
+
+    settings = _settings(tmp_path)
+    settings.primary_audit_db_path.touch()
+    settings.soak_db_path.touch()
+    accepted = tmp_path / "accepted.json"
+    accepted.write_text(json.dumps({
+        "schema_version": "kis-mock-compat-v1", "state": "ACCEPTED",
+        "evidence_class": "KIS_OBSERVED", "profile_version": "official-example-v1",
+    }), encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_soak_settings_factory", lambda: settings)
+    monkeypatch.setattr(cli, "_build_soak_adapter", lambda value: calls.append("adapter"))
+    result = CliRunner().invoke(cli.app, [
+        "soak", "start", "--campaign-id", "proof-1", "--proof-order",
+        "--ticker", "005930", "--side", "BUY", "--quantity", "1", "--price", "70000",
+        "--accepted-profile", str(accepted), "--confirm", "yes",
+    ])
+    assert result.exit_code == 2
+    assert "PROOF_ORDER_CONFIRMATION_MISMATCH" in result.stderr
+    assert calls == []
+    assert sqlite3.connect(settings.soak_db_path).execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='soak_campaigns'"
+    ).fetchone() is None
+
+
 def test_probe_fixture_export_is_conflict_safe(tmp_path: Path, monkeypatch) -> None:
     import trading_bot.cli as cli
 
