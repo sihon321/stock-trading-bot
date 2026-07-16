@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: KIS Mock Soak & Fault Drills
 status: executing
-stopped_at: Completed 09-02-PLAN.md
-last_updated: "2026-07-16T08:58:12.849Z"
+stopped_at: Completed 09-03-PLAN.md
+last_updated: "2026-07-16T09:10:41.029Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 09 execution started
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 19
-  percent: 70
+  completed_plans: 20
+  percent: 74
 ---
 
 # Project State
@@ -29,17 +29,17 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (KIS Mock Soak & Fault Drills) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 09 execution started
 
-Progress: [███████░░░] 70%
+Progress: [███████░░░] 74%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 24
+- Total plans completed: 25
 - Average duration: 3 min
 - Total execution time: 0.15 hours
 
@@ -83,6 +83,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: KIS mock TR IDs remain explicit versioned candidates until authenticated KIS-observed evidence accepts one. — Repository legacy and official examples currently differ.
 - [Phase 09]: The proof-order path remains closed until durable profile, store, reconciliation, and exact operator-confirmation prerequisites exist. — Prevents compatibility probing from acquiring mutation authority.
 - [Phase 09]: Accept official-example-v1 as the authenticated KIS mock profile after complete read-only pagination and explicit operator approval. — The observed account had empty order and holding rows, so retained evidence stays truthful while deterministic tests cover non-empty normalization semantics.
+- [Phase 09]: Keep soak storage independently versioned and linked to primary audit/controller evidence only by stable IDs. — Prevents schema ownership drift and cross-database transaction coupling.
+- [Phase 09]: Keep availability exhaustion separate from the irreversible D-09 safety latch. — Preserves independent campaign accounting dimensions.
+- [Phase 09]: Release ticker freezes only by appending same-subject determinate terminal broker evidence. — Prevents local state or day credit from clearing unresolved broker risk.
 
 ### Pending Todos
 
@@ -114,11 +117,12 @@ None yet.
 | Phase 08 P06 | 4 min | 2 tasks | 3 files |
 | Phase 09 P01 | 12 min | 3 tasks | 8 files |
 | Phase 09 P02 | 62 min | 1 tasks | 1 files |
+| Phase 09 P03 | 10 min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-07-16T08:57:51.870Z
-Stopped at: Completed 09-02-PLAN.md
+Last session: 2026-07-16T09:10:26.737Z
+Stopped at: Completed 09-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
