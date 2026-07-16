@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: KIS Mock Soak & Fault Drills
 status: executing
-stopped_at: Completed 09-03-PLAN.md
-last_updated: "2026-07-16T09:10:41.029Z"
+stopped_at: Completed 09-04-PLAN.md
+last_updated: "2026-07-16T09:27:46.000Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 09 execution started
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 20
-  percent: 74
+  completed_plans: 21
+  percent: 78
 ---
 
 # Project State
@@ -29,17 +29,17 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (KIS Mock Soak & Fault Drills) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 09 execution started
 
-Progress: [███████░░░] 74%
+Progress: [████████░░] 78%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 25
+- Total plans completed: 26
 - Average duration: 3 min
 - Total execution time: 0.15 hours
 
@@ -86,6 +86,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Keep soak storage independently versioned and linked to primary audit/controller evidence only by stable IDs. — Prevents schema ownership drift and cross-database transaction coupling.
 - [Phase 09]: Keep availability exhaustion separate from the irreversible D-09 safety latch. — Preserves independent campaign accounting dimensions.
 - [Phase 09]: Release ticker freezes only by appending same-subject determinate terminal broker evidence. — Prevents local state or day credit from clearing unresolved broker risk.
+- [Phase 09]: Broker truth is complete only after all order/fill and balance pages plus required cash fields normalize successfully.
+- [Phase 09]: Ambiguity becomes determinate only when the entire bounded observation sequence agrees on zero matches or one stable broker order.
+- [Phase 09]: Reconciliation reads primary audit in query-only mode, writes only the soak store, and leaves the controller DB unopened.
 
 ### Pending Todos
 
@@ -118,14 +121,16 @@ None yet.
 | Phase 09 P01 | 12 min | 3 tasks | 8 files |
 | Phase 09 P02 | 62 min | 1 tasks | 1 files |
 | Phase 09 P03 | 10 min | 2 tasks | 2 files |
+| Phase 09 P04 | 11 min | 2 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-07-16T09:10:26.737Z
-Stopped at: Completed 09-03-PLAN.md
+Last session: 2026-07-16T09:27:46.000Z
+Stopped at: Completed 09-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
 
 - Run `$gsd-verify-work 7` to independently re-verify the completed replay phase.
 - Then run `$gsd-discuss-phase 8` to define decision reports and the operator runbook.
+
