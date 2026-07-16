@@ -32,6 +32,11 @@ class CampaignState(StrEnum):
     FAILED = "FAILED"
 
 
+class CampaignKind(StrEnum):
+    SOAK = "SOAK"
+    PROOF_ORDER = "PROOF_ORDER"
+
+
 class DayCreditState(StrEnum):
     ELIGIBLE = "ELIGIBLE"
     CREDITED = "CREDITED"

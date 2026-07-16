@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 from .audit_models import sanitize_detail
 from .soak_models import (
     AmbiguityVerdict,
+    CampaignKind,
     CampaignState,
     DayCreditState,
     DrillVerdict,
@@ -23,7 +24,7 @@ from .soak_models import (
     SoakEvidenceClass,
 )
 
-SOAK_SCHEMA_VERSION = 1
+SOAK_SCHEMA_VERSION = 2
 PathLike = str | Path
 _CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _RUN_KINDS = {"RUN", "SCREEN", "DRILL", "DRY_RUN", "PROOF_ORDER"}
@@ -69,12 +70,37 @@ def migrate_soak_store(
         raise RuntimeError(f"unsupported soak schema version: {version}")
     if version == SOAK_SCHEMA_VERSION:
         return
+    if version == 1:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ALTER TABLE soak_campaigns ADD COLUMN campaign_kind TEXT NOT NULL DEFAULT 'SOAK' CHECK(campaign_kind IN ('SOAK','PROOF_ORDER'))")
+            conn.execute("ALTER TABLE soak_campaigns ADD COLUMN credit_eligible INTEGER NOT NULL DEFAULT 1 CHECK(credit_eligible IN (0,1))")
+            conn.execute(
+                """CREATE TRIGGER soak_proof_campaign_non_credit_insert
+                BEFORE INSERT ON soak_campaigns
+                WHEN NEW.campaign_kind='PROOF_ORDER' AND NEW.credit_eligible!=0
+                BEGIN SELECT RAISE(ABORT, 'proof campaign cannot earn credit'); END"""
+            )
+            conn.execute(
+                """CREATE TRIGGER soak_proof_campaign_contract_immutable
+                BEFORE UPDATE ON soak_campaigns
+                WHEN OLD.campaign_kind!=NEW.campaign_kind OR OLD.credit_eligible!=NEW.credit_eligible
+                BEGIN SELECT RAISE(ABORT, 'immutable proof campaign contract'); END"""
+            )
+            conn.execute(f"PRAGMA user_version={SOAK_SCHEMA_VERSION}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             """CREATE TABLE soak_campaigns (
                 campaign_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL CHECK(state IN ('ACTIVE','COMPLETED','FAILED')),
+                campaign_kind TEXT NOT NULL CHECK(campaign_kind IN ('SOAK','PROOF_ORDER')),
+                credit_eligible INTEGER NOT NULL CHECK(credit_eligible IN (0,1)),
                 target_eligible_days INTEGER NOT NULL CHECK(target_eligible_days > 0),
                 availability_failure_budget INTEGER NOT NULL CHECK(availability_failure_budget > 0),
                 availability_failures_used INTEGER NOT NULL DEFAULT 0 CHECK(availability_failures_used >= 0),
@@ -89,9 +115,16 @@ def migrate_soak_store(
                 ambiguity_max_observations INTEGER NOT NULL CHECK(ambiguity_max_observations > 0),
                 created_at TEXT NOT NULL,
                 CHECK(ambiguity_poll_cadence_seconds <= ambiguity_window_seconds),
+                CHECK(campaign_kind!='PROOF_ORDER' OR credit_eligible=0),
                 CHECK(state != 'FAILED' OR safety_failure_code IS NOT NULL
                       OR availability_failure_code IS NOT NULL)
             )"""
+        )
+        conn.execute(
+            """CREATE TRIGGER soak_proof_campaign_contract_immutable
+            BEFORE UPDATE ON soak_campaigns
+            WHEN OLD.campaign_kind!=NEW.campaign_kind OR OLD.credit_eligible!=NEW.credit_eligible
+            BEGIN SELECT RAISE(ABORT, 'immutable proof campaign contract'); END"""
         )
         conn.execute(
             """CREATE TRIGGER soak_campaign_policy_immutable
@@ -295,18 +328,23 @@ def create_campaign(
     ambiguity_max_observations: int,
     target_eligible_days: int = 20,
     availability_failure_budget: int = 2,
+    campaign_kind: CampaignKind = CampaignKind.SOAK,
+    credit_eligible: bool = True,
     created_at: str | None = None,
 ) -> dict[str, Any]:
+    kind = CampaignKind(campaign_kind)
+    if kind is CampaignKind.PROOF_ORDER and credit_eligible:
+        raise ValueError("proof campaign cannot earn eligible-day credit")
     if not campaign_id or not accepted_profile_fingerprint:
         raise ValueError("campaign_id and accepted profile fingerprint are required")
     try:
         conn.execute(
             """INSERT INTO soak_campaigns (
-            campaign_id,state,target_eligible_days,availability_failure_budget,
+            campaign_id,state,campaign_kind,credit_eligible,target_eligible_days,availability_failure_budget,
             accepted_profile_fingerprint,accepted_profile_version,field_contract_version,
             ambiguity_policy_version,ambiguity_window_seconds,ambiguity_poll_cadence_seconds,
-            ambiguity_max_observations,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (campaign_id, CampaignState.ACTIVE.value, target_eligible_days,
+            ambiguity_max_observations,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (campaign_id, CampaignState.ACTIVE.value, kind.value, int(credit_eligible), target_eligible_days,
              availability_failure_budget, accepted_profile_fingerprint,
              accepted_profile_version, field_contract_version, ambiguity_policy_version,
              ambiguity_window_seconds, ambiguity_poll_cadence_seconds,
@@ -316,6 +354,54 @@ def create_campaign(
     except Exception:
         conn.rollback()
         raise
+    return load_campaign_state(conn, campaign_id=campaign_id)
+
+
+def create_or_load_proof_campaign(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    accepted_profile_fingerprint: str,
+    accepted_profile_version: str,
+    field_contract_version: str,
+    ambiguity_policy: Any,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Create the immutable non-credit proof campaign, or reject any reopen drift."""
+
+    expected = {
+        "campaign_kind": CampaignKind.PROOF_ORDER.value,
+        "credit_eligible": 0,
+        "accepted_profile_fingerprint": accepted_profile_fingerprint,
+        "accepted_profile_version": accepted_profile_version,
+        "field_contract_version": field_contract_version,
+        "ambiguity_policy_version": ambiguity_policy.version,
+        "ambiguity_window_seconds": ambiguity_policy.duration_seconds,
+        "ambiguity_poll_cadence_seconds": ambiguity_policy.poll_seconds,
+        "ambiguity_max_observations": ambiguity_policy.max_observations,
+    }
+    row = conn.execute("SELECT * FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)).fetchone()
+    if row is None:
+        return create_campaign(
+            conn,
+            campaign_id=campaign_id,
+            accepted_profile_fingerprint=accepted_profile_fingerprint,
+            accepted_profile_version=accepted_profile_version,
+            field_contract_version=field_contract_version,
+            ambiguity_policy_version=ambiguity_policy.version,
+            ambiguity_window_seconds=ambiguity_policy.duration_seconds,
+            ambiguity_poll_cadence_seconds=ambiguity_policy.poll_seconds,
+            ambiguity_max_observations=ambiguity_policy.max_observations,
+            target_eligible_days=1,
+            availability_failure_budget=1,
+            campaign_kind=CampaignKind.PROOF_ORDER,
+            credit_eligible=False,
+            created_at=created_at,
+        )
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)).fetchone()
+    if row is None or any(row[key] != value for key, value in expected.items()):
+        raise ValueError("immutable proof campaign contract drift")
     return load_campaign_state(conn, campaign_id=campaign_id)
 
 
@@ -344,6 +430,13 @@ def designate_day(
     if run_kind not in _RUN_KINDS:
         raise ValueError("unknown soak run kind")
     credit = DayCreditState(credit_state)
+    campaign = conn.execute(
+        "SELECT credit_eligible FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)
+    ).fetchone()
+    if campaign is None:
+        raise KeyError(campaign_id)
+    if credit is DayCreditState.CREDITED and not bool(campaign[0]):
+        raise ValueError("campaign is permanently ineligible for day credit")
     if credit is DayCreditState.CREDITED and (run_kind != "RUN" or not terminal):
         raise ValueError("only a terminal designated RUN may earn day credit")
     return _write(conn, """INSERT INTO soak_days
@@ -646,6 +739,8 @@ def load_campaign_state(conn: sqlite3.Connection, *, campaign_id: str) -> dict[s
         raise KeyError(campaign_id)
     result = dict(row)
     result["state"] = CampaignState(result["state"])
+    result["campaign_kind"] = CampaignKind(result["campaign_kind"])
+    result["credit_eligible"] = bool(result["credit_eligible"])
     result["credited_days"] = int(conn.execute(
         "SELECT COUNT(*) FROM soak_days WHERE campaign_id=? AND credit_state='CREDITED'",
         (campaign_id,),
@@ -675,7 +770,7 @@ def bind(conn: sqlite3.Connection) -> _BoundStore:
 
 __all__ = [
     "SOAK_SCHEMA_VERSION", "connect_soak_store", "migrate_soak_store",
-    "fingerprint_accepted_profile", "create_campaign", "append_identity_receipt",
+    "fingerprint_accepted_profile", "create_campaign", "create_or_load_proof_campaign", "append_identity_receipt",
     "designate_day", "append_campaign_event", "consume_availability_failure",
     "latch_safety_failure", "append_snapshot", "read_snapshot",
     "append_comparison", "append_ambiguity_observation", "append_drill_link",

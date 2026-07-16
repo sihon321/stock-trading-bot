@@ -464,7 +464,7 @@ def test_reconciliation_uses_primary_origin_and_soak_owner_without_opening_contr
             "run-1", "005930", "ORDER-1"
         )
         assert stores.primary.execute("PRAGMA query_only").fetchone()[0] == 1
-        assert stores.soak.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert stores.soak.execute("PRAGMA user_version").fetchone()[0] == 2
         assert controller_path.exists() is False
     finally:
         stores.close()
