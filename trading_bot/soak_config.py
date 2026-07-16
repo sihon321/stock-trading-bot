@@ -40,6 +40,11 @@ class SoakSettings(BaseSettings):
     availability_failure_budget: int = 2
     accepted_profile_versions: tuple[str, ...]
     mock_isolation_policy_version: str = MOCK_ISOLATION_POLICY_VERSION
+    kis_min_interval_seconds: float = 0.5
+    kis_max_retries: int = 3
+    kis_retry_backoff_seconds: float = 1.0
+    kis_timeout_seconds: float = 5.0
+    kis_token_refresh_margin_seconds: int = 600
 
     @model_validator(mode="after")
     def validate_mock_topology(self) -> "SoakSettings":
@@ -47,6 +52,16 @@ class SoakSettings(BaseSettings):
             raise ValueError("soak policy counts must be non-negative and target positive")
         if not self.accepted_profile_versions:
             raise ValueError("at least one accepted mock profile version is required")
+        if any(
+            value <= 0
+            for value in (
+                self.kis_min_interval_seconds,
+                self.kis_max_retries,
+                self.kis_timeout_seconds,
+                self.kis_token_refresh_margin_seconds,
+            )
+        ) or self.kis_retry_backoff_seconds < 0:
+            raise ValueError("mock KIS query controls must be positive")
         paths = {
             "primary_audit_db_path": self.primary_audit_db_path,
             "soak_db_path": self.soak_db_path,

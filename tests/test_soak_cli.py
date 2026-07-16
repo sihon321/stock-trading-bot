@@ -62,8 +62,7 @@ def test_cli_registers_one_soak_group_and_probe_is_post_free(tmp_path: Path, mon
     assert "target=mock" in result.stdout
     assert "account_suffix=5678" in result.stdout
     assert "12345678" not in result.output
-    help_result = CliRunner().invoke(cli.app, ["--help"])
-    assert help_result.stdout.count("soak") == 1
+    assert sum(group.name == "soak" for group in cli.app.registered_groups) == 1
 
 
 def test_invalid_identity_stops_before_any_runtime_or_mutation(tmp_path: Path, monkeypatch) -> None:

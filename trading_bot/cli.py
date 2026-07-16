@@ -10,7 +10,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +24,8 @@ from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
 from trading_bot.kis_broker import AmbiguousSubmissionError, build_kis_broker
 from trading_bot.kis_order import KisOrderAccount
+from trading_bot.kis_order import KisOrderAdapter, MOCK_TR_PROFILE_CANDIDATES
+from trading_bot.kis_auth import KisAuthConfig
 from trading_bot.kis_quote import KisQuoteAdapter
 from trading_bot.market_cycle import MarketCycleEvidence, MarketCyclePolicy
 from trading_bot.pykrx_adapter import PykrxOhlcvAdapter
@@ -40,6 +42,12 @@ from trading_bot.preflight import (
     render_preflight,
 )
 from trading_bot.report_cli import report_app
+from trading_bot.soak_compat import export_compatibility_fixture, probe_mock_profile
+from trading_bot.soak_config import (
+    SoakSettings,
+    build_soak_identity_receipt,
+    render_mock_identity_receipt,
+)
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
@@ -58,6 +66,11 @@ from trading_bot.audit_models import (
 
 app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator CLI.")
 app.add_typer(report_app, name="report")
+soak_app = typer.Typer(no_args_is_help=True, help="KIS mock-only soak compatibility workflow.")
+app.add_typer(soak_app, name="soak")
+
+_soak_settings_factory = SoakSettings
+_soak_probe = probe_mock_profile
 
 RunCycleFn = Callable[..., ExecutionResult]
 
@@ -139,6 +152,33 @@ def _available_cash(broker: Any, settings: Settings) -> float:
 
 def _build_token_manager(settings: Settings) -> KisTokenManager:
     return KisTokenManager(build_kis_auth_config(settings))
+
+
+def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
+    """Build only the mock token/query capability from the narrow soak root."""
+
+    credential = settings.kis_mock
+    token_manager = KisTokenManager(
+        KisAuthConfig(
+            domain=credential.domain,
+            app_key=credential.app_key.get_secret_value(),
+            app_secret=credential.app_secret.get_secret_value(),
+            refresh_margin_seconds=settings.kis_token_refresh_margin_seconds,
+            min_interval_seconds=settings.kis_min_interval_seconds,
+            max_retries=settings.kis_max_retries,
+            retry_backoff_seconds=settings.kis_retry_backoff_seconds,
+            timeout_seconds=settings.kis_timeout_seconds,
+        )
+    )
+    return KisOrderAdapter(
+        token_manager=token_manager,
+        domain=credential.domain,
+        tr_id_profile="mock",
+        min_interval_seconds=settings.kis_min_interval_seconds,
+        max_retries=settings.kis_max_retries,
+        retry_backoff_seconds=settings.kis_retry_backoff_seconds,
+        timeout_seconds=settings.kis_timeout_seconds,
+    )
 
 
 def _build_quote_adapter(settings: Settings, token_manager: KisTokenManager) -> KisQuoteAdapter:
@@ -734,6 +774,54 @@ def run_cycle(
         "outcomes": outcomes,
         "errors": error_count,
     }
+
+
+@soak_app.command("start")
+def soak_start_command(
+    campaign_id: str = typer.Option(..., "--campaign-id", help="Stable soak campaign identifier."),
+    probe_only: bool = typer.Option(False, "--probe-only", help="Run authenticated GET-only compatibility probing."),
+    proof_order: bool = typer.Option(False, "--proof-order", help="Request the separately gated one-order proof workflow."),
+    fixture: Optional[Path] = typer.Option(None, "--fixture", dir_okay=False, help="Exclusive-create sanitized compatibility fixture."),
+) -> None:
+    """Validate mock identity, then run only the explicitly selected safe path."""
+
+    if probe_only == proof_order:
+        typer.echo("select exactly one of --probe-only or --proof-order", err=True)
+        raise typer.Exit(2)
+    try:
+        settings = _soak_settings_factory()
+        selected = tuple(
+            profile
+            for profile in MOCK_TR_PROFILE_CANDIDATES
+            if profile.version == settings.kis_mock.tr_id_profile
+        )
+        if len(selected) != 1:
+            raise ValueError("MOCK_ISOLATION_BLOCKED: selected profile is not a unique candidate")
+        receipt = build_soak_identity_receipt(settings, campaign_id, selected[0])
+        typer.echo(render_mock_identity_receipt(receipt))
+        if proof_order:
+            # The POST capability is intentionally absent until Plans 02/03/04/09
+            # have supplied accepted-profile, persistence, reconciliation, and
+            # exact-confirmation prerequisites.
+            raise ValueError("PROOF_ORDER_PREREQUISITES_MISSING")
+        adapter = _build_soak_adapter(settings)
+        result = _soak_probe(
+            adapter,
+            KisOrderAccount(
+                cano=settings.kis_mock_account_cano.get_secret_value(),
+                account_product_code=settings.kis_mock_account_product_code,
+            ),
+            selected,
+            (date.today(), date.today()),
+        )
+        typer.echo(f"compatibility_state={result.state.value}")
+        typer.echo(f"evidence_class={result.evidence_class.value}")
+        typer.echo(f"profile_version={result.profile_version or 'UNKNOWN'}")
+        if fixture is not None:
+            typer.echo(f"fixture={export_compatibility_fixture(result, fixture)}")
+    except (ValueError, OSError) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
 
 
 @app.command("run")

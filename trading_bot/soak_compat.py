@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import json
+from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -87,3 +89,37 @@ def probe_mock_profile(
         balance=last_balance,
         facts={"candidate_count": len(candidates)},
     )
+
+
+def export_compatibility_fixture(result: CompatibilityResult, destination: Path) -> Path:
+    """Publish deterministic allowlisted evidence without overwriting conflicts."""
+
+    document = {
+        "schema_version": "kis-mock-compat-v1",
+        "state": result.state.value,
+        "evidence_class": result.evidence_class.value,
+        "profile_version": result.profile_version,
+        "facts": dict(result.facts),
+        "daily": {
+            "rows": [dict(row) for row in result.daily.rows],
+            "page_count": result.daily.page_count,
+            "completeness": result.daily.completeness.value,
+            "reason_code": result.daily.reason_code,
+        },
+        "balance": {
+            "rows": [dict(row) for row in result.balance.rows],
+            "summary": dict(result.balance.summary),
+            "page_count": result.balance.page_count,
+            "completeness": result.balance.completeness.value,
+            "reason_code": result.balance.reason_code,
+        },
+    }
+    payload = (json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with destination.open("xb") as handle:
+            handle.write(payload)
+    except FileExistsError:
+        if destination.read_bytes() != payload:
+            raise ValueError("COMPATIBILITY_FIXTURE_CONFLICT") from None
+    return destination
