@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from trading_bot.soak_models import CampaignState, FreezeState
+from trading_bot.soak_models import CampaignKind, CampaignState, FreezeState
 
 
 def _campaign(store, *, campaign_id: str = "campaign-1") -> None:
@@ -87,6 +87,37 @@ def test_immutable_campaign_policy_and_terminal_failure_are_database_enforced(tm
     conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE soak_campaigns SET state='ACTIVE' WHERE campaign_id='campaign-1'")
+
+
+def test_proof_campaign_is_immutable_and_permanently_non_credit(tmp_path) -> None:
+    from trading_bot import soak_store
+    from trading_bot.soak_reconcile import AmbiguityPolicy
+
+    conn = soak_store.connect_soak_store(tmp_path / "soak.db")
+    policy = AmbiguityPolicy("ambiguity-v1", 60, 5, 12, "official-example-v1", "kis-mock-compat-v1")
+    created = soak_store.create_or_load_proof_campaign(
+        conn,
+        campaign_id="proof-1",
+        accepted_profile_fingerprint="sha256:approved-profile",
+        accepted_profile_version="official-example-v1",
+        field_contract_version="kis-mock-compat-v1",
+        ambiguity_policy=policy,
+    )
+    assert created["campaign_kind"] is CampaignKind.PROOF_ORDER
+    assert created["credit_eligible"] is False
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE soak_campaigns SET credit_eligible=1 WHERE campaign_id='proof-1'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE soak_campaigns SET campaign_kind='SOAK' WHERE campaign_id='proof-1'")
+    with pytest.raises(ValueError, match="immutable proof campaign"):
+        soak_store.create_or_load_proof_campaign(
+            conn,
+            campaign_id="proof-1",
+            accepted_profile_fingerprint="sha256:approved-profile",
+            accepted_profile_version="official-example-v1",
+            field_contract_version="kis-mock-compat-v1",
+            ambiguity_policy=AmbiguityPolicy("ambiguity-v2", 60, 5, 12, "official-example-v1", "kis-mock-compat-v1"),
+        )
 
 
 def test_append_only_evidence_is_committed_sanitized_and_ordered(tmp_path) -> None:
