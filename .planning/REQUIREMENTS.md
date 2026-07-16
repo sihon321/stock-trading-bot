@@ -30,9 +30,9 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ### KIS Mock Soak
 
-- [ ] **SOAK-01**: Operator can run an explicit KIS mock-account soak path that cannot select real credentials, domains, accounts, or transaction IDs.
+- [x] **SOAK-01**: Operator can run an explicit KIS mock-account soak path that cannot select real credentials, domains, accounts, or transaction IDs.
 - [ ] **SOAK-02**: Operator can run and review an N-eligible-KRX-day mock soak campaign with clean-streak accounting, a declared availability-failure budget, and zero-tolerance safety invariants.
-- [ ] **SOAK-03**: Operator can verify broker-truth reconciliation for mock-account orders, fills, open orders, account state, duplicate reruns, ambiguous submissions, and restart recovery.
+- [x] **SOAK-03**: Operator can verify broker-truth reconciliation for mock-account orders, fills, open orders, account state, duplicate reruns, ambiguous submissions, and restart recovery.
 - [ ] **SOAK-04**: Operator can run and record fault drills for stale data, malformed or timed-out LLM responses, KIS API failure, accepted-then-timeout orders, throttling, partial or no fill, interruption, notification failure, and audit failure.
 
 ### Risk Calibration & Promotion
@@ -83,9 +83,9 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | REP-02 | Phase 8 | Complete |
 | RUN-01 | Phase 8 | Complete |
 | RUN-02 | Phase 8 | Complete |
-| SOAK-01 | Phase 9 | Pending |
+| SOAK-01 | Phase 9 | Complete |
 | SOAK-02 | Phase 9 | Pending |
-| SOAK-03 | Phase 9 | Pending |
+| SOAK-03 | Phase 9 | Complete |
 | SOAK-04 | Phase 9 | Pending |
 | CAL-01 | Phase 10 | Pending |
 | CAL-02 | Phase 10 | Pending |

@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 9
+current_phase: 09
 current_phase_name: KIS Mock Soak & Fault Drills
-status: verifying
-stopped_at: Phase 9 context gathered
-last_updated: "2026-07-16T04:53:07.470Z"
-last_activity: 2026-07-14
-last_activity_desc: Phase 08 complete, transitioned to Phase 9
+status: executing
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-07-16T07:54:25.096Z"
+last_activity: 2026-07-16
+last_activity_desc: Phase 09 execution started
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 17
-  completed_plans: 17
+  total_plans: 27
+  completed_plans: 18
   percent: 60
 ---
 
@@ -24,16 +24,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 08 — decision-reports-operator-runbook
+**Current focus:** Phase 09 — KIS Mock Soak & Fault Drills
 
 ## Current Position
 
-Phase: 9 — KIS Mock Soak & Fault Drills
-Plan: Not started
-Status: Execution complete — awaiting verification
-Last activity: 2026-07-14 — Phase 08 complete, transitioned to Phase 9
+Phase: 09 (KIS Mock Soak & Fault Drills) — EXECUTING
+Plan: 2 of 10
+Status: Ready to execute
+Last activity: 2026-07-16 — Phase 09 execution started
 
-Progress: [██████████] 100%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
@@ -79,6 +79,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 08]: 알림 transport 실패는 거래 결과를 바꾸지 않지만 알림 증거 저장 실패는 호출자에게 전파한다. — D-17의 fail-soft transport와 fail-closed evidence 경계를 보존한다.
 - [Phase 08]: Phase 8 unresolved-order 점검은 로컬 append-only 증거만 축약한다. — Phase 9 이전에 인증된 KIS broker truth를 주장하지 않는다.
 - [Phase 08]: 08:50 bot status는 비실행 PRE_OPEN 준비 관찰이며, 실행 권한은 post-open CONTINUOUS 전역 PASS 점검에서만 부여한다. — 런북과 반개구간 시장 정책의 의미를 일치시키고 pre-open 거래 허가를 방지한다.
+- [Phase 09]: SoakSettings is independent of Settings, keeping real credentials and target selection structurally absent. — Capability restriction is stronger than a runtime mode check.
+- [Phase 09]: KIS mock TR IDs remain explicit versioned candidates until authenticated KIS-observed evidence accepts one. — Repository legacy and official examples currently differ.
+- [Phase 09]: The proof-order path remains closed until durable profile, store, reconciliation, and exact operator-confirmation prerequisites exist. — Prevents compatibility probing from acquiring mutation authority.
 
 ### Pending Todos
 
@@ -108,12 +111,13 @@ None yet.
 | Phase 08 P04 | 8min | 2 tasks | 6 files |
 | Phase 08 P05 | 4min | 2 tasks | 3 files |
 | Phase 08 P06 | 4 min | 2 tasks | 3 files |
+| Phase 09 P01 | 12 min | 3 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-07-16T04:53:07.462Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-kis-mock-soak-fault-drills/09-CONTEXT.md
+Last session: 2026-07-16T07:53:56.546Z
+Stopped at: Completed 09-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
