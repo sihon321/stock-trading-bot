@@ -147,7 +147,7 @@ Plans:
   3. Operator can reconcile mock orders, fills, open orders, and account state to broker truth after duplicate reruns, ambiguous submissions, and process restarts.
   4. Operator can execute and retain evidence for the required stale-data, LLM, KIS, accepted-then-timeout, throttling, fill, interruption, notification, and audit fault drills, with synthetic drills distinguished from KIS-observed evidence.
 
-**Plans**: 1/10 plans executed
+**Plans**: 2/10 plans executed
 
 Plans:
 **Wave 1**
@@ -156,7 +156,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 09-02-PLAN.md — Authenticate and approve the accepted mock profile using read-only calls.
+- [x] 09-02-PLAN.md — Authenticate and approve the accepted mock profile using read-only calls.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -218,5 +218,5 @@ Plans:
 | 6. Audit Evidence & Cycle Boundaries | v1.1 | 5/5 | Complete    | 2026-07-11 |
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
-| 9. KIS Mock Soak & Fault Drills | v1.1 | 1/10 | In Progress|  |
+| 9. KIS Mock Soak & Fault Drills | v1.1 | 2/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 0/TBD | Not started | - |

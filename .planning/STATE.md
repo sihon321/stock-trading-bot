@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: KIS Mock Soak & Fault Drills
 status: executing
-stopped_at: Completed 09-01-PLAN.md
-last_updated: "2026-07-16T07:54:25.096Z"
+stopped_at: Completed 09-02-PLAN.md
+last_updated: "2026-07-16T08:58:12.849Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 09 execution started
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 18
-  percent: 60
+  completed_plans: 19
+  percent: 70
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (KIS Mock Soak & Fault Drills) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 09 execution started
 
-Progress: [███████░░░] 67%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
@@ -82,6 +82,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: SoakSettings is independent of Settings, keeping real credentials and target selection structurally absent. — Capability restriction is stronger than a runtime mode check.
 - [Phase 09]: KIS mock TR IDs remain explicit versioned candidates until authenticated KIS-observed evidence accepts one. — Repository legacy and official examples currently differ.
 - [Phase 09]: The proof-order path remains closed until durable profile, store, reconciliation, and exact operator-confirmation prerequisites exist. — Prevents compatibility probing from acquiring mutation authority.
+- [Phase 09]: Accept official-example-v1 as the authenticated KIS mock profile after complete read-only pagination and explicit operator approval. — The observed account had empty order and holding rows, so retained evidence stays truthful while deterministic tests cover non-empty normalization semantics.
 
 ### Pending Todos
 
@@ -112,11 +113,12 @@ None yet.
 | Phase 08 P05 | 4min | 2 tasks | 3 files |
 | Phase 08 P06 | 4 min | 2 tasks | 3 files |
 | Phase 09 P01 | 12 min | 3 tasks | 8 files |
+| Phase 09 P02 | 62 min | 1 tasks | 1 files |
 
 ## Session Continuity
 
-Last session: 2026-07-16T07:53:56.546Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-07-16T08:57:51.870Z
+Stopped at: Completed 09-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
