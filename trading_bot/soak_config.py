@@ -20,6 +20,31 @@ MOCK_DOMAIN_CLASS = "KIS_MOCK_VTS"
 MOCK_ISOLATION_POLICY_VERSION = "mock-isolation-v1"
 
 
+def validate_store_topology(
+    primary_audit_db_path: Path,
+    soak_db_path: Path,
+    controller_db_path: Path,
+) -> dict[str, Path]:
+    """Validate the canonical three-store topology before any owner opens a DB."""
+
+    paths = {
+        "primary_audit_db_path": Path(primary_audit_db_path),
+        "soak_db_path": Path(soak_db_path),
+        "controller_db_path": Path(controller_db_path),
+    }
+    resolved = {
+        name: path.expanduser().resolve(strict=False) for name, path in paths.items()
+    }
+    if len(set(resolved.values())) != len(resolved):
+        raise ValueError("database paths must be pairwise distinct")
+    items = tuple(paths.items())
+    for index, (_, left) in enumerate(items):
+        for _, right in items[index + 1 :]:
+            if left.exists() and right.exists() and os.path.samefile(left, right):
+                raise ValueError("database paths resolve to the same inode")
+    return resolved
+
+
 class SoakSettings(BaseSettings):
     """Credential root whose field graph has no real-target capability."""
 
@@ -62,19 +87,11 @@ class SoakSettings(BaseSettings):
             )
         ) or self.kis_retry_backoff_seconds < 0:
             raise ValueError("mock KIS query controls must be positive")
-        paths = {
-            "primary_audit_db_path": self.primary_audit_db_path,
-            "soak_db_path": self.soak_db_path,
-            "controller_db_path": self.controller_db_path,
-        }
-        resolved = {name: path.expanduser().resolve(strict=False) for name, path in paths.items()}
-        if len(set(resolved.values())) != len(resolved):
-            raise ValueError("database paths must be pairwise distinct")
-        items = tuple(paths.items())
-        for index, (_, left) in enumerate(items):
-            for _, right in items[index + 1 :]:
-                if left.exists() and right.exists() and os.path.samefile(left, right):
-                    raise ValueError("database paths resolve to the same inode")
+        validate_store_topology(
+            self.primary_audit_db_path,
+            self.soak_db_path,
+            self.controller_db_path,
+        )
         return self
 
 

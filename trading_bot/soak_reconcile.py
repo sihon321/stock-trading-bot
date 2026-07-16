@@ -13,10 +13,11 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from trading_bot.kis_order import KisOrderAccount
 from trading_bot.soak_models import (
@@ -30,7 +31,7 @@ from trading_bot.soak_store import (
     append_ambiguity_observation,
     append_comparison,
     append_snapshot,
-    freeze_ticker,
+    connect_soak_store,
     latch_safety_failure,
     load_campaign_state,
     transition_freeze,
@@ -271,6 +272,125 @@ class BrokerComparison:
         return all(item.state is not ComparisonState.UNKNOWN for item in self.dimensions)
 
 
+@dataclass(frozen=True)
+class AmbiguityPolicy:
+    version: str
+    duration_seconds: int
+    poll_seconds: int
+    max_observations: int
+    profile_version: str
+    field_contract_version: str
+
+    def __post_init__(self) -> None:
+        if not self.version or not self.profile_version or not self.field_contract_version:
+            raise ValueError("ambiguity policy versions are required")
+        if self.duration_seconds <= 0 or self.poll_seconds <= 0 or self.max_observations <= 0:
+            raise ValueError("ambiguity policy bounds must be positive")
+        if self.poll_seconds > self.duration_seconds:
+            raise ValueError("ambiguity poll cadence exceeds duration")
+
+
+@dataclass(frozen=True)
+class AmbiguousIntent:
+    campaign_id: str
+    run_id: str
+    order_intent_id: str
+    submission_id: str
+    account_suffix: str
+    ticker: str
+    side: str
+    quantity: int
+    snapped_price: float
+    submitted_at: datetime
+    broker_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.submitted_at.tzinfo is None or self.submitted_at.utcoffset() is None:
+            raise ValueError("submitted_at must be timezone-aware")
+        if self.quantity <= 0 or self.snapped_price <= 0:
+            raise ValueError("ambiguous intent quantity and price must be positive")
+        if len(self.account_suffix) != 4 or not self.account_suffix.isdigit():
+            raise ValueError("account_suffix must contain exactly four digits")
+
+
+@dataclass(frozen=True)
+class ObservationWindow:
+    started_at: datetime
+    ended_at: datetime
+    complete: bool
+
+    def __post_init__(self) -> None:
+        for value in (self.started_at, self.ended_at):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("observation window timestamps must be timezone-aware")
+        if self.ended_at < self.started_at:
+            raise ValueError("observation window end precedes start")
+
+
+@dataclass(frozen=True)
+class AmbiguityMatch:
+    verdict: AmbiguityVerdict
+    matched_order_ids: tuple[str, ...]
+    remaining_order_terminal: bool
+    reason_code: str
+
+
+@dataclass(frozen=True)
+class AmbiguityReconciliation:
+    verdict: AmbiguityVerdict
+    matched_order_id: str | None
+    observation_ids: tuple[str, ...]
+    reconciliation_complete: bool
+    freeze_released: bool
+
+
+@dataclass(frozen=True)
+class RebuiltFreeze:
+    freeze_id: str
+    ticker: str
+    order_intent_id: str | None
+    freeze_kind: str
+    reconciliation_complete: bool
+
+
+@dataclass
+class ReconciliationStores:
+    """Owner-specific handles; the controller path is validated but never opened."""
+
+    primary: sqlite3.Connection
+    soak: sqlite3.Connection
+    controller_db_path: Path
+
+    def close(self) -> None:
+        self.primary.close()
+        self.soak.close()
+
+
+def open_reconciliation_stores(
+    primary_audit_db_path: str | Path,
+    soak_db_path: str | Path,
+    controller_db_path: str | Path,
+) -> ReconciliationStores:
+    """Open primary audit read-only and soak writable, leaving controller unopened."""
+
+    from trading_bot.soak_config import validate_store_topology
+
+    paths = validate_store_topology(
+        Path(primary_audit_db_path), Path(soak_db_path), Path(controller_db_path)
+    )
+    primary_path = paths["primary_audit_db_path"]
+    if not primary_path.is_file():
+        raise FileNotFoundError(primary_path)
+    primary = sqlite3.connect(f"file:{primary_path}?mode=ro", uri=True)
+    try:
+        primary.execute("PRAGMA query_only=ON")
+        soak = connect_soak_store(paths["soak_db_path"])
+    except Exception:
+        primary.close()
+        raise
+    return ReconciliationStores(primary, soak, paths["controller_db_path"])
+
+
 def _side(value: Any) -> str:
     normalized = str(value or "").strip().upper()
     return {"01": "SELL", "02": "BUY"}.get(normalized, normalized or "UNKNOWN")
@@ -388,8 +508,21 @@ def collect_broker_snapshot(
     complete = (
         daily.completeness is PageCompleteness.COMPLETE
         and balance.completeness is PageCompleteness.COMPLETE
+        and _number(balance.summary.get("dnca_tot_amt")) is not None
+        and _number(balance.summary.get("tot_evlu_amt")) is not None
     )
-    reason = "COMPLETE" if complete else f"DAILY_{daily.reason_code}|BALANCE_{balance.reason_code}"
+    if complete:
+        reason = "COMPLETE"
+    elif (
+        balance.completeness is PageCompleteness.COMPLETE
+        and (
+            _number(balance.summary.get("dnca_tot_amt")) is None
+            or _number(balance.summary.get("tot_evlu_amt")) is None
+        )
+    ):
+        reason = f"DAILY_{daily.reason_code}|BALANCE_SUMMARY_INCOMPLETE"
+    else:
+        reason = f"DAILY_{daily.reason_code}|BALANCE_{balance.reason_code}"
     return BrokerSnapshot.from_normalized(
         snapshot_id=snapshot_id,
         campaign=campaign,
@@ -452,11 +585,31 @@ def compare_broker_truth(
         terminal = False
     else:
         holding = next((item for item in snapshot.holdings if item.ticker == ticker), None)
+        order_missing = selected is None and order_id is not None
+
+        def order_dimension(
+            name: str, local_name: str, broker_value: Any, code: str
+        ) -> ComparisonDimension:
+            local_value = _value(local_evidence, local_name)
+            if name == "order_state" and local_value is not None:
+                local_value = str(local_value).upper()
+            if order_missing and local_value is not None:
+                return ComparisonDimension(
+                    name, ComparisonState.MISMATCHED, local_value, None, "ORDER_NOT_FOUND"
+                )
+            return _dimension(
+                name,
+                local_value,
+                broker_value,
+                code,
+                missing_code="ORDER_STATE_UNKNOWN" if name == "order_state" else "ORDER_NOT_FOUND",
+            )
+
         dimensions = (
-            _dimension("requested_qty", _value(local_evidence, "requested_qty"), selected.ordered_qty if selected else None, "REQUESTED_QTY_CONTRADICTION", missing_code="ORDER_NOT_FOUND"),
-            _dimension("filled_qty", _value(local_evidence, "filled_qty"), selected.filled_qty if selected else None, "FILLED_QTY_CONTRADICTION", missing_code="ORDER_NOT_FOUND"),
-            _dimension("remaining_qty", _value(local_evidence, "remaining_qty"), selected.remaining_qty if selected else None, "REMAINING_QTY_CONTRADICTION", missing_code="ORDER_NOT_FOUND"),
-            _dimension("order_state", str(_value(local_evidence, "order_state") or "").upper() or None, selected.status if selected else None, "ORDER_STATE_CONTRADICTION", missing_code="ORDER_STATE_UNKNOWN"),
+            order_dimension("requested_qty", "requested_qty", selected.ordered_qty if selected else None, "REQUESTED_QTY_CONTRADICTION"),
+            order_dimension("filled_qty", "filled_qty", selected.filled_qty if selected else None, "FILLED_QTY_CONTRADICTION"),
+            order_dimension("remaining_qty", "remaining_qty", selected.remaining_qty if selected else None, "REMAINING_QTY_CONTRADICTION"),
+            order_dimension("order_state", "order_state", selected.status if selected else None, "ORDER_STATE_CONTRADICTION"),
             _dimension("holding_quantity", _value(local_evidence, "holding_quantity"), holding.quantity if holding else 0 if ticker else None, "HOLDING_QTY_CONTRADICTION", missing_code="HOLDING_UNKNOWN"),
             _dimension("available_cash", _number(_value(local_evidence, "available_cash")), snapshot.account.available_cash, "AVAILABLE_CASH_CONTRADICTION", missing_code="AVAILABLE_CASH_UNKNOWN"),
         )
@@ -580,6 +733,323 @@ def persist_reconciliation(
     return snapshot.snapshot_id, comparison.comparison_id
 
 
+def _order_observed_at(order: BrokerOrder) -> datetime | None:
+    if len(order.order_date) != 8 or len(order.order_time) != 6:
+        return None
+    try:
+        observed = datetime.strptime(
+            order.order_date + order.order_time, "%Y%m%d%H%M%S"
+        ).replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    except ValueError:
+        return None
+    return observed
+
+
+def match_ambiguous_intent(
+    intent: AmbiguousIntent,
+    snapshot: BrokerSnapshot,
+    window: ObservationWindow,
+) -> AmbiguityMatch:
+    """Return exact no/one/multiple cardinality without a first-match shortcut."""
+
+    if snapshot.completeness is not PageCompleteness.COMPLETE or not window.complete:
+        return AmbiguityMatch(
+            AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE,
+            (),
+            False,
+            "INCOMPLETE_OBSERVATION_WINDOW",
+        )
+    if snapshot.account.account_suffix != intent.account_suffix:
+        return AmbiguityMatch(
+            AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE,
+            (),
+            False,
+            "ACCOUNT_SUFFIX_MISMATCH",
+        )
+    if intent.broker_order_id:
+        matches = tuple(
+            order for order in snapshot.orders if order.order_id == intent.broker_order_id
+        )
+        field_inconclusive = False
+    else:
+        matches_list: list[BrokerOrder] = []
+        field_inconclusive = False
+        for order in snapshot.orders:
+            if (
+                order.ticker != intent.ticker
+                or order.side != intent.side.upper()
+                or order.ordered_qty != intent.quantity
+                or order.snapped_price != float(intent.snapped_price)
+            ):
+                continue
+            observed_at = _order_observed_at(order)
+            if observed_at is None:
+                field_inconclusive = True
+                continue
+            if window.started_at <= observed_at <= window.ended_at:
+                matches_list.append(order)
+        matches = tuple(matches_list)
+    ids = tuple(sorted(order.order_id for order in matches))
+    if len(matches) == 1:
+        return AmbiguityMatch(
+            AmbiguityVerdict.ONE_MATCH_DETERMINATE,
+            ids,
+            matches[0].terminal,
+            "ONE_STABLE_MATCH",
+        )
+    if len(matches) == 0 and not field_inconclusive:
+        return AmbiguityMatch(
+            AmbiguityVerdict.NO_MATCH_CONFIRMED,
+            (),
+            True,
+            "COMPLETE_WINDOW_ZERO_MATCHES",
+        )
+    return AmbiguityMatch(
+        AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE,
+        ids,
+        False,
+        "MULTIPLE_OR_MISSING_MATCH_FIELDS",
+    )
+
+
+def load_ambiguity_policy(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    profile_version: str,
+) -> AmbiguityPolicy:
+    """Load the immutable campaign policy; runtime cadence overrides do not exist."""
+
+    row = conn.execute(
+        """SELECT ambiguity_policy_version,ambiguity_window_seconds,
+                  ambiguity_poll_cadence_seconds,ambiguity_max_observations,
+                  accepted_profile_version,field_contract_version
+           FROM soak_campaigns WHERE campaign_id=?""",
+        (campaign_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(campaign_id)
+    policy = AmbiguityPolicy(
+        version=str(row[0]),
+        duration_seconds=int(row[1]),
+        poll_seconds=int(row[2]),
+        max_observations=int(row[3]),
+        profile_version=str(row[4]),
+        field_contract_version=str(row[5]),
+    )
+    if policy.profile_version != profile_version:
+        raise ValueError("runtime profile differs from immutable campaign policy")
+    return policy
+
+
+def _persist_snapshot_only(conn: sqlite3.Connection, snapshot: BrokerSnapshot) -> None:
+    append_snapshot(
+        conn,
+        snapshot_id=snapshot.snapshot_id,
+        campaign_id=snapshot.campaign_id,
+        run_id=snapshot.run_id,
+        stage=snapshot.stage,
+        completeness=snapshot.completeness,
+        orders=tuple(
+            {
+                "observation_id": item.observation_id,
+                "order_id": item.order_id,
+                "status": item.status,
+                "remaining_qty": item.remaining_qty,
+                "ticker": item.ticker,
+                "side": item.side,
+                "ordered_qty": item.ordered_qty,
+                "filled_qty": item.filled_qty,
+                "snapped_price": item.snapped_price,
+            }
+            for item in snapshot.orders
+        ),
+        fills=tuple(
+            {
+                "observation_id": item.observation_id,
+                "order_id": item.order_id,
+                "fill_id": item.fill_id,
+                "quantity": item.quantity,
+                "price": item.price,
+                "ticker": item.ticker,
+            }
+            for item in snapshot.fills
+        ),
+        holdings=tuple(
+            {
+                "observation_id": item.observation_id,
+                "ticker": item.ticker,
+                "quantity": item.quantity,
+                "average_price": item.average_price,
+                "available_quantity": item.available_quantity,
+            }
+            for item in snapshot.holdings
+        ),
+        accounts=(
+            {
+                "observation_id": snapshot.account.observation_id,
+                "available_cash": snapshot.account.available_cash,
+                "total_value": snapshot.account.total_value,
+                "account_suffix": snapshot.account.account_suffix,
+            },
+        ),
+        detail={
+            "reason_code": snapshot.reason_code,
+            "daily_page_count": snapshot.daily_page_count,
+            "balance_page_count": snapshot.balance_page_count,
+            "window_start": snapshot.window.start_date.isoformat(),
+            "window_end": snapshot.window.end_date.isoformat(),
+        },
+        observed_at=snapshot.observed_at,
+    )
+
+
+def _active_freeze(
+    conn: sqlite3.Connection, *, campaign_id: str, ticker: str, order_intent_id: str
+) -> tuple[str, str] | None:
+    row = conn.execute(
+        """SELECT f.freeze_id,f.freeze_kind FROM soak_ticker_freezes f
+           WHERE f.campaign_id=? AND f.ticker=? AND f.order_intent_id=?
+             AND f.state='FROZEN' AND NOT EXISTS (
+               SELECT 1 FROM soak_ticker_freezes r
+               WHERE r.freeze_id=f.freeze_id AND r.state='RELEASED')
+           ORDER BY f.id DESC LIMIT 1""",
+        (campaign_id, ticker, order_intent_id),
+    ).fetchone()
+    return (str(row[0]), str(row[1])) if row is not None else None
+
+
+def reconcile_ambiguous_submission(
+    *,
+    conn: sqlite3.Connection,
+    adapter: Any,
+    campaign: SnapshotCampaign,
+    intent: AmbiguousIntent,
+    query_window: SnapshotWindow,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> AmbiguityReconciliation:
+    """Run the campaign-frozen query cadence and append every GET observation."""
+
+    if intent.campaign_id != campaign.campaign_id or intent.run_id != campaign.run_id:
+        raise ValueError("ambiguity intent cross-IDs do not match campaign context")
+    policy = load_ambiguity_policy(
+        conn,
+        campaign_id=campaign.campaign_id,
+        profile_version=campaign.profile.version,
+    )
+    started_at = intent.submitted_at
+    ended_at = started_at + timedelta(seconds=policy.duration_seconds)
+    observation_window = ObservationWindow(started_at, ended_at, True)
+    observations: list[tuple[str, AmbiguityMatch]] = []
+    for index in range(policy.max_observations):
+        snapshot = collect_broker_snapshot(
+            adapter,
+            campaign,
+            ReconciliationStage.POST_SUBMISSION,
+            query_window,
+            {"order_ids": ((intent.broker_order_id,) if intent.broker_order_id else ()), "tickers": (intent.ticker,)},
+        )
+        _persist_snapshot_only(conn, snapshot)
+        matched = match_ambiguous_intent(intent, snapshot, observation_window)
+        observation_id = str(uuid.uuid4())
+        append_ambiguity_observation(
+            conn,
+            observation_id=observation_id,
+            campaign_id=campaign.campaign_id,
+            run_id=campaign.run_id,
+            ticker=intent.ticker,
+            order_intent_id=intent.order_intent_id,
+            verdict=matched.verdict,
+            remaining_order_terminal=matched.remaining_order_terminal,
+            detail={
+                "snapshot_id": snapshot.snapshot_id,
+                "observation_index": index + 1,
+                "match_count": len(matched.matched_order_ids),
+                "reason_code": matched.reason_code,
+                "submission_id": intent.submission_id,
+            },
+        )
+        observations.append((observation_id, matched))
+        if index + 1 < policy.max_observations:
+            sleeper(policy.poll_seconds)
+
+    verdicts = {item.verdict for _, item in observations}
+    one_ids = {
+        item.matched_order_ids[0]
+        for _, item in observations
+        if item.verdict is AmbiguityVerdict.ONE_MATCH_DETERMINATE
+        and len(item.matched_order_ids) == 1
+    }
+    if verdicts == {AmbiguityVerdict.NO_MATCH_CONFIRMED}:
+        final_verdict = AmbiguityVerdict.NO_MATCH_CONFIRMED
+        matched_order_id = None
+        final_terminal = True
+    elif verdicts == {AmbiguityVerdict.ONE_MATCH_DETERMINATE} and len(one_ids) == 1:
+        final_verdict = AmbiguityVerdict.ONE_MATCH_DETERMINATE
+        matched_order_id = next(iter(one_ids))
+        final_terminal = all(item.remaining_order_terminal for _, item in observations)
+    else:
+        final_verdict = AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE
+        matched_order_id = None
+        final_terminal = False
+    freeze_released = False
+    active = _active_freeze(
+        conn,
+        campaign_id=campaign.campaign_id,
+        ticker=intent.ticker,
+        order_intent_id=intent.order_intent_id,
+    )
+    if (
+        active is not None
+        and final_verdict is not AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE
+        and final_terminal
+    ):
+        transition_freeze(
+            conn,
+            freeze_id=active[0],
+            release_evidence_type="AMBIGUITY_OBSERVATION",
+            release_evidence_id=observations[-1][0],
+            detail={"reason_code": "DETERMINATE_TERMINAL_BROKER_TRUTH"},
+        )
+        freeze_released = True
+    return AmbiguityReconciliation(
+        verdict=final_verdict,
+        matched_order_id=matched_order_id,
+        observation_ids=tuple(item[0] for item in observations),
+        reconciliation_complete=(
+            final_verdict is not AmbiguityVerdict.MULTIPLE_OR_INCONCLUSIVE
+        ),
+        freeze_released=freeze_released,
+    )
+
+
+def rebuild_ticker_freezes(
+    store: sqlite3.Connection | object, campaign_id: str
+) -> dict[str, RebuiltFreeze]:
+    """Reconstruct active freezes from append-only transitions after restart."""
+
+    conn = store if isinstance(store, sqlite3.Connection) else getattr(store, "conn")
+    state = load_campaign_state(conn, campaign_id=campaign_id)
+    rebuilt: dict[str, RebuiltFreeze] = {}
+    for row in state["active_freezes"]:
+        ticker = str(row["ticker"])
+        complete = conn.execute(
+            """SELECT 1 FROM soak_comparisons
+               WHERE campaign_id=? AND ticker=? AND order_intent_id=?
+                 AND verdict='MATCHED' AND remaining_order_terminal=1
+               ORDER BY id DESC LIMIT 1""",
+            (campaign_id, ticker, row["order_intent_id"]),
+        ).fetchone() is not None
+        rebuilt[ticker] = RebuiltFreeze(
+            freeze_id=str(row["freeze_id"]),
+            ticker=ticker,
+            order_intent_id=row["order_intent_id"],
+            freeze_kind=str(row["freeze_kind"]),
+            reconciliation_complete=complete,
+        )
+    return rebuilt
+
+
 def load_local_order_evidence(
     primary_conn: sqlite3.Connection, *, order_intent_id: str
 ) -> dict[str, Any]:
@@ -617,4 +1087,3 @@ def load_local_order_evidence(
         "order_state": latest["broker_status"],
         "submission_id": latest["submission_id"],
     }
-

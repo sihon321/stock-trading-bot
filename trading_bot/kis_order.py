@@ -303,6 +303,7 @@ class KisOrderAdapter:
             row_allowlist={
                 "odno", "pdno", "sll_buy_dvsn_cd", "ord_qty", "ord_unpr",
                 "tot_ccld_qty", "avg_prvs", "rmn_qty", "ord_tmd", "ord_dt",
+                "ord_gno_brno", "ccld_no", "ord_stat", "ord_stat_name",
             },
             summary_key=None,
             summary_allowlist=set(),

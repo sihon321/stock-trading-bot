@@ -4,8 +4,11 @@ import httpx
 
 from test_kis_order import DOMAIN, _FakeClient, _FakeTokenManager
 from trading_bot.kis_order import KisOrderAccount, KisOrderAdapter
+from trading_bot.audit_models import OrderEvent, OrderEventType
+from trading_bot.sqlite_audit import append_order_event, connect, start_run
 from trading_bot.soak_compat import probe_mock_profile
 from trading_bot.soak_models import (
+    AmbiguityVerdict,
     BrokerPageEnvelope,
     CompatibilityState,
     MockTrProfile,
@@ -24,6 +27,8 @@ from trading_bot.soak_reconcile import (
     collect_broker_snapshot,
     compare_broker_truth,
     match_ambiguous_intent,
+    load_local_order_evidence,
+    open_reconciliation_stores,
     persist_reconciliation,
     rebuild_ticker_freezes,
     reconcile_ambiguous_submission,
@@ -431,3 +436,35 @@ def test_partial_fill_freeze_rebuild_survives_reopen_and_day_credit_is_separate(
     assert rebuilt["005930"].order_intent_id == "intent-1"
     assert rebuilt["005930"].reconciliation_complete is False
     assert load_campaign_state(reopened, campaign_id="campaign-1")["credited_days"] == 0
+
+
+def test_reconciliation_uses_primary_origin_and_soak_owner_without_opening_controller(tmp_path) -> None:
+    primary_path = tmp_path / "audit.db"
+    soak_path = tmp_path / "soak.db"
+    controller_path = tmp_path / "controller.db"
+    primary = connect(primary_path)
+    start_run(primary, run_id="run-1", trading_mode="mock", dry_run=False)
+    append_order_event(
+        primary,
+        OrderEvent(
+            order_intent_id="intent-1", origin_run_id="run-1", observer_run_id="run-1",
+            ticker="005930", event_type=OrderEventType.RECONCILED,
+            submission_id="submission-1", broker_order_id="ORDER-1", side="BUY",
+            requested_qty=5, filled_qty=2, unfilled_qty=3, broker_status="PARTIAL",
+            detail={"campaign_id": "campaign-1"},
+        ),
+    )
+    primary.close()
+
+    stores = open_reconciliation_stores(primary_path, soak_path, controller_path)
+    try:
+        local = load_local_order_evidence(stores.primary, order_intent_id="intent-1")
+        assert local["campaign_id"] == "campaign-1"
+        assert (local["run_id"], local["ticker"], local["order_id"]) == (
+            "run-1", "005930", "ORDER-1"
+        )
+        assert stores.primary.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert stores.soak.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert controller_path.exists() is False
+    finally:
+        stores.close()
