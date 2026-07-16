@@ -157,3 +157,109 @@ def test_campaign_state_enum_is_reconstructed(tmp_path) -> None:
     loaded = soak_store.load_campaign_state(conn, campaign_id="campaign-1")
     assert loaded["state"] is CampaignState.ACTIVE
     assert FreezeState.FROZEN.value == "FROZEN"
+
+
+def test_campaign_defaults_budget_and_safety_failure_are_independent(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    path = tmp_path / "soak.db"
+    conn = soak_store.connect_soak_store(path)
+    _campaign(soak_store.bind(conn))
+    initial = soak_store.load_campaign_state(conn, campaign_id="campaign-1")
+    assert initial["target_eligible_days"] == 20
+    assert initial["availability_failure_budget"] == 2
+
+    assert soak_store.consume_availability_failure(
+        conn, campaign_id="campaign-1", reason_code="KIS_UNAVAILABLE", run_id="run-1"
+    )["state"] is CampaignState.ACTIVE
+    assert soak_store.consume_availability_failure(
+        conn, campaign_id="campaign-1", reason_code="LLM_UNAVAILABLE", run_id="run-2"
+    )["state"] is CampaignState.ACTIVE
+    exceeded = soak_store.consume_availability_failure(
+        conn, campaign_id="campaign-1", reason_code="DATA_UNAVAILABLE", run_id="run-3"
+    )
+    assert exceeded["state"] is CampaignState.FAILED
+    assert exceeded["safety_failure_code"] is None
+    assert exceeded["availability_failure_code"] == "D08_BUDGET_EXCEEDED"
+
+    other = "campaign-safety"
+    _campaign(soak_store.bind(conn), campaign_id=other)
+    failed = soak_store.latch_safety_failure(
+        conn, campaign_id=other, reason_code="D09_BLIND_POST_RETRY", run_id="run-x"
+    )
+    assert failed["state"] is CampaignState.FAILED
+    assert failed["availability_failures_used"] == 0
+    assert failed["safety_failure_code"] == "D09_BLIND_POST_RETRY"
+    reopened = soak_store.connect_soak_store(path)
+    assert soak_store.load_campaign_state(reopened, campaign_id=other)["state"] is CampaignState.FAILED
+    with pytest.raises(ValueError, match="not active"):
+        soak_store.consume_availability_failure(
+            reopened, campaign_id=other, reason_code="KIS_UNAVAILABLE"
+        )
+
+
+def test_freeze_transition_matrix_requires_determinate_terminal_broker_evidence(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    conn = soak_store.connect_soak_store(tmp_path / "soak.db")
+    _campaign(soak_store.bind(conn))
+    frozen_id = soak_store.freeze_ticker(
+        conn, freeze_id="freeze-1", campaign_id="campaign-1", ticker="005930",
+        order_intent_id="intent-1", freeze_kind="AMBIGUITY",
+        detail={"reason_code": "AMBIGUOUS_SUBMISSION"},
+    )
+    assert frozen_id > 0
+    cases = [
+        ("obs-inconclusive", "MULTIPLE_OR_INCONCLUSIVE", False),
+        ("obs-one-open", "ONE_MATCH_DETERMINATE", False),
+    ]
+    for observation_id, verdict, terminal in cases:
+        soak_store.append_ambiguity_observation(
+            conn, observation_id=observation_id, campaign_id="campaign-1", run_id="run-1",
+            ticker="005930", order_intent_id="intent-1", verdict=verdict,
+            remaining_order_terminal=terminal,
+        )
+        with pytest.raises(ValueError, match="determinate terminal"):
+            soak_store.transition_freeze(
+                conn, freeze_id="freeze-1", release_evidence_type="AMBIGUITY_OBSERVATION",
+                release_evidence_id=observation_id,
+            )
+
+    soak_store.append_ambiguity_observation(
+        conn, observation_id="obs-terminal", campaign_id="campaign-1", run_id="run-2",
+        ticker="005930", order_intent_id="intent-1", verdict="ONE_MATCH_DETERMINATE",
+        remaining_order_terminal=True,
+    )
+    released_id = soak_store.transition_freeze(
+        conn, freeze_id="freeze-1", release_evidence_type="AMBIGUITY_OBSERVATION",
+        release_evidence_id="obs-terminal", detail={"broker_status": "CANCELLED"},
+    )
+    assert released_id > frozen_id
+    with pytest.raises(ValueError, match="already released"):
+        soak_store.transition_freeze(
+            conn, freeze_id="freeze-1", release_evidence_type="AMBIGUITY_OBSERVATION",
+            release_evidence_id="obs-terminal",
+        )
+
+
+def test_remaining_order_freeze_and_day_credit_coexist_after_restart(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    path = tmp_path / "soak.db"
+    conn = soak_store.connect_soak_store(path)
+    _campaign(soak_store.bind(conn))
+    soak_store.freeze_ticker(
+        conn, freeze_id="remaining-1", campaign_id="campaign-1", ticker="000660",
+        order_intent_id="intent-partial", freeze_kind="REMAINING_ORDER",
+    )
+    soak_store.designate_day(
+        conn, campaign_id="campaign-1", trading_date="2026-07-17", run_id="run-partial",
+        run_kind="RUN", terminal=True, credit_state="CREDITED",
+        detail={"reconciliation_complete": True, "fill_state": "PARTIAL"},
+    )
+    reopened = soak_store.connect_soak_store(path)
+    state = soak_store.load_campaign_state(reopened, campaign_id="campaign-1")
+    assert state["credited_days"] == 1
+    assert [(row["ticker"], row["freeze_kind"]) for row in state["active_freezes"]] == [
+        ("000660", "REMAINING_ORDER")
+    ]
