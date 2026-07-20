@@ -4,6 +4,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from trading_bot.market_cycle import KST, MarketCyclePolicy, MarketSession
+from trading_bot.soak_drills import FAULT_REGISTRY
+from trading_bot.soak_models import FaultName
 from trading_bot.preflight import (
     AuditHealthEvidence,
     MockTargetEvidence,
@@ -230,3 +232,74 @@ def test_scope_fences() -> None:
         "replay 수익률",
     }
     assert not any(phrase in text for phrase in forbidden_authorizations)
+
+
+def test_phase9_command_order_and_external_gates_are_exact() -> None:
+    header, rows = _table(_section(_text(), "Phase 9 인증 운영 순서"))
+    assert header == ["순서", "명령", "gate", "실패 exit"]
+    assert [row["순서"] for row in rows] == [str(index) for index in range(1, 9)]
+    commands = [row["명령"].strip("`") for row in rows]
+    assert commands == [
+        "bot soak start --campaign-id <campaign_id> --probe-only --fixture <compat.json>",
+        "bot soak start --campaign-id <campaign_id> --accepted-profile <compat.json>",
+        "bot status",
+        "bot soak status --campaign-id <campaign_id>",
+        "bot soak run --campaign-id <campaign_id> --run-id <run_id>",
+        "bot soak status --campaign-id <campaign_id>",
+        "bot soak resume --campaign-id <campaign_id>",
+        "bot soak status --campaign-id <campaign_id>",
+    ]
+    assert all(row["실패 exit"] == "`2`" for row in rows)
+    section = _section(_text(), "Phase 9 외부 완료 gate")
+    assert "1일" in section and "20 eligible days" in section
+    assert "실제 외부 KIS 모의계좌 확인" in section
+    assert "CONTROLLED_INJECTION" in section and "KIS_OBSERVED" in section
+    assert "synthetic evidence는 대체할 수 없다" in section
+
+
+def test_every_fault_registry_command_and_recovery_owner_is_documented_once() -> None:
+    section = _section(_text(), "Phase 9 fault drill 명령")
+    slugs = {
+        FaultName.STALE_DATA: "stale-data",
+        FaultName.MALFORMED_LLM: "malformed-llm",
+        FaultName.LLM_TIMEOUT: "timed-out-llm",
+        FaultName.KIS_API_FAILURE: "kis-api-failure",
+        FaultName.ACCEPTED_THEN_TIMEOUT: "accepted-then-timeout",
+        FaultName.THROTTLING: "throttling",
+        FaultName.PARTIAL_OR_NO_FILL: "partial-or-no-fill",
+        FaultName.INTERRUPTION: "interruption",
+        FaultName.NOTIFICATION_FAILURE: "notification-failure",
+        FaultName.AUDIT_FAILURE: "audit-failure",
+    }
+    assert set(slugs) == set(FAULT_REGISTRY)
+    for slug in slugs.values():
+        command = f"bot soak drill {slug} --campaign-id <campaign_id>"
+        assert section.count(command) == 1
+    recovery = _section(_text(), "Phase 9 저장소 백업과 복구 순서")
+    for owner in ("primary audit", "soak", "controller"):
+        assert recovery.count(owner) >= 1
+    for path in ("data/audit.db", "data/soak.db", "data/soak-controller.db"):
+        assert recovery.count(path) >= 1
+    assert recovery.index("controller") < recovery.index("primary audit") < recovery.index("soak")
+    assert "query-only" in recovery
+    assert "D-22" in recovery
+
+
+def test_phase9_freeze_and_scope_contract_is_explicit() -> None:
+    section = _section(_text(), "Phase 9 ambiguity와 동결")
+    assert "000660" in section
+    assert "FROZEN" in section and "non-credit" in section
+    assert "D-13" in section and "재제출하지 않는다" in section
+    assert "partial/no-fill" in section
+    assert "same-subject determinate terminal broker evidence" in section
+
+    fences = _section(_text(), "Phase 9 범위 금지선")
+    for phrase in (
+        "스케줄링",
+        "실계좌 promotion",
+        "정책 자동 변경",
+        "자동 재제출",
+        "수익성 주장",
+        "새 전략",
+    ):
+        assert fences.count(phrase) == 1

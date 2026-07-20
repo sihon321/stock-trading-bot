@@ -351,3 +351,48 @@ def test_status_is_read_only() -> None:
     status = cli._orchestrate_soak_status(_runtime(calls))
     assert status["state"] == "ACTIVE"
     assert calls == ["campaign:status"]
+
+
+def test_status_cli_uses_only_the_read_only_triple_store_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import trading_bot.cli as cli
+
+    settings = _settings(tmp_path)
+    calls: list[object] = []
+
+    class Repository:
+        def __init__(self, audit, soak, controller):
+            calls.append((audit, soak, controller))
+
+    monkeypatch.setattr(cli, "_soak_settings_factory", lambda: settings)
+    monkeypatch.setattr(cli, "_soak_report_repository_factory", Repository)
+    monkeypatch.setattr(
+        cli,
+        "_soak_report_builder",
+        lambda repository, campaign_id: calls.append((repository, campaign_id)) or "report",
+    )
+    monkeypatch.setattr(cli, "_soak_report_renderer", lambda report: "truthful-report\n")
+    monkeypatch.setattr(
+        cli,
+        "_soak_runtime_factory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live runtime called")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_soak_adapter",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("KIS called")),
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["soak", "status", "--campaign-id", "campaign-1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "truthful-report\n"
+    assert calls[0] == (
+        settings.primary_audit_db_path,
+        settings.soak_db_path,
+        settings.controller_db_path,
+    )
+    assert calls[1][1] == "campaign-1"
