@@ -280,7 +280,11 @@ def test_every_fault_registry_command_and_recovery_owner_is_documented_once() ->
         assert recovery.count(owner) >= 1
     for path in ("data/audit.db", "data/soak.db", "data/soak-controller.db"):
         assert recovery.count(path) >= 1
-    assert recovery.index("controller") < recovery.index("primary audit") < recovery.index("soak")
+    assert (
+        recovery.index("1. controller")
+        < recovery.index("2. primary audit")
+        < recovery.index("3. soak")
+    )
     assert "query-only" in recovery
     assert "D-22" in recovery
 

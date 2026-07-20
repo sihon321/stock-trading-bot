@@ -115,3 +115,74 @@ replay 확인은 `bot report replay 결과.json [추가-결과.json ...]`을 사
 - 수익성·투자성과 주장
 - 실계좌 전환 또는 자동 승격
 - Phase 9 KIS 모의계좌 soak·장애 주입 실행
+
+## Phase 9 인증 운영 순서
+
+이 절차는 Phase 9 전용 수동 절차다. Plan 02의 인증된 GET-only compatibility probe를 먼저 실행하고, Plan 09에서 구현된 durable proof 경로는 Plan 10의 별도 외부 승인으로 이미 한 번만 실행되었다. 그 결과 `000660` acknowledgement는 성공으로 승격되지 않았으며 현재 `FROZEN`/non-credit이다. 아래 명령의 오류는 모두 exit code `2`로 fail closed한다.
+
+| 순서 | 명령 | gate | 실패 exit |
+|---|---|---|---|
+| 1 | `bot soak start --campaign-id <campaign_id> --probe-only --fixture <compat.json>` | 인증된 mock GET 페이지가 모두 COMPLETE이고 fixture가 KIS_OBSERVED인지 확인한다. | `2` |
+| 2 | `bot soak start --campaign-id <campaign_id> --accepted-profile <compat.json>` | 승인 profile, 독립 저장소, STARTUP reconciliation이 모두 통과해야 campaign이 ACTIVE다. | `2` |
+| 3 | `bot status` | 09:00 이후 CONTINUOUS, mock target, audit health, 전역 PASS를 확인한다. | `2` |
+| 4 | `bot soak status --campaign-id <campaign_id>` | credited/target, 가용성 budget, 영구 안전 래치, reconciliation, 동결, provenance별 drill 분모를 기록한다. | `2` |
+| 5 | `bot soak run --campaign-id <campaign_id> --run-id <run_id>` | PRE_RUN 뒤에만 실행하며 각 accepted/ambiguous submission마다 POST_SUBMISSION을 정확히 한 번 수행하고 PRE_FINALIZE를 통과한다. | `2` |
+| 6 | `bot soak status --campaign-id <campaign_id>` | 실행 직후 지정/비인정, reconciliation UNKNOWN, 활성 동결을 확인한다. | `2` |
+| 7 | `bot soak resume --campaign-id <campaign_id>` | RESUME query-only reconciliation과 freeze 재구성만 수행하며 과거 POST를 재생하지 않는다. | `2` |
+| 8 | `bot soak status --campaign-id <campaign_id>` | 복구 후에도 모든 독립 분모가 reconcile되는지 최종 확인한다. | `2` |
+
+`bot soak status`는 KIS, LLM, pykrx, 주문 adapter를 만들지 않는다. primary audit, soak, controller의 서로 다른 파일을 각각 `mode=ro`, `query_only`, stable read transaction으로 읽으며 cross-database atomic snapshot을 주장하지 않는다.
+
+## Phase 9 ambiguity와 동결
+
+인증 proof의 `000660` BUY 1주는 broker order ID가 없고 최종 비교가 `UNKNOWN`이므로 `FROZEN`/non-credit이다. D-13에 따라 같은 intent를 재제출하지 않는다. 새로운 KIS 조회에서 same-subject determinate terminal broker evidence가 완전하게 저장된 경우에만 append-only release transition을 검토한다.
+
+일반 soak에서 acknowledgement ambiguity가 생기면 영향 ticker만 동결하고 즉시 `bot soak status`로 UNKNOWN과 comparison을 기록한다. partial/no-fill은 remaining order가 terminal이 될 때까지 해당 ticker를 동결한다. 어느 경우에도 로컬 행의 부재를 broker 미접수로 해석하거나 자동 취소·재주문하지 않는다.
+
+## Phase 9 fault drill 명령
+
+각 명령은 controller contract의 durable commit과 독립 read-back 뒤 단 한 번만 fault를 활성화한다. D-20에 따라 CONTROLLED_INJECTION은 적격일, 가용성 budget, KIS_OBSERVED 성과에 산입하지 않는다.
+
+| fault | 명령 |
+|---|---|
+| STALE_DATA | `bot soak drill stale-data --campaign-id <campaign_id>` |
+| MALFORMED_LLM | `bot soak drill malformed-llm --campaign-id <campaign_id>` |
+| LLM_TIMEOUT | `bot soak drill timed-out-llm --campaign-id <campaign_id>` |
+| KIS_API_FAILURE | `bot soak drill kis-api-failure --campaign-id <campaign_id>` |
+| ACCEPTED_THEN_TIMEOUT | `bot soak drill accepted-then-timeout --campaign-id <campaign_id>` |
+| THROTTLING | `bot soak drill throttling --campaign-id <campaign_id>` |
+| PARTIAL_OR_NO_FILL | `bot soak drill partial-or-no-fill --campaign-id <campaign_id>` |
+| INTERRUPTION | `bot soak drill interruption --campaign-id <campaign_id>` |
+| NOTIFICATION_FAILURE | `bot soak drill notification-failure --campaign-id <campaign_id>` |
+| AUDIT_FAILURE | `bot soak drill audit-failure --campaign-id <campaign_id>` |
+
+각 실행 뒤 `bot soak status --campaign-id <campaign_id>`에서 D-22의 containment, primary-audit link, 필요한 reconciliation/restart, prohibited-action 관찰이 모두 PASS인지 확인한다. `CONTROLLED_INJECTION`과 `KIS_OBSERVED`의 required/passed/failed/unknown은 별도 표로 읽고 합산하지 않는다.
+
+## Phase 9 저장소 백업과 복구 순서
+
+모든 mutable 명령을 먼저 중단한다. 세 저장소는 독립 owner이므로 하나의 복사본이나 cross-database transaction으로 취급하지 않는다. 정상 파일의 안전한 SQLite backup은 각각 `sqlite3 data/audit.db '.backup data/audit.backup.db'`, `sqlite3 data/soak.db '.backup data/soak.backup.db'`, `sqlite3 data/soak-controller.db '.backup data/soak-controller.backup.db'`로 만든다. WAL 파일만 복사하지 않는다.
+
+복구 판정 순서는 다음과 같다.
+
+1. controller: `data/soak-controller.db`를 query-only로 열어 integrity, committed contract, D-22 observation, terminal verdict 또는 pending restart token을 확인한다. controller 증거가 없으면 fault 성공을 주장하지 않는다.
+2. primary audit: `data/audit.db`를 query-only로 열어 run, ticker outcome, order intent/event의 terminal 귀속을 확인한다. 누락 가능성이 있으면 신규 거래 전체를 중단한다.
+3. soak: `data/soak.db`를 query-only로 열어 campaign, reconciliation, comparison, freeze, drill link를 확인한다. controller와 primary audit의 stable ID가 일치하지 않으면 UNKNOWN/FAIL로 유지한다.
+4. 세 owner가 각각 정상인 뒤 `bot soak resume --campaign-id <campaign_id>`를 한 번 실행한다. 이것은 broker 조회와 freeze 재구성만 하며 order POST를 재생하지 않는다.
+5. 마지막으로 `bot soak status --campaign-id <campaign_id>`를 실행해 controller → primary audit → soak 복구 결과와 D-22 분모를 다시 확인한다.
+
+audit failure나 interruption 뒤에는 미완료 controller contract를 새 contract로 덮어쓰지 않는다. ambiguity/accepted-then-timeout이면 query-only broker truth가 determinate해질 때까지 D-13의 no resubmission을 유지한다.
+
+## Phase 9 외부 완료 gate
+
+첫 1일 gate는 실제 지정 거래일의 terminal mock RUN, 완전한 필수 reconciliation, 명시적 non-credit/credit 판정, 활성 동결 검토를 요구한다. 20 eligible days gate는 서로 다른 확인된 KRX 거래일 20개가 모두 credited이고 credited/target이 `20/20`이며 가용성 budget과 영구 안전 래치가 별도 상태로 남아 있어야 한다.
+
+이 두 gate와 한 번의 proof order는 실제 외부 KIS 모의계좌 확인이다. unit test, fixture, replay, synthetic evidence는 대체할 수 없다. D-17에 따라 KIS_OBSERVED, CONTROLLED_INJECTION, SYNTHETIC provenance를 분리하고 CONTROLLED_INJECTION 성공 수를 clean-operation이나 KIS 관측 수에 더하지 않는다.
+
+## Phase 9 범위 금지선
+
+- 스케줄링
+- 실계좌 promotion
+- 정책 자동 변경
+- 자동 재제출
+- 수익성 주장
+- 새 전략

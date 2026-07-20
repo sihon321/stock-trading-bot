@@ -81,6 +81,11 @@ from trading_bot.soak_store import (
 )
 from trading_bot.soak_campaign import SoakCampaignService
 from trading_bot.soak_drills import DrillService, parse_fault_name
+from trading_bot.soak_reporting import (
+    ReadOnlySoakRepository,
+    build_soak_report,
+    render_soak_report,
+)
 from trading_bot.reporting import ReadOnlyAuditRepository, build_daily_report
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
@@ -107,6 +112,9 @@ _soak_settings_factory = SoakSettings
 _soak_probe = probe_mock_profile
 _proof_service_factory = ProofOrderService
 _drill_service_factory = DrillService
+_soak_report_repository_factory = ReadOnlySoakRepository
+_soak_report_builder = build_soak_report
+_soak_report_renderer = render_soak_report
 
 RunCycleFn = Callable[..., ExecutionResult]
 
@@ -1408,31 +1416,20 @@ def soak_resume_command(
 def soak_status_command(
     campaign_id: str = typer.Option(..., "--campaign-id"),
 ) -> None:
-    """Read persisted campaign status without opening broker or controller paths."""
+    """Render all three evidence owners without constructing live collaborators."""
 
-    conn: sqlite3.Connection | None = None
     try:
         settings = _soak_settings_factory()
-        paths = validate_store_topology(
+        repository = _soak_report_repository_factory(
             settings.primary_audit_db_path,
             settings.soak_db_path,
             settings.controller_db_path,
         )
-        soak_path = paths["soak_db_path"]
-        if not soak_path.is_file():
-            raise ValueError("SOAK_STORE_NOT_FOUND")
-        conn = sqlite3.connect(f"{soak_path.as_uri()}?mode=ro", uri=True)
-        conn.execute("PRAGMA query_only=ON")
-        status = load_campaign_state(conn, campaign_id=campaign_id)
-        typer.echo(f"campaign_state={status['state'].value}")
-        typer.echo(f"credited_days={status['credited_days']}")
-        typer.echo(f"active_freezes={len(status['active_freezes'])}")
+        report = _soak_report_builder(repository, campaign_id)
+        typer.echo(_soak_report_renderer(report), nl=False)
     except (KeyError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
         typer.echo(str(exc)[:200], err=True)
         raise typer.Exit(2) from None
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 @soak_app.command("drill")
