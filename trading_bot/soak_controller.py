@@ -177,6 +177,21 @@ def connect_controller(
         raise
 
 
+def bootstrap_controller_journal(
+    controller_db_path: PathLike,
+    primary_audit_db_path: PathLike,
+    soak_db_path: PathLike,
+) -> None:
+    """Create or migrate the controller schema without granting drill authority."""
+
+    conn = connect_controller(
+        controller_db_path,
+        primary_audit_db_path,
+        soak_db_path,
+    )
+    conn.close()
+
+
 def prepare_drill(
     conn: sqlite3.Connection,
     *,
@@ -413,6 +428,7 @@ __all__ = [
     "CONTROLLER_SCHEMA_VERSION",
     "CommittedDrillToken",
     "append_controller_observation",
+    "bootstrap_controller_journal",
     "commit_drill_contract",
     "connect_controller",
     "controller_integrity_check",

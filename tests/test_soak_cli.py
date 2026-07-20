@@ -275,23 +275,113 @@ def _runtime(calls: list[str]):
         campaign=campaign,
         persist_receipt=lambda: calls.append("receipt:persist"),
         reconcile=reconcile,
+        bootstrap_controller=lambda: calls.append("controller:bootstrap"),
         execute_designated=execute,
         rebuild_freezes=lambda: calls.append("freeze:rebuild") or {"000660": object()},
         close=lambda: calls.append("runtime:close"),
     )
 
 
-def test_start_persists_receipt_and_reconciles_before_activation() -> None:
+def test_start_persists_receipt_reconciles_and_bootstraps_before_activation() -> None:
     import trading_bot.cli as cli
 
     calls: list[str] = []
     cli._orchestrate_soak_start(_runtime(calls), campaign_policy={})
-    assert calls[:4] == [
+    assert calls[:5] == [
         "campaign:create",
         "receipt:persist",
         "reconcile:STARTUP",
+        "controller:bootstrap",
         "campaign:status",
     ]
+
+
+def test_start_bootstraps_empty_controller_for_read_only_predrill_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import sqlite3
+
+    import trading_bot.cli as cli
+    from trading_bot import sqlite_audit
+    from trading_bot.soak_campaign import SoakCampaignService
+    from trading_bot.soak_controller import (
+        CONTROLLER_SCHEMA_VERSION,
+        bootstrap_controller_journal,
+    )
+    from trading_bot.soak_store import connect_soak_store
+
+    settings = _settings(tmp_path)
+    sqlite_audit.connect(settings.primary_audit_db_path).close()
+    soak = connect_soak_store(settings.soak_db_path)
+    campaign = SoakCampaignService(
+        market_policy=object(),
+        store=soak,
+        daily_report_builder=lambda day: (_ for _ in ()).throw(
+            AssertionError("daily report reached")
+        ),
+    )
+    runtime = cli._SoakRuntime(
+        campaign_id="campaign-1",
+        settings=settings,
+        receipt=object(),
+        campaign=campaign,
+        persist_receipt=lambda: None,
+        reconcile=lambda stage, run_id: type("Result", (), {"complete": True})(),
+        bootstrap_controller=lambda: bootstrap_controller_journal(
+            settings.controller_db_path,
+            settings.primary_audit_db_path,
+            settings.soak_db_path,
+        ),
+        execute_designated=lambda run_id, post_submission: (_ for _ in ()).throw(
+            AssertionError("submission path reached")
+        ),
+        rebuild_freezes=lambda: (_ for _ in ()).throw(
+            AssertionError("freeze mutation reached")
+        ),
+        close=soak.close,
+    )
+
+    assert not settings.controller_db_path.exists()
+    status = cli._orchestrate_soak_start(
+        runtime,
+        campaign_policy={
+            "accepted_profile_fingerprint": "sha256:test",
+            "accepted_profile_version": "official-example-v1",
+            "field_contract_version": "kis-mock-compat-v1",
+            "ambiguity_policy_version": "ambiguity-v1",
+            "ambiguity_window_seconds": 60,
+            "ambiguity_poll_cadence_seconds": 5,
+            "ambiguity_max_observations": 12,
+        },
+    )
+    runtime.close()
+
+    assert getattr(status["state"], "value", status["state"]) == "ACTIVE"
+    controller = sqlite3.connect(settings.controller_db_path)
+    try:
+        assert controller.execute("PRAGMA user_version").fetchone()[0] == (
+            CONTROLLER_SCHEMA_VERSION
+        )
+        assert controller.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        for table in (
+            "drill_contracts",
+            "drill_commits",
+            "drill_observations",
+            "drill_verdicts",
+        ):
+            assert controller.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        controller.close()
+
+    before = settings.controller_db_path.read_bytes()
+    monkeypatch.setattr(cli, "_soak_settings_factory", lambda: settings)
+    result = CliRunner().invoke(
+        cli.app, ["soak", "status", "--campaign-id", "campaign-1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "상태: ACTIVE" in result.stdout
+    assert settings.controller_db_path.read_bytes() == before
 
 
 def test_designated_run_has_all_reconciliation_boundaries_in_order() -> None:

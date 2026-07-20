@@ -80,6 +80,7 @@ from trading_bot.soak_store import (
     load_campaign_state,
 )
 from trading_bot.soak_campaign import SoakCampaignService
+from trading_bot.soak_controller import bootstrap_controller_journal
 from trading_bot.soak_drills import DrillService, parse_fault_name
 from trading_bot.soak_reporting import (
     ReadOnlySoakRepository,
@@ -142,6 +143,7 @@ class _SoakRuntime:
     campaign: Any
     persist_receipt: Callable[[], Any]
     reconcile: Callable[[ReconciliationStage, str], Any]
+    bootstrap_controller: Callable[[], None]
     execute_designated: Callable[[str, Callable[[], None]], dict[str, Any]]
     rebuild_freezes: Callable[[], Any]
     close: Callable[[], None]
@@ -168,6 +170,7 @@ def _orchestrate_soak_start(
     runtime.campaign.start_campaign(campaign_id=runtime.campaign_id, **campaign_policy)
     runtime.persist_receipt()
     _require_soak_reconciliation(runtime, ReconciliationStage.STARTUP, "startup")
+    runtime.bootstrap_controller()
     return runtime.campaign.load_status(runtime.campaign_id)
 
 
@@ -512,6 +515,11 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         campaign=campaign,
         persist_receipt=persist_receipt,
         reconcile=reconcile,
+        bootstrap_controller=lambda: bootstrap_controller_journal(
+            settings.controller_db_path,
+            settings.primary_audit_db_path,
+            settings.soak_db_path,
+        ),
         execute_designated=execute_designated,
         rebuild_freezes=lambda: rebuild_ticker_freezes(soak, campaign_id),
         close=lambda: (primary.close(), soak.close()),
