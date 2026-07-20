@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 09-06-PLAN.md
-last_updated: "2026-07-20T01:05:46.353Z"
+stopped_at: Completed 09-07-PLAN.md
+last_updated: "2026-07-20T01:21:27.884Z"
 last_activity: 2026-07-20
-last_activity_desc: Completed 09-06 durable fault drill controller
+last_activity_desc: Completed 09-07 read-only soak reporting and operator runbook
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 25
-  percent: 93
+  completed_plans: 26
+  percent: 96
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
-Plan: 7 of 10
+Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-07-20 — Completed 09-06 durable fault drill controller
+Last activity: 2026-07-20 — Completed 09-07 read-only soak reporting and operator runbook
 
-Progress: [█████████░] 93%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -97,6 +97,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Fault construction requires a committed controller contract and independent read-back token. — Prevents any injection from starting on evidence that exists only in memory or an uncommitted transaction.
 - [Phase 09]: Controlled faults use one immutable registry and single-use port; only accepted-then-timeout crosses one POST boundary. — Makes hidden or multiple activation structurally unavailable and preserves the no-blind-retry contract.
 - [Phase 09]: Controlled drill evidence remains accounting-neutral and provenance-separated. — Keeps eligible-day credit, availability budget, and KIS-observed evidence truthful.
+- [Phase 09]: Read each evidence owner in its own stable mode=ro/query_only transaction and never claim a cross-database atomic snapshot. — Preserves truthful ownership boundaries while supporting one report.
+- [Phase 09]: Downgrade missing or contradictory primary/controller links to UNKNOWN instead of omitting them or preserving a persisted PASS. — Missing provenance cannot support a successful operator claim.
+- [Phase 09]: Keep CONTROLLED_INJECTION, KIS_OBSERVED, and SYNTHETIC drill denominators separate from eligible-day and availability accounting. — Prevents synthetic drills from overstating authenticated clean operation.
+- [Phase 09]: Make soak status require the canonical existing triple and construct no KIS, LLM, data, or order collaborator. — Read-only inspection must not acquire live or mutating authority.
 
 ### Pending Todos
 
@@ -135,11 +139,12 @@ None yet.
 | Phase 09 P10 | 8 min | 1 tasks | 1 files |
 | Phase 09 P05 | 12 min | 2 tasks | 4 files |
 | Phase 09 P06 | 11 min | 2 tasks | 5 files |
+| Phase 09 P07 | 10 min | 2 tasks | 6 files |
 
 ## Session Continuity
 
-Last session: 2026-07-20T01:05:46.347Z
-Stopped at: Completed 09-06-PLAN.md
+Last session: 2026-07-20T01:21:27.877Z
+Stopped at: Completed 09-07-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
