@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 09-05-PLAN.md
-last_updated: "2026-07-20T00:49:54.684Z"
+stopped_at: Completed 09-06-PLAN.md
+last_updated: "2026-07-20T01:05:46.353Z"
 last_activity: 2026-07-20
 last_activity_desc: Completed 09-05 mock soak campaign orchestration
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 24
-  percent: 89
+  completed_plans: 25
+  percent: 60
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
 Last activity: 2026-07-20 — Completed 09-05 mock soak campaign orchestration
 
@@ -94,6 +94,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Non-credit soak verdicts persist as events without consuming a designated-day attempt. — Prevents closed, unknown, preview, dry-run, drill, rerun, or incomplete evidence from consuming credit opportunities.
 - [Phase 09]: All active soak freezes are projected into designated-run preflight across campaign boundaries. — Preserves the authenticated 000660 ambiguity freeze at the money-moving boundary.
 - [Phase 09]: Each accepted or ambiguous submission requires one POST_SUBMISSION reconciliation before finalization. — Makes reconciliation cardinality explicit and prevents blind retry or unsupported credit.
+- [Phase 09]: Fault construction requires a committed controller contract and independent read-back token. — Prevents any injection from starting on evidence that exists only in memory or an uncommitted transaction.
+- [Phase 09]: Controlled faults use one immutable registry and single-use port; only accepted-then-timeout crosses one POST boundary. — Makes hidden or multiple activation structurally unavailable and preserves the no-blind-retry contract.
+- [Phase 09]: Controlled drill evidence remains accounting-neutral and provenance-separated. — Keeps eligible-day credit, availability budget, and KIS-observed evidence truthful.
 
 ### Pending Todos
 
@@ -131,11 +134,12 @@ None yet.
 | Phase 09 P09 | 12 min | 2 tasks | 8 files |
 | Phase 09 P10 | 8 min | 1 tasks | 1 files |
 | Phase 09 P05 | 12 min | 2 tasks | 4 files |
+| Phase 09 P06 | 11 min | 2 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-07-20T00:49:54.678Z
-Stopped at: Completed 09-05-PLAN.md
+Last session: 2026-07-20T01:05:46.347Z
+Stopped at: Completed 09-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
