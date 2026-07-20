@@ -165,7 +165,11 @@ def test_day_credit_matrix_is_fail_closed_and_persisted_only_when_eligible(
 
     assert verdict.code is expected
     rows = service.store.execute("SELECT credit_state FROM soak_days").fetchall()
-    assert rows == ([(DayCreditState.CREDITED.value,)] if expected is DayVerdictCode.CREDITED else [])
+    assert [row[0] for row in rows] == (
+        [DayCreditState.CREDITED.value]
+        if expected is DayVerdictCode.CREDITED
+        else []
+    )
 
 
 @pytest.mark.parametrize(
