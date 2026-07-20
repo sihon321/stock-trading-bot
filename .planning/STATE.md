@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 09-10-PLAN.md
-last_updated: "2026-07-20T00:33:06.984Z"
+stopped_at: Completed 09-05-PLAN.md
+last_updated: "2026-07-20T00:49:54.684Z"
 last_activity: 2026-07-20
-last_activity_desc: Completed 09-10 authenticated mock proof order
+last_activity_desc: Completed 09-05 mock soak campaign orchestration
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 23
-  percent: 85
+  completed_plans: 24
+  percent: 89
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
-Last activity: 2026-07-20 — Completed 09-10 authenticated mock proof order
+Last activity: 2026-07-20 — Completed 09-05 mock soak campaign orchestration
 
-Progress: [█████████░] 85%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
@@ -91,6 +91,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Reconciliation reads primary audit in query-only mode, writes only the soak store, and leaves the controller DB unopened.
 - [Phase 09]: Treat the authenticated proof acknowledgement as ambiguous and retain the 000660 freeze. — No broker order ID was returned and the complete post-submission comparison remains UNKNOWN.
 - [Phase 09]: Proof-order ambiguity remains non-credit and cannot authorize resubmission. — Cross-linked durable evidence and a restart-persistent freeze preserve safety without overstating broker truth.
+- [Phase 09]: Non-credit soak verdicts persist as events without consuming a designated-day attempt. — Prevents closed, unknown, preview, dry-run, drill, rerun, or incomplete evidence from consuming credit opportunities.
+- [Phase 09]: All active soak freezes are projected into designated-run preflight across campaign boundaries. — Preserves the authenticated 000660 ambiguity freeze at the money-moving boundary.
+- [Phase 09]: Each accepted or ambiguous submission requires one POST_SUBMISSION reconciliation before finalization. — Makes reconciliation cardinality explicit and prevents blind retry or unsupported credit.
 
 ### Pending Todos
 
@@ -127,11 +130,12 @@ None yet.
 | Phase 09 P04 | 11 min | 2 tasks | 5 files |
 | Phase 09 P09 | 12 min | 2 tasks | 8 files |
 | Phase 09 P10 | 8 min | 1 tasks | 1 files |
+| Phase 09 P05 | 12 min | 2 tasks | 4 files |
 
 ## Session Continuity
 
-Last session: 2026-07-20T00:32:55.300Z
-Stopped at: Completed 09-10-PLAN.md
+Last session: 2026-07-20T00:49:54.678Z
+Stopped at: Completed 09-05-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
