@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 09
-current_phase_name: KIS Mock Soak & Fault Drills
+current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 09-09-PLAN.md
-last_updated: "2026-07-16T09:44:36.019Z"
-last_activity: 2026-07-16
-last_activity_desc: Phase 09 execution started
+stopped_at: Completed 09-10-PLAN.md
+last_updated: "2026-07-20T00:33:06.984Z"
+last_activity: 2026-07-20
+last_activity_desc: Completed 09-10 authenticated mock proof order
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
-  completed_plans: 22
-  percent: 81
+  completed_plans: 23
+  percent: 85
 ---
 
 # Project State
@@ -24,16 +24,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 09 — KIS Mock Soak & Fault Drills
+**Current focus:** Phase 09 — kis-mock-soak-fault-drills
 
 ## Current Position
 
-Phase: 09 (KIS Mock Soak & Fault Drills) — EXECUTING
-Plan: 6 of 10
+Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
+Plan: 5 of 10
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 09 execution started
+Last activity: 2026-07-20 — Completed 09-10 authenticated mock proof order
 
-Progress: [████████░░] 81%
+Progress: [█████████░] 85%
 
 ## Performance Metrics
 
@@ -89,6 +89,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Broker truth is complete only after all order/fill and balance pages plus required cash fields normalize successfully.
 - [Phase 09]: Ambiguity becomes determinate only when the entire bounded observation sequence agrees on zero matches or one stable broker order.
 - [Phase 09]: Reconciliation reads primary audit in query-only mode, writes only the soak store, and leaves the controller DB unopened.
+- [Phase 09]: Treat the authenticated proof acknowledgement as ambiguous and retain the 000660 freeze. — No broker order ID was returned and the complete post-submission comparison remains UNKNOWN.
+- [Phase 09]: Proof-order ambiguity remains non-credit and cannot authorize resubmission. — Cross-linked durable evidence and a restart-persistent freeze preserve safety without overstating broker truth.
 
 ### Pending Todos
 
@@ -98,6 +100,7 @@ None yet.
 
 - Phase 9 planning must confirm authenticated KIS mock restrictions, inquiry behavior, and fault semantics.
 - Phase 10 planning must define sample sufficiency, uncertainty, and promotion thresholds before calibration claims.
+- Ticker 000660 remains frozen after the authenticated proof because the KIS acknowledgement was ambiguous and no determinate broker order was observed; do not resubmit or release without same-subject terminal broker evidence.
 
 ## Deferred Items
 
@@ -123,11 +126,12 @@ None yet.
 | Phase 09 P03 | 10 min | 2 tasks | 2 files |
 | Phase 09 P04 | 11 min | 2 tasks | 5 files |
 | Phase 09 P09 | 12 min | 2 tasks | 8 files |
+| Phase 09 P10 | 8 min | 1 tasks | 1 files |
 
 ## Session Continuity
 
-Last session: 2026-07-16T09:44:21.467Z
-Stopped at: Completed 09-09-PLAN.md
+Last session: 2026-07-20T00:32:55.300Z
+Stopped at: Completed 09-10-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
