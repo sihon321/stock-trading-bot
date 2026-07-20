@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from trading_bot import sqlite_audit, soak_store
+from trading_bot.audit_models import RunKind
 from trading_bot.soak_controller import (
     append_controller_observation,
     commit_drill_contract,
@@ -67,7 +68,7 @@ def test_report_is_byte_preserving_and_keeps_accounting_dimensions_distinct(
         run_id="run-1",
         trading_mode="mock",
         dry_run=False,
-        run_kind="RUN",
+        run_kind=RunKind.RUN,
         started_at="2026-07-20T00:00:00+00:00",
         trading_date_kst="20260720",
         target="mock",
