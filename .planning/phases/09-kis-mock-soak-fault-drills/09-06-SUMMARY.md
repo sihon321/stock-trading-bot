@@ -118,9 +118,17 @@ Each TDD task was committed as a failing contract followed by its passing implem
 - **Verification:** Focused 72-test plan suite and complete 568-test repository suite pass.
 - **Committed in:** N/A (execution environment only)
 
+**2. [Rule 1 - Tracking Bug] Corrected the SDK progress percentage and stale activity label**
+- **Found during:** Post-summary state self-check
+- **Issue:** The state updater advanced to plan 7 and counted 25/27 completed plans, but wrote 60% from completed phases and retained the prior plan's activity description.
+- **Fix:** Corrected the canonical state percentage to 93% and recorded 09-06 as the latest activity.
+- **Files modified:** `.planning/STATE.md`
+- **Verification:** STATE now reports plan 7 of 10, 25/27 completed plans, 93%, and `Completed 09-06 durable fault drill controller`.
+- **Committed in:** Final tracking correction commit
+
 ---
 
-**Total deviations:** 1 auto-fixed blocking execution issue.
+**Total deviations:** 2 auto-fixed (1 blocking execution issue, 1 tracking bug).
 **Impact on plan:** No product scope, dependency, broker authority, campaign semantics, or authenticated evidence changed.
 
 ## Issues Encountered
