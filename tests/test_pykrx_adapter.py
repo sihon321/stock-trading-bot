@@ -264,6 +264,18 @@ def test_fetch_market_ohlcv_empty_is_unavailable() -> None:
     assert result.health.status is SourceStatus.UNAVAILABLE
 
 
+def test_fetch_market_ohlcv_all_zero_holiday_frame_is_unavailable() -> None:
+    holiday = _frame(rows=5)
+    holiday[["시가", "고가", "저가", "종가", "거래량"]] = 0
+    adapter = _adapter(lambda *a, **k: holiday)
+
+    result = adapter.fetch_market_ohlcv("20260712", market="KOSPI")
+
+    assert result.frame is None
+    assert result.health.status is SourceStatus.UNAVAILABLE
+    assert "empty" in result.health.reason.lower()
+
+
 # --- Hybrid policy (D-01/D-03) ---------------------------------------------
 
 

@@ -187,6 +187,11 @@ def _normalize_frame(
                 f"failed to filter whole-market frame: {exc}",
                 expected_date=expected_date,
             )
+        if frame.empty:
+            return _unavailable(
+                "empty OHLCV frame after validation",
+                expected_date=expected_date,
+            )
 
     # Freshness: the latest observed date must meet the expected trading date,
     # honoring an accepted natural-closure fallback date when supplied.

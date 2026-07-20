@@ -117,6 +117,26 @@ def test_observed_calendar_distinguishes_closure_from_provider_failure():
     assert calendar.is_trading_day(date(2026, 7, 13)) is None
 
 
+def test_observed_calendar_rejects_available_but_empty_holiday_frame():
+    import pandas as pd
+
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            return OhlcvResult(
+                frame=pd.DataFrame(),
+                health=SourceHealth(
+                    source="pykrx",
+                    status=SourceStatus.AVAILABLE,
+                    reason="ok",
+                    expected_date=day,
+                ),
+            )
+
+    assert ObservedKRXCalendar(Adapter()).is_trading_day(date(2026, 7, 12)) is False
+
+
 def test_observed_calendar_resolves_immediately_previous_confirmed_day():
     from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
 

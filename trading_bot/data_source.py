@@ -83,9 +83,16 @@ class ObservedKRXCalendar:
         result = self._adapter.fetch_market_ohlcv(
             day.strftime("%Y%m%d"), market=self._market, min_rows=1
         )
-        if result.health.status is SourceStatus.AVAILABLE and result.frame is not None:
+        if (
+            result.health.status is SourceStatus.AVAILABLE
+            and result.frame is not None
+            and not bool(getattr(result.frame, "empty", False))
+        ):
             state: bool | None = True
-        elif "empty" in result.health.reason.lower() or "no ohlcv" in result.health.reason.lower():
+        elif (
+            result.frame is not None
+            and bool(getattr(result.frame, "empty", False))
+        ) or "empty" in result.health.reason.lower() or "no ohlcv" in result.health.reason.lower():
             state = False
         else:
             state = None
