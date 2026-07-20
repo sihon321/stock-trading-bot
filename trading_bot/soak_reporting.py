@@ -91,14 +91,80 @@ _PRIMARY_SCHEMA = {
     },
 }
 
-_SOAK_TABLES = {
-    "soak_campaigns", "soak_identity_receipts", "soak_days", "soak_events",
-    "soak_snapshots", "soak_snapshot_orders", "soak_snapshot_fills",
-    "soak_snapshot_holdings", "soak_snapshot_accounts", "soak_comparisons",
-    "soak_ambiguity_observations", "soak_ticker_freezes", "soak_drill_links",
+_SOAK_SCHEMA = {
+    "soak_campaigns": {
+        "campaign_id", "state", "campaign_kind", "credit_eligible",
+        "target_eligible_days", "availability_failure_budget",
+        "availability_failures_used", "safety_failure_code",
+        "availability_failure_code", "accepted_profile_fingerprint",
+        "accepted_profile_version", "field_contract_version",
+        "ambiguity_policy_version", "ambiguity_window_seconds",
+        "ambiguity_poll_cadence_seconds", "ambiguity_max_observations", "created_at",
+    },
+    "soak_identity_receipts": {
+        "id", "receipt_id", "campaign_id", "target", "domain_class", "account_suffix",
+        "profile_version", "policy_version", "detail_json", "observed_at",
+    },
+    "soak_days": {
+        "id", "campaign_id", "trading_date", "run_id", "run_kind", "terminal",
+        "credit_state", "credit_detail_json", "designated_at",
+    },
+    "soak_events": {
+        "id", "observation_id", "campaign_id", "run_id", "ticker", "order_intent_id",
+        "drill_id", "event_code", "evidence_class", "detail_json", "observed_at",
+    },
+    "soak_snapshots": {
+        "snapshot_id", "campaign_id", "run_id", "stage", "ticker", "completeness",
+        "detail_json", "observed_at",
+    },
+    "soak_snapshot_orders": {
+        "id", "observation_id", "snapshot_id", "order_id", "status", "remaining_qty",
+        "detail_json",
+    },
+    "soak_snapshot_fills": {
+        "id", "observation_id", "snapshot_id", "order_id", "fill_id", "quantity",
+        "price", "detail_json",
+    },
+    "soak_snapshot_holdings": {
+        "id", "observation_id", "snapshot_id", "ticker", "quantity", "average_price",
+        "detail_json",
+    },
+    "soak_snapshot_accounts": {
+        "id", "observation_id", "snapshot_id", "available_cash", "total_value",
+        "detail_json",
+    },
+    "soak_comparisons": {
+        "id", "comparison_id", "campaign_id", "snapshot_id", "run_id", "ticker",
+        "order_intent_id", "verdict", "remaining_order_terminal", "detail_json",
+        "observed_at",
+    },
+    "soak_ambiguity_observations": {
+        "id", "observation_id", "campaign_id", "run_id", "ticker", "order_intent_id",
+        "verdict", "remaining_order_terminal", "detail_json", "observed_at",
+    },
+    "soak_ticker_freezes": {
+        "id", "freeze_id", "campaign_id", "ticker", "order_intent_id", "freeze_kind",
+        "state", "prior_transition_id", "release_evidence_type", "release_evidence_id",
+        "detail_json", "observed_at",
+    },
+    "soak_drill_links": {
+        "id", "link_id", "campaign_id", "drill_id", "run_id", "ticker",
+        "order_intent_id", "evidence_class", "verdict", "detail_json", "observed_at",
+    },
 }
-_CONTROLLER_TABLES = {
-    "drill_contracts", "drill_commits", "drill_observations", "drill_verdicts",
+_CONTROLLER_SCHEMA = {
+    "drill_contracts": {
+        "drill_id", "campaign_id", "fault", "injection_boundary",
+        "expected_containment_json", "required_observations_json", "policy_version",
+        "prepared_at",
+    },
+    "drill_commits": {"id", "drill_id", "committed_at"},
+    "drill_observations": {
+        "id", "drill_id", "observation_type", "evidence_class", "primary_run_id",
+        "ticker", "order_intent_id", "reconciliation_id", "freeze_id", "facts_json",
+        "observed_at",
+    },
+    "drill_verdicts": {"id", "drill_id", "verdict", "detail_json", "finalized_at"},
 }
 
 
@@ -165,12 +231,20 @@ class ReadOnlySoakRepository:
 
     @classmethod
     def _validate_owner(
-        cls, connection: sqlite3.Connection, *, version: int, tables: set[str], owner: str
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        version: int,
+        schema: dict[str, set[str]],
+        owner: str,
     ) -> None:
         if int(connection.execute("PRAGMA user_version").fetchone()[0]) != version:
             raise RuntimeError(f"unsupported {owner} schema version")
-        if cls._tables(connection) != tables:
+        if cls._tables(connection) != set(schema):
             raise RuntimeError(f"unsupported {owner} schema tables")
+        for table, columns in schema.items():
+            if cls._columns(connection, table) != columns:
+                raise RuntimeError(f"unsupported {owner} schema: {table}")
 
     def transactions(self) -> Iterator[tuple[sqlite3.Connection, sqlite3.Connection, sqlite3.Connection]]:
         """Yield one stable read transaction per owner without claiming atomicity."""
@@ -182,12 +256,12 @@ class ReadOnlySoakRepository:
         try:
             self._validate_primary(primary)
             self._validate_owner(
-                soak, version=SOAK_SCHEMA_VERSION, tables=_SOAK_TABLES, owner="soak"
+                soak, version=SOAK_SCHEMA_VERSION, schema=_SOAK_SCHEMA, owner="soak"
             )
             self._validate_owner(
                 controller,
                 version=CONTROLLER_SCHEMA_VERSION,
-                tables=_CONTROLLER_TABLES,
+                schema=_CONTROLLER_SCHEMA,
                 owner="controller",
             )
             for connection in connections:

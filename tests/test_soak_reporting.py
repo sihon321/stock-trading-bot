@@ -210,3 +210,14 @@ def test_repository_rejects_missing_alias_or_unsupported_stores(
     missing = tmp_path / "missing.db"
     with pytest.raises(FileNotFoundError):
         ReadOnlySoakRepository(paths[0], missing, paths[2])
+
+
+def test_repository_requires_each_owners_exact_schema(tmp_path: Path) -> None:
+    paths = _stores(tmp_path)
+    controller = connect_controller(paths[2], paths[0], paths[1])
+    controller.execute("ALTER TABLE drill_contracts ADD COLUMN unexpected TEXT")
+    controller.commit()
+    controller.close()
+
+    with pytest.raises(RuntimeError, match="controller schema: drill_contracts"):
+        build_soak_report(_repository(paths), "campaign-1")
