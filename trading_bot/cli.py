@@ -13,16 +13,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import typer
 
-from trading_bot.config import Settings, TradingMode, startup_banner
+from trading_bot.config import LLMProviderName, Settings, TradingMode, startup_banner
 from trading_bot.data_source import ObservedKRXCalendar, build_data_source
 from trading_bot.domain import Money, Ticker
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
-from trading_bot.kis_broker import AmbiguousSubmissionError, build_kis_broker
+from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker, build_kis_broker
 from trading_bot.kis_order import KisOrderAccount
 from trading_bot.kis_order import KisOrderAdapter, MOCK_TR_PROFILE_CANDIDATES
 from trading_bot.kis_auth import KisAuthConfig
@@ -55,8 +56,30 @@ from trading_bot.soak_proof import (
     build_proof_fixture,
     export_proof_fixture,
 )
-from trading_bot.soak_reconcile import AmbiguityPolicy
-from trading_bot.soak_store import fingerprint_accepted_profile
+from trading_bot.soak_reconcile import (
+    AmbiguityPolicy,
+    SnapshotCampaign,
+    SnapshotWindow,
+    collect_broker_snapshot,
+    compare_broker_truth,
+    load_local_order_evidence,
+    rebuild_ticker_freezes,
+)
+from trading_bot.soak_models import (
+    PageCompleteness,
+    ReconciliationStage,
+    ReconciliationVerdict,
+)
+from trading_bot.soak_store import (
+    append_comparison,
+    append_identity_receipt,
+    append_snapshot,
+    connect_soak_store,
+    fingerprint_accepted_profile,
+    load_campaign_state,
+)
+from trading_bot.soak_campaign import SoakCampaignService
+from trading_bot.reporting import ReadOnlyAuditRepository, build_daily_report
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
@@ -96,6 +119,395 @@ class _Runtime:
     notifier: Any
     cycle_evidence: Optional[MarketCycleEvidence] = None
     completed_bar_cutoff: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _SoakRuntime:
+    """Narrow campaign composition root with no real-account capability."""
+
+    campaign_id: str
+    settings: SoakSettings
+    receipt: Any
+    campaign: Any
+    persist_receipt: Callable[[], Any]
+    reconcile: Callable[[ReconciliationStage, str], Any]
+    execute_designated: Callable[[str, Callable[[], None]], dict[str, Any]]
+    rebuild_freezes: Callable[[], Any]
+    close: Callable[[], None]
+
+
+def _reconciliation_complete(result: Any) -> bool:
+    return bool(getattr(result, "complete", result is True))
+
+
+def _require_soak_reconciliation(
+    runtime: _SoakRuntime, stage: ReconciliationStage, run_id: str
+) -> Any:
+    result = runtime.reconcile(stage, run_id)
+    if not _reconciliation_complete(result):
+        raise RuntimeError(f"RECONCILIATION_INCOMPLETE:{stage.value}")
+    return result
+
+
+def _orchestrate_soak_start(
+    runtime: _SoakRuntime, *, campaign_policy: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist policy and identity before the mandatory STARTUP broker gate."""
+
+    runtime.campaign.start_campaign(campaign_id=runtime.campaign_id, **campaign_policy)
+    runtime.persist_receipt()
+    _require_soak_reconciliation(runtime, ReconciliationStage.STARTUP, "startup")
+    return runtime.campaign.load_status(runtime.campaign_id)
+
+
+def _orchestrate_soak_run(
+    runtime: _SoakRuntime, *, run_id: str, observed_at: str | datetime
+) -> dict[str, Any]:
+    """Surround the production decision path and every POST with broker truth."""
+
+    observed = (
+        datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else observed_at
+    )
+    _require_soak_reconciliation(runtime, ReconciliationStage.PRE_RUN, run_id)
+    post_count = 0
+
+    def post_submission() -> None:
+        nonlocal post_count
+        _require_soak_reconciliation(
+            runtime, ReconciliationStage.POST_SUBMISSION, run_id
+        )
+        post_count += 1
+
+    result = runtime.execute_designated(run_id, post_submission)
+    declared = int(result.get("submissions", post_count))
+    if declared != post_count:
+        raise RuntimeError("POST_SUBMISSION_RECONCILIATION_CARDINALITY_MISMATCH")
+    _require_soak_reconciliation(runtime, ReconciliationStage.PRE_FINALIZE, run_id)
+    verdict = runtime.campaign.finalize_designated_day(
+        campaign_id=runtime.campaign_id,
+        run_id=run_id,
+        observed_at=observed,
+        pre_finalize_complete=True,
+    )
+    return {**result, "verdict": verdict.code.value}
+
+
+def _orchestrate_soak_resume(runtime: _SoakRuntime) -> dict[str, Any]:
+    """Recover broker truth and freezes without exposing any submission callback."""
+
+    _require_soak_reconciliation(runtime, ReconciliationStage.RESUME, "resume")
+    runtime.rebuild_freezes()
+    return runtime.campaign.load_status(runtime.campaign_id)
+
+
+def _orchestrate_soak_status(runtime: _SoakRuntime) -> dict[str, Any]:
+    """Read campaign state without reconciliation, adapter, or mutation calls."""
+
+    return runtime.campaign.load_status(runtime.campaign_id)
+
+
+class _MockOnlyExecutionSettings:
+    """Production policy view that deliberately has no ``kis_real`` field."""
+
+    trading_mode = TradingMode.MOCK
+    confirm_real_trading = False
+    dry_run = False
+    buy_confidence_threshold = 0.8
+    sell_confidence_threshold = 0.8
+    buy_cash_fraction = 0.1
+    max_position_value = 1_000_000.0
+    stop_loss_pct = 0.05
+    take_profit_pct = 0.10
+    daily_loss_threshold = 500_000.0
+    ohlcv_adjusted = True
+    screener_max_candidates = 20
+    screener_markets = ("KOSPI", "KOSDAQ")
+    screener_min_trading_value = 1_000_000_000.0
+    screener_min_volume_ratio = 1.0
+    screener_excluded_states = ("HALTED", "DELISTING", "ADMIN")
+    pykrx_request_timeout_seconds = 10.0
+    naver_news_enabled = False
+    naver_news_max_items = 5
+    naver_news_max_chars = 2_000
+    discord_webhook_url = None
+    order_timeout_seconds = 5.0
+    llm_provider = LLMProviderName.CODEX_CLI
+    anthropic_api_key = None
+    anthropic_auth_token = None
+    openai_api_key = None
+    anthropic_model = "claude-opus-4-8"
+    anthropic_temperature = 0.0
+    openai_model = "gpt-4.1"
+    openai_temperature = 0.0
+    codex_cli_binary = "codex"
+    codex_cli_model = None
+    codex_cli_temperature = 0.0
+    codex_cli_timeout_seconds = 120.0
+    codex_cli_extra_args: tuple[str, ...] = ()
+    llm_max_retries = 3
+    llm_retry_backoff_seconds = 1.0
+
+    def __init__(self, settings: SoakSettings) -> None:
+        self.kis_mock = settings.kis_mock
+        self.audit_db_path = str(settings.primary_audit_db_path)
+        self.kis_token_refresh_margin_seconds = settings.kis_token_refresh_margin_seconds
+        self.kis_min_interval_seconds = settings.kis_min_interval_seconds
+        self.kis_max_retries = settings.kis_max_retries
+        self.kis_retry_backoff_seconds = settings.kis_retry_backoff_seconds
+        self.order_timeout_seconds = settings.kis_timeout_seconds
+
+    @property
+    def active_kis(self) -> Any:
+        return self.kis_mock
+
+
+def _persist_snapshot_evidence(store: sqlite3.Connection, snapshot: Any) -> None:
+    append_snapshot(
+        store,
+        snapshot_id=snapshot.snapshot_id,
+        campaign_id=snapshot.campaign_id,
+        run_id=snapshot.run_id,
+        stage=snapshot.stage,
+        completeness=snapshot.completeness,
+        orders=tuple(
+            {
+                "observation_id": item.observation_id,
+                "order_id": item.order_id,
+                "status": item.status,
+                "remaining_qty": item.remaining_qty,
+                "ticker": item.ticker,
+                "side": item.side,
+                "ordered_qty": item.ordered_qty,
+                "filled_qty": item.filled_qty,
+                "snapped_price": item.snapped_price,
+            }
+            for item in snapshot.orders
+        ),
+        fills=tuple(
+            {
+                "observation_id": item.observation_id,
+                "order_id": item.order_id,
+                "fill_id": item.fill_id,
+                "quantity": item.quantity,
+                "price": item.price,
+                "ticker": item.ticker,
+            }
+            for item in snapshot.fills
+        ),
+        holdings=tuple(
+            {
+                "observation_id": item.observation_id,
+                "ticker": item.ticker,
+                "quantity": item.quantity,
+                "average_price": item.average_price,
+                "available_quantity": item.available_quantity,
+            }
+            for item in snapshot.holdings
+        ),
+        accounts=(
+            {
+                "observation_id": snapshot.account.observation_id,
+                "available_cash": snapshot.account.available_cash,
+                "total_value": snapshot.account.total_value,
+                "account_suffix": snapshot.account.account_suffix,
+            },
+        ),
+        detail={
+            "reason_code": snapshot.reason_code,
+            "daily_page_count": snapshot.daily_page_count,
+            "balance_page_count": snapshot.balance_page_count,
+        },
+        observed_at=snapshot.observed_at,
+    )
+
+
+def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntime:
+    """Build the genuine mock adapters and isolated primary/soak store owners."""
+
+    validate_store_topology(
+        settings.primary_audit_db_path,
+        settings.soak_db_path,
+        settings.controller_db_path,
+    )
+    if not settings.primary_audit_db_path.is_file():
+        raise ValueError("AUDIT_HEALTH_UNKNOWN")
+    audit_health = _read_audit_health(str(settings.primary_audit_db_path))
+    if not audit_health.healthy:
+        raise ValueError("AUDIT_HEALTH_UNKNOWN")
+    selected = tuple(
+        profile
+        for profile in MOCK_TR_PROFILE_CANDIDATES
+        if profile.version == settings.kis_mock.tr_id_profile
+    )
+    if len(selected) != 1:
+        raise ValueError("MOCK_ISOLATION_BLOCKED: selected profile is not unique")
+    profile = selected[0]
+    receipt = build_soak_identity_receipt(settings, campaign_id, profile)
+    adapter = _build_soak_adapter(settings)
+    account = KisOrderAccount(
+        cano=settings.kis_mock_account_cano.get_secret_value(),
+        account_product_code=settings.kis_mock_account_product_code,
+    )
+    primary = sqlite_audit.connect(settings.primary_audit_db_path)
+    soak = connect_soak_store(settings.soak_db_path)
+    policy = MarketCyclePolicy(
+        ObservedKRXCalendar(
+            PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0)
+        )
+    )
+    campaign = SoakCampaignService(
+        market_policy=policy,
+        store=soak,
+        daily_report_builder=lambda day: build_daily_report(
+            ReadOnlyAuditRepository(settings.primary_audit_db_path), day
+        ),
+    )
+
+    def persist_receipt() -> int:
+        return append_identity_receipt(
+            soak,
+            receipt_id=f"{campaign_id}:identity",
+            campaign_id=campaign_id,
+            target=receipt.target,
+            domain_class=receipt.domain_class,
+            account_suffix=receipt.account_suffix,
+            profile_version=receipt.profile_version,
+            policy_version=receipt.policy_version,
+            detail={"tr_profile": receipt.profile_version},
+        )
+
+    def reconcile(stage: ReconciliationStage, run_id: str) -> Any:
+        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        rows = primary.execute(
+            "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE origin_run_id=?",
+            (run_id,),
+        ).fetchall()
+        intent_ids = tuple(str(row[0]) for row in rows if row[0])
+        tickers = tuple(str(row[1]) for row in rows if row[1])
+        snapshot = collect_broker_snapshot(
+            adapter,
+            SnapshotCampaign(campaign_id, run_id, account, receipt.account_suffix, profile),
+            stage,
+            SnapshotWindow(today, today),
+            {"order_ids": (), "tickers": tickers},
+        )
+        _persist_snapshot_evidence(soak, snapshot)
+        complete = snapshot.completeness is PageCompleteness.COMPLETE
+        for intent_id in intent_ids:
+            local = load_local_order_evidence(primary, order_intent_id=intent_id)
+            comparison = compare_broker_truth(local, snapshot)
+            append_comparison(
+                soak,
+                comparison_id=comparison.comparison_id,
+                campaign_id=comparison.campaign_id,
+                snapshot_id=comparison.snapshot_id,
+                run_id=comparison.run_id,
+                ticker=comparison.ticker,
+                order_intent_id=comparison.order_intent_id,
+                verdict=comparison.verdict,
+                remaining_order_terminal=comparison.remaining_order_terminal,
+                detail={
+                    "dimension_codes": "|".join(item.code for item in comparison.dimensions)
+                },
+            )
+            complete = complete and comparison.complete and (
+                comparison.verdict is not ReconciliationVerdict.UNKNOWN
+            )
+            if comparison.verdict is ReconciliationVerdict.MISMATCHED:
+                campaign.record_safety_breach(
+                    campaign_id=campaign_id,
+                    code="BROKER_TRUTH_DISAGREEMENT",
+                    run_id=run_id,
+                    ticker=comparison.ticker,
+                    order_intent_id=comparison.order_intent_id,
+                )
+        return SimpleNamespace(complete=complete)
+
+    mock_settings = _MockOnlyExecutionSettings(settings)
+    quote = KisQuoteAdapter(
+        token_manager=adapter._token_manager,
+        domain=settings.kis_mock.domain,
+        tr_id="FHKST01010100",
+        min_interval_seconds=settings.kis_min_interval_seconds,
+        max_retries=settings.kis_max_retries,
+        retry_backoff_seconds=settings.kis_retry_backoff_seconds,
+        timeout_seconds=settings.kis_timeout_seconds,
+    )
+    ohlcv = PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0)
+    cutoff = policy.completed_bar_cutoff(datetime.now(ZoneInfo("Asia/Seoul")).date())
+    if not cutoff.available or cutoff.cutoff_date is None:
+        primary.close()
+        soak.close()
+        raise ValueError("KRX_CALENDAR_UNKNOWN")
+    cutoff_text = cutoff.cutoff_date.strftime("%Y%m%d")
+    data_source = build_data_source(
+        mock_settings,
+        expected_date=cutoff_text,
+        accepted_latest_date=cutoff_text,
+        ohlcv_adapter=ohlcv,
+        quote_adapter=quote,
+    )
+    llm = build_llm_provider(mock_settings)
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=account,
+        pre_submit_quote_reader=quote.fetch_current_price,
+    )
+
+    def execute_designated(
+        run_id: str, post_submission: Callable[[], None]
+    ) -> dict[str, Any]:
+        submission_count = 0
+
+        def order_event_hook(event: Any) -> None:
+            nonlocal submission_count
+            if event.event_type in {
+                OrderEventType.SUBMISSION_ACCEPTED,
+                OrderEventType.SUBMISSION_AMBIGUOUS,
+            }:
+                submission_count += 1
+                post_submission()
+
+        frozen_rows = soak.execute(
+            """SELECT f.ticker FROM soak_ticker_freezes f
+               WHERE f.state='FROZEN' AND NOT EXISTS (
+                 SELECT 1 FROM soak_ticker_freezes r
+                 WHERE r.freeze_id=f.freeze_id AND r.state='RELEASED')"""
+        ).fetchall()
+        preflight = PreflightResult(
+            (), True, {str(row[0]): ReasonCode.AMBIGUOUS_SUBMISSION for row in frozen_rows}
+        )
+        result = run_cycle(
+            execute=True,
+            settings=mock_settings,
+            data_source=data_source,
+            llm_provider=llm,
+            broker=broker,
+            audit_conn=primary,
+            notifier=NoopNotifier(),
+            run_cycle=_run_llm_cycle,
+            trading_date=_today_kst(),
+            run_id=run_id,
+            preflight_result=preflight,
+            order_event_hook=order_event_hook,
+        )
+        result["submissions"] = submission_count
+        return result
+
+    return _SoakRuntime(
+        campaign_id=campaign_id,
+        settings=settings,
+        receipt=receipt,
+        campaign=campaign,
+        persist_receipt=persist_receipt,
+        reconcile=reconcile,
+        execute_designated=execute_designated,
+        rebuild_freezes=lambda: rebuild_ticker_freezes(soak, campaign_id),
+        close=lambda: (primary.close(), soak.close()),
+    )
+
+
+_soak_runtime_factory = _build_soak_runtime
 
 
 def _today_kst() -> str:
@@ -515,6 +927,7 @@ def run_cycle(
     parent_run_id: Optional[str] = None,
     kis_account: Optional[KisOrderAccount] = None,
     preflight_result: Optional[PreflightResult] = None,
+    order_event_hook: Optional[Callable[[Any], None]] = None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
 
@@ -602,9 +1015,12 @@ def run_cycle(
         parent_run_id=parent_run_id,
     )
     if hasattr(resolved_broker, "set_evidence_sink"):
-        resolved_broker.set_evidence_sink(
-            lambda event: sqlite_audit.append_order_event(resolved_audit_conn, event)
-        )
+        def persist_order_event(event: Any) -> None:
+            sqlite_audit.append_order_event(resolved_audit_conn, event)
+            if order_event_hook is not None:
+                order_event_hook(event)
+
+        resolved_broker.set_evidence_sink(persist_order_event)
 
     outcomes: list[dict[str, Any]] = []
     try:
@@ -801,8 +1217,8 @@ def soak_start_command(
 ) -> None:
     """Validate mock identity, then run only the explicitly selected safe path."""
 
-    if probe_only == proof_order:
-        typer.echo("select exactly one of --probe-only or --proof-order", err=True)
+    if probe_only and proof_order:
+        typer.echo("select at most one of --probe-only or --proof-order", err=True)
         raise typer.Exit(2)
     try:
         settings = _soak_settings_factory()
@@ -882,6 +1298,42 @@ def soak_start_command(
                 )
             typer.echo("proof_order=COMPLETE")
             return
+        if not probe_only:
+            if accepted_profile is None:
+                raise ValueError("ACCEPTED_PROFILE_REQUIRED")
+            try:
+                profile_document = json.loads(accepted_profile.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ValueError("ACCEPTED_PROFILE_INVALID") from None
+            if not isinstance(profile_document, dict) or (
+                profile_document.get("state") != "ACCEPTED"
+                or profile_document.get("evidence_class") != "KIS_OBSERVED"
+                or profile_document.get("profile_version") != receipt.profile_version
+                or profile_document.get("schema_version") != "kis-mock-compat-v1"
+            ):
+                raise ValueError("ACCEPTED_PROFILE_INVALID")
+            runtime = _soak_runtime_factory(settings, campaign_id)
+            try:
+                status = _orchestrate_soak_start(
+                    runtime,
+                    campaign_policy={
+                        "accepted_profile_fingerprint": fingerprint_accepted_profile(
+                            profile_document
+                        ),
+                        "accepted_profile_version": receipt.profile_version,
+                        "field_contract_version": "kis-mock-compat-v1",
+                        "ambiguity_policy_version": "ambiguity-v1",
+                        "ambiguity_window_seconds": 60,
+                        "ambiguity_poll_cadence_seconds": 5,
+                        "ambiguity_max_observations": 12,
+                        "target_eligible_days": settings.target_eligible_days,
+                        "availability_failure_budget": settings.availability_failure_budget,
+                    },
+                )
+            finally:
+                runtime.close()
+            typer.echo(f"campaign_state={getattr(status['state'], 'value', status['state'])}")
+            return
         adapter = _build_soak_adapter(settings)
         result = _soak_probe(
             adapter,
@@ -900,6 +1352,84 @@ def soak_start_command(
     except (ValueError, OSError) as exc:
         typer.echo(str(exc)[:200], err=True)
         raise typer.Exit(2) from None
+
+
+@soak_app.command("run")
+def soak_run_command(
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    """Run one explicitly designated, broker-reconciled KIS mock day."""
+
+    runtime: _SoakRuntime | None = None
+    try:
+        settings = _soak_settings_factory()
+        runtime = _soak_runtime_factory(settings, campaign_id)
+        result = _orchestrate_soak_run(
+            runtime,
+            run_id=run_id or uuid.uuid4().hex,
+            observed_at=datetime.now(ZoneInfo("Asia/Seoul")),
+        )
+        typer.echo(f"run_id={result['run_id']}")
+        typer.echo(f"day_verdict={result['verdict']}")
+    except (ValueError, RuntimeError, OSError) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
+    finally:
+        if runtime is not None:
+            runtime.close()
+
+
+@soak_app.command("resume")
+def soak_resume_command(
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+) -> None:
+    """Reconcile and rebuild durable freezes; never replay a prior POST."""
+
+    runtime: _SoakRuntime | None = None
+    try:
+        settings = _soak_settings_factory()
+        runtime = _soak_runtime_factory(settings, campaign_id)
+        status = _orchestrate_soak_resume(runtime)
+        typer.echo(f"campaign_state={getattr(status['state'], 'value', status['state'])}")
+        typer.echo(f"active_freezes={len(status['active_freezes'])}")
+    except (ValueError, RuntimeError, OSError) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
+    finally:
+        if runtime is not None:
+            runtime.close()
+
+
+@soak_app.command("status")
+def soak_status_command(
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+) -> None:
+    """Read persisted campaign status without opening broker or controller paths."""
+
+    conn: sqlite3.Connection | None = None
+    try:
+        settings = _soak_settings_factory()
+        paths = validate_store_topology(
+            settings.primary_audit_db_path,
+            settings.soak_db_path,
+            settings.controller_db_path,
+        )
+        soak_path = paths["soak_db_path"]
+        if not soak_path.is_file():
+            raise ValueError("SOAK_STORE_NOT_FOUND")
+        conn = sqlite3.connect(f"{soak_path.as_uri()}?mode=ro", uri=True)
+        conn.execute("PRAGMA query_only=ON")
+        status = load_campaign_state(conn, campaign_id=campaign_id)
+        typer.echo(f"campaign_state={status['state'].value}")
+        typer.echo(f"credited_days={status['credited_days']}")
+        typer.echo(f"active_freezes={len(status['active_freezes'])}")
+    except (KeyError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.command("run")
