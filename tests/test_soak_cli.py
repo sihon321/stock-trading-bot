@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
@@ -12,6 +13,7 @@ from trading_bot.soak_models import (
     SoakEvidenceClass,
 )
 from trading_bot.soak_compat import CompatibilityResult
+from trading_bot.soak_models import ReconciliationStage
 
 
 def _settings(tmp_path: Path, *, domain: str = "https://openapivts.koreainvestment.com:29443") -> SoakSettings:
@@ -179,3 +181,138 @@ def test_probe_fixture_export_is_conflict_safe(tmp_path: Path, monkeypatch) -> N
     document = output.read_text(encoding="utf-8")
     assert "12345678" not in document
     assert "app-key-secret" not in document
+
+
+def test_soak_command_family_is_exact_and_ordinary_run_has_no_soak_switches() -> None:
+    import re
+    import trading_bot.cli as cli
+
+    runner = CliRunner()
+    nested = runner.invoke(cli.app, ["soak", "--help"])
+    ordinary = runner.invoke(cli.app, ["run", "--help"])
+
+    assert nested.exit_code == 0
+    assert re.findall(r"│\s+(start|run|resume|status)\s", nested.stdout) == [
+        "start", "run", "resume", "status"
+    ]
+    assert ordinary.exit_code == 0
+    assert "soak" not in ordinary.stdout.lower()
+    assert "fault" not in ordinary.stdout.lower()
+
+
+class _Campaign:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+        self.status = {"state": "ACTIVE", "active_freezes": [{"ticker": "000660"}]}
+
+    def start_campaign(self, **kwargs):
+        self.calls.append("campaign:create")
+        return self.status
+
+    def finalize_designated_day(self, **kwargs):
+        self.calls.append("campaign:finalize")
+        return type("Verdict", (), {"code": type("Code", (), {"value": "CREDITED"})()})()
+
+    def load_status(self, campaign_id):
+        self.calls.append("campaign:status")
+        return self.status
+
+
+def _runtime(calls: list[str]):
+    import trading_bot.cli as cli
+
+    campaign = _Campaign(calls)
+
+    def reconcile(stage, run_id):
+        calls.append(f"reconcile:{stage.value}")
+        return type("Result", (), {"complete": True})()
+
+    def execute(run_id, post_submission):
+        calls.append("production:decision-risk-sizing")
+        calls.append("production:post")
+        post_submission()
+        return {"run_id": run_id, "submissions": 1}
+
+    return cli._SoakRuntime(
+        campaign_id="campaign",
+        settings=_settings(Path("/tmp/soak-cli-test")),
+        receipt=object(),
+        campaign=campaign,
+        persist_receipt=lambda: calls.append("receipt:persist"),
+        reconcile=reconcile,
+        execute_designated=execute,
+        rebuild_freezes=lambda: calls.append("freeze:rebuild") or {"000660": object()},
+        close=lambda: calls.append("runtime:close"),
+    )
+
+
+def test_start_persists_receipt_and_reconciles_before_activation() -> None:
+    import trading_bot.cli as cli
+
+    calls: list[str] = []
+    cli._orchestrate_soak_start(_runtime(calls), campaign_policy={})
+    assert calls[:4] == [
+        "campaign:create",
+        "receipt:persist",
+        "reconcile:STARTUP",
+        "campaign:status",
+    ]
+
+
+def test_designated_run_has_all_reconciliation_boundaries_in_order() -> None:
+    import trading_bot.cli as cli
+
+    calls: list[str] = []
+    result = cli._orchestrate_soak_run(
+        _runtime(calls), run_id="run-1", observed_at="2026-07-20T10:00:00+09:00"
+    )
+    assert result["verdict"] == "CREDITED"
+    assert calls == [
+        "reconcile:PRE_RUN",
+        "production:decision-risk-sizing",
+        "production:post",
+        "reconcile:POST_SUBMISSION",
+        "reconcile:PRE_FINALIZE",
+        "campaign:finalize",
+    ]
+
+
+def test_resume_reconciles_and_rebuilds_freezes_without_submission() -> None:
+    import trading_bot.cli as cli
+
+    calls: list[str] = []
+    status = cli._orchestrate_soak_resume(_runtime(calls))
+    assert status["active_freezes"] == [{"ticker": "000660"}]
+    assert calls == [
+        "reconcile:RESUME",
+        "freeze:rebuild",
+        "campaign:status",
+    ]
+    assert not any(item.startswith("production:") for item in calls)
+
+
+def test_incomplete_reconciliation_blocks_each_forbidden_mutation() -> None:
+    import trading_bot.cli as cli
+
+    calls: list[str] = []
+    runtime = _runtime(calls)
+    runtime = cli._SoakRuntime(
+        **{
+            **runtime.__dict__,
+            "reconcile": lambda stage, run_id: type("Result", (), {"complete": False})(),
+        }
+    )
+    with pytest.raises(RuntimeError, match="RECONCILIATION_INCOMPLETE"):
+        cli._orchestrate_soak_run(
+            runtime, run_id="run-1", observed_at="2026-07-20T10:00:00+09:00"
+        )
+    assert not any(item.startswith("production:") for item in calls)
+
+
+def test_status_is_read_only() -> None:
+    import trading_bot.cli as cli
+
+    calls: list[str] = []
+    status = cli._orchestrate_soak_status(_runtime(calls))
+    assert status["state"] == "ACTIVE"
+    assert calls == ["campaign:status"]
