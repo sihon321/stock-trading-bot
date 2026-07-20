@@ -19,6 +19,8 @@ from trading_bot.soak_models import (
     DrillVerdict,
     FaultName,
     InjectionBoundary,
+    PageCompleteness,
+    ReconciliationStage,
     SoakEvidenceClass,
 )
 from trading_bot.soak_reporting import (
@@ -195,6 +197,55 @@ def test_missing_cross_store_link_fails_closed_as_unknown(tmp_path: Path) -> Non
     )
     assert controlled.passed == 0
     assert controlled.unknown == 1
+    assert report.cross_store_unknown == 1
+
+
+def test_campaign_scoped_snapshots_keep_broker_completeness_without_weakening_run_links(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    soak = soak_store.connect_soak_store(paths[1])
+    for snapshot_id, run_id, stage, completeness in (
+        (
+            "startup-complete",
+            "startup",
+            ReconciliationStage.STARTUP,
+            PageCompleteness.COMPLETE,
+        ),
+        (
+            "resume-complete",
+            "resume",
+            ReconciliationStage.RESUME,
+            PageCompleteness.COMPLETE,
+        ),
+        (
+            "resume-incomplete",
+            "resume",
+            ReconciliationStage.RESUME,
+            PageCompleteness.INCOMPLETE,
+        ),
+        (
+            "orphan-pre-run",
+            "missing-primary-run",
+            ReconciliationStage.PRE_RUN,
+            PageCompleteness.COMPLETE,
+        ),
+    ):
+        soak_store.append_snapshot(
+            soak,
+            snapshot_id=snapshot_id,
+            campaign_id="campaign-1",
+            run_id=run_id,
+            stage=stage,
+            completeness=completeness,
+        )
+    soak.close()
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.complete == 2
+    assert report.reconciliation.incomplete == 1
+    assert report.reconciliation.unknown == 1
     assert report.cross_store_unknown == 1
 
 

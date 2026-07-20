@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .soak_controller import CONTROLLER_SCHEMA_VERSION
-from .soak_models import CampaignKind, CampaignState, SoakEvidenceClass
+from .soak_models import (
+    CampaignKind,
+    CampaignState,
+    ReconciliationStage,
+    SoakEvidenceClass,
+)
 from .soak_store import SOAK_SCHEMA_VERSION
 from .sqlite_audit import SCHEMA_VERSION
 
@@ -375,6 +380,17 @@ def _valid_primary_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
     return True
 
 
+def _valid_snapshot_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
+    campaign_scope_run_ids = {
+        ReconciliationStage.STARTUP.value: "startup",
+        ReconciliationStage.RESUME.value: "resume",
+    }
+    expected_run_id = campaign_scope_run_ids.get(str(row["stage"]))
+    if expected_run_id is not None:
+        return str(row["run_id"]) == expected_run_id and row["ticker"] is None
+    return _valid_primary_reference(data, row)
+
+
 def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakReport:
     """Build a deterministic report while preserving independent evidence dimensions."""
 
@@ -401,7 +417,7 @@ def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakRep
     for snapshot in data["snapshots"]:
         stage = str(snapshot["stage"])
         stages[stage] = stages.get(stage, 0) + 1
-        if not _valid_primary_reference(data, snapshot):
+        if not _valid_snapshot_reference(data, snapshot):
             unknown += 1
             cross_unknown += 1
         elif snapshot["completeness"] == "COMPLETE":
