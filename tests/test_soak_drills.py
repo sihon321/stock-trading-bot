@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -340,3 +341,52 @@ def test_kis_observed_and_controlled_provenance_remain_distinct(tmp_path: Path) 
         ]
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("fault", (FaultName.INTERRUPTION, FaultName.AUDIT_FAILURE))
+def test_process_termination_after_durable_checkpoint_reopens_pending_contract(
+    tmp_path: Path, fault: FaultName
+) -> None:
+    settings = _active_campaign(tmp_path)
+    runtime = build_drill_runtime(
+        fault=fault,
+        campaign_id="campaign-1",
+        settings=settings,
+        drill_id=f"killed-{fault.value.lower()}",
+    )
+    drill_id = runtime.token.drill_id
+    runtime.close()
+    script = """
+import os, signal, sys
+from trading_bot.soak_controller import connect_controller, append_controller_observation
+from trading_bot.soak_models import SoakEvidenceClass
+conn = connect_controller(sys.argv[1], sys.argv[2], sys.argv[3])
+append_controller_observation(
+    conn, drill_id=sys.argv[4], observation_type='INJECTION_ACTIVATED',
+    evidence_class=SoakEvidenceClass.CONTROLLED_INJECTION,
+    facts={'passed': True, 'durable_checkpoint': True},
+)
+os.kill(os.getpid(), signal.SIGTERM)
+"""
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(settings.controller_db_path),
+            str(settings.primary_audit_db_path),
+            str(settings.soak_db_path),
+            drill_id,
+        ],
+        check=False,
+    )
+    assert child.returncode == -signal.SIGTERM
+    reopened = connect_controller(
+        settings.controller_db_path,
+        settings.primary_audit_db_path,
+        settings.soak_db_path,
+    )
+    assert [item.drill_id for item in load_pending_drills(reopened)] == [drill_id]
+    assert reopened.execute(
+        "SELECT facts_json FROM drill_observations WHERE drill_id=?", (drill_id,)
+    ).fetchone() == ('{"durable_checkpoint":true,"passed":true}',)

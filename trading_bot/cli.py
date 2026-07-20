@@ -66,6 +66,7 @@ from trading_bot.soak_reconcile import (
     rebuild_ticker_freezes,
 )
 from trading_bot.soak_models import (
+    FaultName,
     PageCompleteness,
     ReconciliationStage,
     ReconciliationVerdict,
@@ -79,6 +80,7 @@ from trading_bot.soak_store import (
     load_campaign_state,
 )
 from trading_bot.soak_campaign import SoakCampaignService
+from trading_bot.soak_drills import DrillService, parse_fault_name
 from trading_bot.reporting import ReadOnlyAuditRepository, build_daily_report
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot import sqlite_audit
@@ -104,6 +106,7 @@ app.add_typer(soak_app, name="soak")
 _soak_settings_factory = SoakSettings
 _soak_probe = probe_mock_profile
 _proof_service_factory = ProofOrderService
+_drill_service_factory = DrillService
 
 RunCycleFn = Callable[..., ExecutionResult]
 
@@ -1430,6 +1433,24 @@ def soak_status_command(
     finally:
         if conn is not None:
             conn.close()
+
+
+@soak_app.command("drill")
+def soak_drill_command(
+    fault: str = typer.Argument(..., help="One explicit controlled fault name."),
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+) -> None:
+    """Run one controller-gated controlled fault against an active mock campaign."""
+
+    try:
+        selected = parse_fault_name(fault)
+        settings = _soak_settings_factory()
+        result = _drill_service_factory(settings=settings).run(selected, campaign_id)
+        typer.echo(f"drill_id={result.drill_id}")
+        typer.echo(f"drill_verdict={result.verdict.value}")
+    except (KeyError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
 
 
 @app.command("run")
