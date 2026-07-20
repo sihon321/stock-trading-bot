@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
 Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-07-20 — Completed 09-07 read-only soak reporting and operator runbook
+Last activity: 2026-07-20 - Completed quick task 260720-elk: Commit the existing weekend and holiday OHLCV trading-day evidence fix
 
 Progress: [██████████] 96%
 
@@ -111,6 +111,12 @@ None yet.
 - Phase 9 planning must confirm authenticated KIS mock restrictions, inquiry behavior, and fault semantics.
 - Phase 10 planning must define sample sufficiency, uncertainty, and promotion thresholds before calibration claims.
 - Ticker 000660 remains frozen after the authenticated proof because the KIS acknowledgement was ambiguous and no determinate broker order was observed; do not resubmit or release without same-subject terminal broker evidence.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
 
 ## Deferred Items
 
