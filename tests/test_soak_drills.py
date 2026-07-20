@@ -9,7 +9,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
+from trading_bot.config import KisCredentialGroup
+from trading_bot import sqlite_audit
+from trading_bot.soak_config import SoakSettings
 from trading_bot.soak_controller import (
     CONTROLLER_SCHEMA_VERSION,
     append_controller_observation,
@@ -21,7 +25,15 @@ from trading_bot.soak_controller import (
     migrate_controller,
     prepare_drill,
 )
+from trading_bot.soak_drills import (
+    FAULT_REGISTRY,
+    DrillService,
+    activate_fault,
+    build_drill_runtime,
+    parse_fault_name,
+)
 from trading_bot.soak_models import DrillVerdict, FaultName, InjectionBoundary, SoakEvidenceClass
+from trading_bot.soak_store import connect_soak_store, create_campaign
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -207,3 +219,124 @@ def test_observations_reject_sensitive_or_nested_facts(tmp_path: Path) -> None:
             evidence_class=SoakEvidenceClass.CONTROLLED_INJECTION,
             facts={"nested": {"value": 1}},
         )
+
+
+def _drill_settings(tmp_path: Path) -> SoakSettings:
+    return SoakSettings(
+        kis_mock=KisCredentialGroup(
+            domain="https://openapivts.koreainvestment.com:29443",
+            app_key=SecretStr("test-app-key"),
+            app_secret=SecretStr("test-app-secret"),
+            tr_id_profile="official-example-v1",
+            label="mock",
+        ),
+        kis_mock_account_cano=SecretStr("12345678"),
+        primary_audit_db_path=tmp_path / "audit.db",
+        soak_db_path=tmp_path / "soak.db",
+        controller_db_path=tmp_path / "controller.db",
+        accepted_profile_versions=("official-example-v1",),
+    )
+
+
+def _active_campaign(tmp_path: Path, campaign_id: str = "campaign-1") -> SoakSettings:
+    settings = _drill_settings(tmp_path)
+    sqlite_audit.connect(settings.primary_audit_db_path).close()
+    soak = connect_soak_store(settings.soak_db_path)
+    create_campaign(
+        soak,
+        campaign_id=campaign_id,
+        accepted_profile_fingerprint="sha256:test",
+        accepted_profile_version="official-example-v1",
+        field_contract_version="kis-mock-compat-v1",
+        ambiguity_policy_version="ambiguity-v1",
+        ambiguity_window_seconds=60,
+        ambiguity_poll_cadence_seconds=5,
+        ambiguity_max_observations=12,
+    )
+    soak.close()
+    return settings
+
+
+def test_fault_registry_is_exact_immutable_and_has_one_boundary_each() -> None:
+    assert set(FAULT_REGISTRY) == set(FaultName)
+    assert {spec.name for spec in FAULT_REGISTRY.values()} == set(FaultName)
+    assert all(isinstance(spec.boundary, InjectionBoundary) for spec in FAULT_REGISTRY.values())
+    assert parse_fault_name("stale-data") is FaultName.STALE_DATA
+    assert parse_fault_name("timed-out-llm") is FaultName.LLM_TIMEOUT
+    with pytest.raises(TypeError):
+        FAULT_REGISTRY[FaultName.STALE_DATA] = FAULT_REGISTRY[FaultName.STALE_DATA]
+
+
+def test_fault_port_is_built_after_commit_and_activates_exactly_once(tmp_path: Path) -> None:
+    settings = _active_campaign(tmp_path)
+    runtime = build_drill_runtime(
+        fault=FaultName.STALE_DATA,
+        campaign_id="campaign-1",
+        settings=settings,
+        drill_id="drill-one",
+    )
+    try:
+        assert runtime.controller.execute(
+            "SELECT COUNT(*) FROM drill_commits WHERE drill_id='drill-one'"
+        ).fetchone()[0] == 1
+        outcome = activate_fault(runtime.token, runtime.fault_port)
+        assert outcome.activation_count == 1
+        assert outcome.order_post_count == 0
+        with pytest.raises(ValueError, match="exactly once"):
+            activate_fault(runtime.token, runtime.fault_port)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("fault", tuple(FaultName))
+def test_every_controlled_drill_is_terminal_and_preserves_campaign_accounting(
+    tmp_path: Path, fault: FaultName
+) -> None:
+    settings = _active_campaign(tmp_path / fault.value)
+    before = connect_soak_store(settings.soak_db_path).execute(
+        "SELECT availability_failures_used FROM soak_campaigns WHERE campaign_id='campaign-1'"
+    ).fetchone()[0]
+    result = DrillService(settings=settings).run(fault, "campaign-1")
+    soak = connect_soak_store(settings.soak_db_path)
+
+    assert result.verdict is DrillVerdict.PASSED
+    assert result.activation_count == 1
+    assert result.order_post_count == int(fault is FaultName.ACCEPTED_THEN_TIMEOUT)
+    assert soak.execute("SELECT COUNT(*) FROM soak_days").fetchone()[0] == 0
+    assert soak.execute(
+        "SELECT availability_failures_used FROM soak_campaigns WHERE campaign_id='campaign-1'"
+    ).fetchone()[0] == before
+    assert soak.execute(
+        "SELECT evidence_class FROM soak_drill_links WHERE drill_id=?", (result.drill_id,)
+    ).fetchone() == (SoakEvidenceClass.CONTROLLED_INJECTION.value,)
+
+
+def test_kis_observed_and_controlled_provenance_remain_distinct(tmp_path: Path) -> None:
+    settings = _active_campaign(tmp_path)
+    runtime = build_drill_runtime(
+        fault=FaultName.KIS_API_FAILURE,
+        campaign_id="campaign-1",
+        settings=settings,
+        drill_id="provenance-drill",
+    )
+    try:
+        for evidence in (
+            SoakEvidenceClass.CONTROLLED_INJECTION,
+            SoakEvidenceClass.KIS_OBSERVED,
+        ):
+            append_controller_observation(
+                runtime.controller,
+                drill_id=runtime.token.drill_id,
+                observation_type="PROVENANCE_CHECKED",
+                evidence_class=evidence,
+                facts={"passed": True},
+            )
+        assert runtime.controller.execute(
+            "SELECT evidence_class,COUNT(*) FROM drill_observations "
+            "GROUP BY evidence_class ORDER BY evidence_class"
+        ).fetchall() == [
+            (SoakEvidenceClass.CONTROLLED_INJECTION.value, 1),
+            (SoakEvidenceClass.KIS_OBSERVED.value, 1),
+        ]
+    finally:
+        runtime.close()

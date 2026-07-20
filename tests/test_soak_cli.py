@@ -192,12 +192,47 @@ def test_soak_command_family_is_exact_and_ordinary_run_has_no_soak_switches() ->
     ordinary = runner.invoke(cli.app, ["run", "--help"])
 
     assert nested.exit_code == 0
-    assert re.findall(r"│\s+(start|run|resume|status)\s", nested.stdout) == [
-        "start", "run", "resume", "status"
+    assert re.findall(r"│\s+(start|run|resume|status|drill)\s", nested.stdout) == [
+        "start", "run", "resume", "status", "drill"
     ]
     assert ordinary.exit_code == 0
     assert "soak" not in ordinary.stdout.lower()
     assert "fault" not in ordinary.stdout.lower()
+
+
+def test_drill_is_the_only_cli_route_with_fault_authority(tmp_path: Path, monkeypatch) -> None:
+    import trading_bot.cli as cli
+
+    calls: list[tuple[object, str]] = []
+
+    class Service:
+        def __init__(self, *, settings):
+            assert settings == "drill-settings"
+
+        def run(self, fault, campaign_id):
+            calls.append((fault, campaign_id))
+            return type(
+                "Result",
+                (),
+                {
+                    "drill_id": "generated-drill-id",
+                    "verdict": type("Verdict", (), {"value": "PASSED"})(),
+                },
+            )()
+
+    monkeypatch.setattr(cli, "_soak_settings_factory", lambda: "drill-settings")
+    monkeypatch.setattr(cli, "_drill_service_factory", Service)
+    result = CliRunner().invoke(
+        cli.app,
+        ["soak", "drill", "accepted-then-timeout", "--campaign-id", "campaign-1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(cli.FaultName.ACCEPTED_THEN_TIMEOUT, "campaign-1")]
+    assert "drill_id=generated-drill-id" in result.stdout
+    assert "drill_verdict=PASSED" in result.stdout
+    assert "fault" not in cli._SoakRuntime.__dataclass_fields__
+    assert "fault" not in cli._build_soak_runtime.__code__.co_varnames
 
 
 class _Campaign:
