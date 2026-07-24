@@ -426,7 +426,11 @@ def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakRep
             incomplete += 1
         else:
             unknown += 1
+    latest_comparisons = {}
     for comparison in data["comparisons"]:
+        key = str(comparison["order_intent_id"] or comparison["comparison_id"])
+        latest_comparisons[key] = comparison
+    for comparison in latest_comparisons.values():
         if not _valid_primary_reference(data, comparison):
             unknown += 1
             cross_unknown += 1

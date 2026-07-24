@@ -393,10 +393,15 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
 
     def reconcile(stage: ReconciliationStage, run_id: str) -> Any:
         today = datetime.now(ZoneInfo("Asia/Seoul")).date()
-        rows = primary.execute(
-            "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE origin_run_id=?",
-            (run_id,),
-        ).fetchall()
+        if stage is ReconciliationStage.RESUME:
+            rows = primary.execute(
+                "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE order_intent_id IS NOT NULL"
+            ).fetchall()
+        else:
+            rows = primary.execute(
+                "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE origin_run_id=?",
+                (run_id,),
+            ).fetchall()
         intent_ids = tuple(str(row[0]) for row in rows if row[0])
         tickers = tuple(str(row[1]) for row in rows if row[1])
         snapshot = collect_broker_snapshot(
@@ -410,6 +415,21 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         complete = snapshot.completeness is PageCompleteness.COMPLETE
         for intent_id in intent_ids:
             local = load_local_order_evidence(primary, order_intent_id=intent_id)
+            events = {
+                row[0] for row in primary.execute(
+                    "SELECT event_type FROM order_events WHERE order_intent_id=?", (intent_id,)
+                )
+            }
+            if stage is ReconciliationStage.RESUME and events == {"INTENT_CREATED"}:
+                append_comparison(
+                    soak, comparison_id=uuid.uuid4().hex, campaign_id=campaign_id,
+                    snapshot_id=snapshot.snapshot_id, run_id=local["run_id"],
+                    ticker=local["ticker"], order_intent_id=intent_id,
+                    verdict=ReconciliationVerdict.MATCHED,
+                    remaining_order_terminal=True,
+                    detail={"dimension_codes": "NO_SUBMISSION_CONFIRMED"},
+                )
+                continue
             comparison = compare_broker_truth(local, snapshot)
             append_comparison(
                 soak,
