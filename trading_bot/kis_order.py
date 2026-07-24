@@ -24,6 +24,7 @@ from tenacity import (
 from trading_bot.data_models import SourceHealth, SourceStatus
 from trading_bot.domain import Order, OrderSide
 from trading_bot.kis_auth import KisAuthError, KisTokenManager
+from trading_bot.kis_rate_limit import KisRequestLimiter
 from trading_bot.soak_models import BrokerPageEnvelope, MockTrProfile, PageCompleteness
 
 _SOURCE = "kis_order"
@@ -198,6 +199,7 @@ class KisOrderAdapter:
         max_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
         timeout_seconds: float = 5.0,
+        request_limiter: KisRequestLimiter | None = None,
     ) -> None:
         if client is None:
             import httpx
@@ -212,6 +214,7 @@ class KisOrderAdapter:
         self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._timeout_seconds = float(timeout_seconds)
         self._last_request_at: Optional[float] = None
+        self._request_limiter = request_limiter
 
     def __repr__(self) -> str:  # pragma: no cover - trivial redaction
         return f"KisOrderAdapter(domain={self._domain!r}, tr_ids={self._tr_ids!r})"
@@ -726,6 +729,9 @@ class KisOrderAdapter:
         }
 
     def _respect_min_interval(self) -> None:
+        if self._request_limiter is not None:
+            self._request_limiter.acquire()
+            return
         interval = self._min_interval_seconds
         if interval <= 0:
             self._last_request_at = time.monotonic()

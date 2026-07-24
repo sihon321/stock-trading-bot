@@ -23,6 +23,7 @@ from trading_bot.data_source import ObservedKRXCalendar, build_data_source
 from trading_bot.domain import Money, Ticker
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
+from trading_bot.kis_rate_limit import KisRequestLimiter
 from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker, build_kis_broker
 from trading_bot.kis_order import KisOrderAccount
 from trading_bot.kis_order import KisOrderAdapter, MOCK_TR_PROFILE_CANDIDATES
@@ -446,6 +447,7 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         max_retries=settings.kis_max_retries,
         retry_backoff_seconds=settings.kis_retry_backoff_seconds,
         timeout_seconds=settings.kis_timeout_seconds,
+        request_limiter=adapter._request_limiter,
     )
     ohlcv = PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0)
     cutoff = policy.completed_bar_cutoff(datetime.now(ZoneInfo("Asia/Seoul")).date())
@@ -599,6 +601,7 @@ def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
     """Build only the mock token/query capability from the narrow soak root."""
 
     credential = settings.kis_mock
+    limiter = KisRequestLimiter(settings.kis_min_interval_seconds)
     token_manager = KisTokenManager(
         KisAuthConfig(
             domain=credential.domain,
@@ -609,7 +612,8 @@ def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
             max_retries=settings.kis_max_retries,
             retry_backoff_seconds=settings.kis_retry_backoff_seconds,
             timeout_seconds=settings.kis_timeout_seconds,
-        )
+        ),
+        request_limiter=limiter,
     )
     return KisOrderAdapter(
         token_manager=token_manager,
@@ -619,6 +623,7 @@ def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
         max_retries=settings.kis_max_retries,
         retry_backoff_seconds=settings.kis_retry_backoff_seconds,
         timeout_seconds=settings.kis_timeout_seconds,
+        request_limiter=limiter,
     )
 
 

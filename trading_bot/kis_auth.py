@@ -37,6 +37,7 @@ from tenacity import (
 
 from trading_bot.config import Settings
 from trading_bot.data_models import SourceHealth, SourceStatus
+from trading_bot.kis_rate_limit import KisRequestLimiter
 
 _SOURCE = "kis_auth"
 _TOKEN_PATH = "/oauth2/tokenP"
@@ -163,6 +164,7 @@ class KisTokenManager:
         *,
         client: Any = None,
         clock: Optional[Callable[[], float]] = None,
+        request_limiter: KisRequestLimiter | None = None,
     ) -> None:
         if client is None:
             import httpx
@@ -174,6 +176,7 @@ class KisTokenManager:
         self._lock = threading.RLock()
         self._token: Optional[KisToken] = None
         self._last_request_at: Optional[float] = None
+        self._request_limiter = request_limiter
 
     def __repr__(self) -> str:  # pragma: no cover - trivial redaction
         cached = self._token is not None
@@ -288,6 +291,9 @@ class KisTokenManager:
         return KisToken(access_token=access_token, expires_at=expires_at)
 
     def _respect_min_interval(self) -> None:
+        if self._request_limiter is not None:
+            self._request_limiter.acquire()
+            return
         interval = float(self._config.min_interval_seconds)
         if interval <= 0:
             self._last_request_at = self._clock()

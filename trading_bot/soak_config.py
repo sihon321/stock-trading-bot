@@ -65,7 +65,7 @@ class SoakSettings(BaseSettings):
     availability_failure_budget: int = 2
     accepted_profile_versions: tuple[str, ...]
     mock_isolation_policy_version: str = MOCK_ISOLATION_POLICY_VERSION
-    kis_min_interval_seconds: float = 0.5
+    kis_min_interval_seconds: float = 1.0
     kis_max_retries: int = 3
     kis_retry_backoff_seconds: float = 1.0
     kis_timeout_seconds: float = 5.0
