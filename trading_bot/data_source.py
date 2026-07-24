@@ -22,8 +22,9 @@ scheduling, backtesting, or portfolio optimization — those remain later phases
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, List, Mapping, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from trading_bot.data_models import (
     DataAction,
@@ -67,14 +68,26 @@ class NoContextError(RuntimeError):
 class ObservedKRXCalendar:
     """Invocation-local calendar backed by observed KRX market data.
 
-    Empty whole-market data positively identifies a closure. Transport or
+    Historical empty whole-market data positively identifies a closure. For the
+    current KST date, an empty daily frame is inconclusive: KRX/pykrx can lag
+    at market open even while continuous trading is under way. Transport or
     provider failures remain unknown, so they can never authorize execution.
     """
 
-    def __init__(self, ohlcv_adapter: Any, *, market: str = "KOSPI", max_lookback_days: int = 14):
+    def __init__(
+        self,
+        ohlcv_adapter: Any,
+        *,
+        market: str = "KOSPI",
+        max_lookback_days: int = 14,
+        current_date: Callable[[], date] | None = None,
+    ):
         self._adapter = ohlcv_adapter
         self._market = market
         self._max_lookback_days = max_lookback_days
+        self._current_date = current_date or (
+            lambda: datetime.now(ZoneInfo("Asia/Seoul")).date()
+        )
         self._cache: dict[date, bool | None] = {}
 
     def is_trading_day(self, day: date) -> bool | None:
@@ -93,7 +106,10 @@ class ObservedKRXCalendar:
             result.frame is not None
             and bool(getattr(result.frame, "empty", False))
         ) or "empty" in result.health.reason.lower() or "no ohlcv" in result.health.reason.lower():
-            state = False
+            # Daily OHLCV is not a real-time market-status feed. Its current-day
+            # frame can be empty shortly after open, so that condition must not
+            # be promoted to a confirmed exchange closure.
+            state = None if day == self._current_date() else False
         else:
             state = None
         self._cache[day] = state
