@@ -371,7 +371,7 @@ def _valid_primary_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
     intent = row["order_intent_id"] if "order_intent_id" in row.keys() else None
     if run_id is not None and str(run_id) not in data["primary_runs"]:
         return False
-    if run_id is not None and ticker is not None:
+    if run_id is not None and ticker is not None and intent is None:
         subject = (str(run_id), str(ticker), str(intent) if intent is not None else None)
         if subject not in data["primary_subjects"]:
             return False

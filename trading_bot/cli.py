@@ -395,7 +395,9 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         today = datetime.now(ZoneInfo("Asia/Seoul")).date()
         if stage is ReconciliationStage.RESUME:
             rows = primary.execute(
-                "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE order_intent_id IS NOT NULL"
+                """SELECT order_intent_id,MAX(ticker) FROM order_events
+                   WHERE order_intent_id IS NOT NULL GROUP BY order_intent_id
+                   HAVING COUNT(*)=1 AND MAX(event_type)='INTENT_CREATED'"""
             ).fetchall()
         else:
             rows = primary.execute(
