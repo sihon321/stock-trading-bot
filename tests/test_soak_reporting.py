@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from trading_bot import sqlite_audit, soak_store
-from trading_bot.audit_models import RunKind
+from trading_bot.audit_models import OrderEvent, OrderEventType, RunKind
 from trading_bot.soak_controller import (
     append_controller_observation,
     commit_drill_contract,
@@ -57,6 +57,63 @@ def _stores(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _repository(paths: tuple[Path, Path, Path]) -> ReadOnlySoakRepository:
     audit, soak, controller = paths
     return ReadOnlySoakRepository(audit, soak, controller)
+
+
+def _write_primary_intent(audit_path: Path, *, intent_id: str = "intent-resume") -> None:
+    audit = sqlite_audit.connect(audit_path)
+    sqlite_audit.start_run(
+        audit,
+        run_id="primary-run",
+        trading_mode="mock",
+        dry_run=False,
+        run_kind=RunKind.RUN,
+        started_at="2026-07-20T00:00:00+00:00",
+        trading_date_kst="20260720",
+        target="mock",
+    )
+    sqlite_audit.append_order_event(
+        audit,
+        OrderEvent(
+            order_intent_id=intent_id,
+            origin_run_id="primary-run",
+            observer_run_id="primary-run",
+            ticker="000660",
+            event_type=OrderEventType.INTENT_CREATED,
+        ),
+    )
+    audit.close()
+
+
+def _write_resume_comparison(
+    soak_path: Path,
+    *,
+    snapshot_id: str | None = "resume-snapshot",
+    snapshot_stage: ReconciliationStage = ReconciliationStage.RESUME,
+    snapshot_run_id: str = "resume",
+    order_intent_id: str | None = "intent-resume",
+    comparison_run_id: str = "resume",
+) -> None:
+    soak = soak_store.connect_soak_store(soak_path)
+    if snapshot_id == "resume-snapshot":
+        soak_store.append_snapshot(
+            soak,
+            snapshot_id=snapshot_id,
+            campaign_id="campaign-1",
+            run_id=snapshot_run_id,
+            stage=snapshot_stage,
+        )
+    soak_store.append_comparison(
+        soak,
+        comparison_id="resume-comparison",
+        campaign_id="campaign-1",
+        snapshot_id=snapshot_id,
+        run_id=comparison_run_id,
+        ticker="000660",
+        order_intent_id=order_intent_id,
+        verdict="MATCHED",
+        remaining_order_terminal=True,
+    )
+    soak.close()
 
 
 def test_report_is_byte_preserving_and_keeps_accounting_dimensions_distinct(
@@ -245,6 +302,85 @@ def test_campaign_scoped_snapshots_keep_broker_completeness_without_weakening_ru
 
     assert report.reconciliation.complete == 2
     assert report.reconciliation.incomplete == 1
+    assert report.reconciliation.unknown == 1
+    assert report.cross_store_unknown == 1
+
+
+def test_campaign_scoped_resume_comparisons_require_snapshot_and_primary_intent(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    _write_primary_intent(paths[0])
+    _write_resume_comparison(paths[1])
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.freeze_ticker(
+        soak,
+        freeze_id="freeze-000660",
+        campaign_id="campaign-1",
+        ticker="000660",
+        order_intent_id="intent-resume",
+        freeze_kind="AMBIGUITY",
+        detail={"reason_code": "AMBIGUOUS_SUBMISSION"},
+    )
+    soak.close()
+
+    before = {path: path.read_bytes() for path in paths}
+    report = build_soak_report(_repository(paths), "campaign-1")
+    after = {path: path.read_bytes() for path in paths}
+
+    assert before == after
+    assert report.reconciliation.complete == 2
+    assert report.reconciliation.unknown == 0
+    assert report.cross_store_unknown == 0
+    assert report.freezes.active_count == 1
+    assert report.freezes.ambiguity_count == 1
+    assert report.freezes.tickers == ("000660",)
+
+
+@pytest.mark.parametrize(
+    ("snapshot_id", "snapshot_stage", "snapshot_run_id", "order_intent_id", "unknown", "cross_unknown"),
+    (
+        (None, ReconciliationStage.RESUME, "resume", "intent-resume", 1, 1),
+        ("resume-snapshot", ReconciliationStage.PRE_RUN, "resume", "intent-resume", 2, 2),
+        ("resume-snapshot", ReconciliationStage.RESUME, "wrong-resume", "intent-resume", 2, 2),
+        ("resume-snapshot", ReconciliationStage.RESUME, "resume", "missing-intent", 1, 1),
+    ),
+)
+def test_malformed_campaign_scoped_resume_comparisons_fail_closed(
+    tmp_path: Path,
+    snapshot_id: str | None,
+    snapshot_stage: ReconciliationStage,
+    snapshot_run_id: str,
+    order_intent_id: str,
+    unknown: int,
+    cross_unknown: int,
+) -> None:
+    paths = _stores(tmp_path)
+    _write_primary_intent(paths[0])
+    _write_resume_comparison(
+        paths[1],
+        snapshot_id=snapshot_id,
+        snapshot_stage=snapshot_stage,
+        snapshot_run_id=snapshot_run_id,
+        order_intent_id=order_intent_id,
+    )
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.unknown == unknown
+    assert report.cross_store_unknown == cross_unknown
+
+
+def test_comparison_with_ordinary_missing_run_remains_cross_store_unknown(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    _write_primary_intent(paths[0])
+    _write_resume_comparison(paths[1], comparison_run_id="missing-primary-run")
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.complete == 1
     assert report.reconciliation.unknown == 1
     assert report.cross_store_unknown == 1
 

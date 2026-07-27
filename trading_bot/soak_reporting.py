@@ -391,6 +391,24 @@ def _valid_snapshot_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
     return _valid_primary_reference(data, row)
 
 
+def _valid_comparison_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
+    """Accept a campaign RESUME comparison only when both evidence owners anchor it."""
+
+    if str(row["run_id"]) != "resume":
+        return _valid_primary_reference(data, row)
+
+    snapshot_id = row["snapshot_id"]
+    intent_id = row["order_intent_id"]
+    if snapshot_id is None or intent_id is None or str(intent_id) not in data["primary_intents"]:
+        return False
+    snapshots = [
+        snapshot for snapshot in data["snapshots"]
+        if str(snapshot["snapshot_id"]) == str(snapshot_id)
+        and str(snapshot["campaign_id"]) == str(data["campaign"]["campaign_id"])
+    ]
+    return len(snapshots) == 1 and _valid_snapshot_reference(data, snapshots[0])
+
+
 def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakReport:
     """Build a deterministic report while preserving independent evidence dimensions."""
 
@@ -431,7 +449,7 @@ def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakRep
         key = str(comparison["order_intent_id"] or comparison["comparison_id"])
         latest_comparisons[key] = comparison
     for comparison in latest_comparisons.values():
-        if not _valid_primary_reference(data, comparison):
+        if not _valid_comparison_reference(data, comparison):
             unknown += 1
             cross_unknown += 1
         elif comparison["verdict"] == "MATCHED" and bool(comparison["remaining_order_terminal"]):
