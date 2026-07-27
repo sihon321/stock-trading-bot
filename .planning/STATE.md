@@ -6,9 +6,9 @@ current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
 stopped_at: Completed 09-07-PLAN.md
-last_updated: "2026-07-20T01:21:27.884Z"
-last_activity: 2026-07-20
-last_activity_desc: Completed 09-07 read-only soak reporting and operator runbook
+last_updated: "2026-07-27T00:34:48Z"
+last_activity: 2026-07-27
+last_activity_desc: Completed quick task 260727-d5y validating campaign-scoped RESUME comparisons
 progress:
   total_phases: 5
   completed_phases: 3
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
 Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-07-20 - Completed quick task 260720-elk: Commit the existing weekend and holiday OHLCV trading-day evidence fix
+Last activity: 2026-07-27 - Completed quick task 260727-d5y: Validate campaign-scoped RESUME comparisons
 
 Progress: [██████████] 96%
 
@@ -117,6 +117,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
+| 260727-d5y | Treat campaign-scoped RESUME comparisons as valid without weakening 000660 ambiguity freeze or order safety | 2026-07-27 | 5105ee8 | [260727-d5y-treat-campaign-scoped-resume-comparisons](./quick/260727-d5y-treat-campaign-scoped-resume-comparisons/) |
 
 ## Deferred Items
 
