@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import date
 
 import httpx
 
@@ -22,6 +23,7 @@ DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 HASHKEY_PATH = "/uapi/hashkey"
 ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+CHK_HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"
 
 
 def assert_no_secret_leaked(*texts: str) -> None:
@@ -153,6 +155,71 @@ def test_malformed_query_output_fails_safe_without_secret_leakage() -> None:
     assert daily.health.status is SourceStatus.UNAVAILABLE
     assert balance.health.status is SourceStatus.UNAVAILABLE
     assert_no_secret_leaked(repr(adapter), repr(daily), daily.health.reason, balance.health.reason)
+
+
+def _calendar_response(*rows, rt_cd="0"):
+    return httpx.Response(
+        200,
+        json={"rt_cd": rt_cd, "msg1": "calendar", "output": list(rows)},
+        request=httpx.Request("GET", DOMAIN + CHK_HOLIDAY_PATH),
+    )
+
+
+def test_mock_calendar_witness_normalizes_explicit_open_and_closed_days() -> None:
+    client = _FakeClient(
+        [
+            _calendar_response({"bass_dt": "20260728", "opnd_yn": "Y"}),
+            _calendar_response({"bass_dt": "20260729", "opnd_yn": "N"}),
+        ]
+    )
+    adapter = _adapter([], client=client)
+
+    assert adapter.fetch_trading_day(date(2026, 7, 28)) is True
+    assert adapter.fetch_trading_day(date(2026, 7, 29)) is False
+    assert [call["method"] for call in client.calls] == ["GET", "GET"]
+    assert all(call["url"].endswith(CHK_HOLIDAY_PATH) for call in client.calls)
+    assert all(call["headers"]["tr_id"] == "CTCA0903R" for call in client.calls)
+    assert client.calls[0]["params"] == {
+        "BASS_DT": "20260728",
+        "CTX_AREA_NK": "",
+        "CTX_AREA_FK": "",
+    }
+
+
+def test_mock_calendar_witness_fails_closed_for_unavailable_or_ambiguous_responses() -> None:
+    cases = [
+        _calendar_response({"bass_dt": "20260728", "opnd_yn": "Y"}, rt_cd="1"),
+        _calendar_response({"bass_dt": "20260729", "opnd_yn": "Y"}),
+        _calendar_response({"bass_dt": "20260728", "opnd_yn": ""}),
+        _calendar_response(
+            {"bass_dt": "20260728", "opnd_yn": "Y"},
+            {"bass_dt": "20260728", "opnd_yn": "N"},
+        ),
+        httpx.Response(
+            200,
+            json={"rt_cd": "0", "output": {"bass_dt": "20260728", "opnd_yn": "Y"}},
+            request=httpx.Request("GET", DOMAIN + CHK_HOLIDAY_PATH),
+        ),
+        httpx.ConnectError("provider details must not escape", request=httpx.Request("GET", DOMAIN)),
+    ]
+    adapter = _adapter(cases)
+
+    for _ in cases:
+        assert adapter.fetch_trading_day(date(2026, 7, 28)) is None
+
+
+def test_calendar_witness_refuses_real_target_without_network_or_order_capability() -> None:
+    client = _FakeClient([])
+    adapter = KisOrderAdapter(
+        token_manager=_FakeTokenManager(),
+        domain="https://openapi.koreainvestment.com:9443",
+        tr_id_profile="real",
+        client=client,
+        min_interval_seconds=0.0,
+    )
+
+    assert adapter.fetch_trading_day(date(2026, 7, 28)) is None
+    assert client.calls == []
 
 
 def test_order_cash_body_headers_and_mode_tr_id() -> None:

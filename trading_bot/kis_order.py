@@ -30,9 +30,11 @@ from trading_bot.soak_models import BrokerPageEnvelope, MockTrProfile, PageCompl
 _SOURCE = "kis_order"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+_CHK_HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"
 _HASHKEY_PATH = "/uapi/hashkey"
 _ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 _MARKET_DIV_CODE = "J"
+_CHK_HOLIDAY_TR_ID = "CTCA0903R"
 
 _TICK_BANDS = (
     (2_000, 1),
@@ -207,6 +209,7 @@ class KisOrderAdapter:
             client = httpx.Client()
         self._token_manager = token_manager
         self._domain = domain
+        self._tr_id_profile = str(tr_id_profile).strip().lower()
         self._tr_ids = _derive_tr_ids(tr_id_profile)
         self._client = client
         self._min_interval_seconds = float(min_interval_seconds)
@@ -262,6 +265,56 @@ class KisOrderAdapter:
         except _TransientOrderQueryError as exc:
             return _unavailable(str(exc))
         return self._parse_query_output(body, expected_shape=dict)
+
+    def fetch_trading_day(self, day: date) -> bool | None:
+        """Return explicit mock KIS calendar evidence for one KST date.
+
+        This witness is intentionally unavailable outside the soak adapter's
+        mock profile.  It only makes the authenticated GET calendar request;
+        it cannot use hashkey or order-cash capability.
+        """
+
+        if self._tr_id_profile != "mock" or not isinstance(day, date):
+            return None
+        try:
+            token = self._token_manager.get_token()
+            body = self._fetch_query_body(
+                path=_CHK_HOLIDAY_PATH,
+                tr_id=_CHK_HOLIDAY_TR_ID,
+                params={
+                    "BASS_DT": day.strftime("%Y%m%d"),
+                    "CTX_AREA_NK": "",
+                    "CTX_AREA_FK": "",
+                },
+                token=token,
+            )
+        except (KisAuthError, _TransientOrderQueryError):
+            return None
+        return self._normalize_trading_day(body, day)
+
+    @staticmethod
+    def _normalize_trading_day(body: Any, requested_day: date) -> bool | None:
+        """Accept exactly one documented requested-date ``opnd_yn`` value."""
+
+        if not isinstance(body, dict) or str(body.get("rt_cd", "")) != "0":
+            return None
+        output = body.get("output")
+        if not isinstance(output, list):
+            return None
+        requested_text = requested_day.strftime("%Y%m%d")
+        rows = [
+            row
+            for row in output
+            if isinstance(row, dict) and row.get("bass_dt") == requested_text
+        ]
+        if len(rows) != 1:
+            return None
+        open_value = rows[0].get("opnd_yn")
+        if open_value == "Y":
+            return True
+        if open_value == "N":
+            return False
+        return None
 
     def query_daily_ccld_pages(
         self,
