@@ -6,9 +6,9 @@ current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
 stopped_at: Completed 09-07-PLAN.md
-last_updated: "2026-07-28T00:36:11Z"
+last_updated: "2026-07-28T01:12:51Z"
 last_activity: 2026-07-28
-last_activity_desc: Completed quick task 260728-d3r resolving mock-soak current-day KRX calendar lag
+last_activity_desc: Completed quick task 260728-e0i making mock-soak current-day calendar preflight resilient
 progress:
   total_phases: 5
   completed_phases: 3
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
 Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-07-28 - Completed quick task 260728-d3r: Fix KRX market-session preflight UNKNOWN during KIS mock soak without weakening fail-closed safety
+Last activity: 2026-07-28 - Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety
 
 Progress: [██████████] 96%
 
@@ -119,6 +119,7 @@ None yet.
 | 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
 | 260727-d5y | Treat campaign-scoped RESUME comparisons as valid without weakening 000660 ambiguity freeze or order safety | 2026-07-27 | 5105ee8 | [260727-d5y-treat-campaign-scoped-resume-comparisons](./quick/260727-d5y-treat-campaign-scoped-resume-comparisons/) |
 | 260728-d3r | Fix KRX market-session preflight UNKNOWN during KIS mock soak without weakening fail-closed safety | 2026-07-28 | 1ad1ec9 | [260728-d3r-fix-krx-market-session-preflight-unknown](./quick/260728-d3r-fix-krx-market-session-preflight-unknown/) |
+| 260728-e0i | Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety | 2026-07-28 | 270b114 | [260728-e0i-make-kis-mock-soak-market-date-preflight](./quick/260728-e0i-make-kis-mock-soak-market-date-preflight/) |
 
 ## Deferred Items
 
