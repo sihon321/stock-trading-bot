@@ -452,6 +452,43 @@ def test_screen_persists_each_selected_rejected_and_error_ticker_once(monkeypatc
     ]
 
 
+def test_screen_persists_pykrx_filter_reason_without_claiming_kis_failure(monkeypatch) -> None:
+    import trading_bot.cli as cli
+    from trading_bot.data_models import DataSourceAuditEvent
+
+    conn = sqlite3.connect(":memory:")
+    result_value = _ScreenerResult(())
+    result_value.audit_events = (
+        DataSourceAuditEvent(
+            "005930",
+            "pykrx",
+            "AVAILABLE",
+            "volume ratio below minimum expansion floor",
+            "SKIP_CANDIDATE",
+        ),
+    )
+
+    class _ScreenSource:
+        def screen_daily_candidates(self, trading_date, *, progress=None):
+            return result_value
+
+    monkeypatch.setattr(cli, "build_runtime", lambda *, trading_date: cli._Runtime(
+        settings=make_settings(), token_manager=None, data_source=_ScreenSource(),
+        llm_provider=_Provider(), broker=_Broker(), audit_conn=conn, notifier=_Notifier(),
+    ))
+
+    invoked = CliRunner().invoke(
+        cli.app, ["screen", "--date", "20260709", "--no-progress"]
+    )
+
+    assert invoked.exit_code == 0
+    row = conn.execute(
+        "SELECT reason_code, detail_json FROM ticker_outcomes WHERE ticker = '005930'"
+    ).fetchone()
+    assert row[0] == "SCREEN_REJECTED"
+    assert json.loads(row[1])["screen_reason"] == "volume ratio below minimum expansion floor"
+
+
 def test_dry_run_default_no_orders(capsys) -> None:
     broker = _Broker()
 

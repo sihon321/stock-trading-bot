@@ -36,6 +36,7 @@ class TickerOutcomeCode(StrEnum):
 
 class ReasonCode(StrEnum):
     COMPLETED = "COMPLETED"
+    SCREEN_REJECTED = "SCREEN_REJECTED"
     HOLD_SIGNAL = "HOLD_SIGNAL"
     LOW_CONFIDENCE = "LOW_CONFIDENCE"
     STALE_OHLCV = "STALE_OHLCV"

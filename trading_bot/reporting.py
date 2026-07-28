@@ -74,6 +74,7 @@ class CandidateReportRow:
     confidence: float | None
     reason_code: str
     reason_ko: str
+    reason_detail: str | None
     ticker_state: EvidenceState
     order_state: str
     reconciliation_state: ReconciliationState
@@ -151,6 +152,7 @@ class ReplayReport:
 
 REASON_EXPLANATIONS_KO: Mapping[str, str] = MappingProxyType({
     ReasonCode.COMPLETED.value: "처리가 정상적으로 완료되었습니다",
+    ReasonCode.SCREEN_REJECTED.value: "스크리닝 조건으로 후보에서 제외되었습니다",
     ReasonCode.HOLD_SIGNAL.value: "보유 신호로 주문하지 않았습니다",
     ReasonCode.LOW_CONFIDENCE.value: "신뢰도가 매수 기준보다 낮습니다",
     ReasonCode.STALE_OHLCV.value: "일봉 데이터가 최신이 아닙니다",
@@ -185,6 +187,23 @@ def _bounded(value: object, *, limit: int = 96, default: str = "UNKNOWN") -> str
         return default
     text = str(value).replace("\r", " ").replace("\n", " ")
     return text[:limit] or default
+
+
+def _screen_reason_detail(detail_json: object) -> str | None:
+    """Safely expose the bounded SCREEN filter reason from audited detail."""
+
+    if not isinstance(detail_json, str):
+        return None
+    try:
+        detail = json.loads(detail_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(detail, Mapping):
+        return None
+    value = detail.get("screen_reason")
+    if not isinstance(value, str):
+        return None
+    return _bounded(value, limit=256, default="") or None
 
 
 def _parse_datetime(value: object) -> datetime:
@@ -343,7 +362,7 @@ class ReadOnlyAuditRepository:
     ) -> RunReportSection:
         run_id = str(run["run_id"])
         outcomes = connection.execute(
-            """SELECT id, ticker, outcome_code, reason_code, order_intent_id,
+            """SELECT id, ticker, outcome_code, reason_code, detail_json, order_intent_id,
                       final_order_state
                FROM ticker_outcomes WHERE run_id = ? ORDER BY id""",
             (run_id,),
@@ -393,6 +412,7 @@ class ReadOnlyAuditRepository:
                 reason_code = "INTEGRITY_DUPLICATE_DECISION"
             intent_id = outcome["order_intent_id"]
             reconciliation = self._reconciliation_state(connection, intent_id)
+            reason_detail = _screen_reason_detail(outcome["detail_json"])
             candidates.append(CandidateReportRow(
                 run_id=run_id,
                 run_kind=run_kind,
@@ -410,6 +430,7 @@ class ReadOnlyAuditRepository:
                 ),
                 reason_code=reason_code,
                 reason_ko=_reason_explanation(reason_code),
+                reason_detail=reason_detail,
                 ticker_state=(EvidenceState.COMPLETE if known_terminal else EvidenceState.UNKNOWN),
                 order_state=(
                     _bounded(outcome["final_order_state"])
@@ -849,6 +870,7 @@ def _render_runs(runs: Sequence[RunReportSection]) -> list[str]:
                 f"신뢰도={confidence} | 주문={candidate.order_state} | "
                 f"조정={candidate.reconciliation_state.value} | 증거={candidate.ticker_state.value} | "
                 f"{candidate.reason_code} — {candidate.reason_ko}"
+                + (f" | 상세사유={candidate.reason_detail}" if candidate.reason_detail else "")
             )
             for attempt in candidate.notification_attempts:
                 failure = attempt.failure_category or "-"

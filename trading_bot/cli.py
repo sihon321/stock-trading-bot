@@ -934,6 +934,29 @@ def _reason_for_exception(exc: BaseException) -> tuple[ReasonCode, FailedStage]:
     return ReasonCode.KIS_UNAVAILABLE, FailedStage.DATA_COLLECTION
 
 
+def _screen_rejection_reason(event: Any) -> ReasonCode:
+    """Map a SCREEN audit event without inventing a KIS failure.
+
+    The screener is a pure pykrx-data transform.  Most ``SKIP_CANDIDATE``
+    events therefore describe a policy filter (liquidity, volume, indicators,
+    and so on), not an unavailable KIS endpoint.  Reserve KIS-specific codes
+    for audit events that explicitly identify a KIS source.
+    """
+
+    source = str(getattr(event, "source", "")).lower()
+    status = str(getattr(event, "status", "")).upper()
+    reason = str(getattr(event, "reason", "")).lower()
+    if status == "STALE" or "stale" in reason:
+        return ReasonCode.STALE_OHLCV
+    if source.startswith("kis"):
+        return (
+            ReasonCode.STALE_QUOTE
+            if "stale" in reason
+            else ReasonCode.KIS_UNAVAILABLE
+        )
+    return ReasonCode.SCREEN_REJECTED
+
+
 def _terminal_outcome(result: ExecutionResult) -> tuple[TickerOutcomeCode, ReasonCode]:
     audit = result.audit
     reason = (audit.order_reason if audit else result.reason).lower()
@@ -1614,25 +1637,22 @@ def screen_command(
         for event in getattr(result, "audit_events", ()):
             symbol = event.ticker
             is_error = str(event.action).upper() not in {"SKIP_CANDIDATE", "REJECTED"}
-            reason_text = str(event.reason).lower()
-            if "stale" in reason_text:
-                reason_code = ReasonCode.STALE_OHLCV
-            elif "quote" in reason_text:
-                reason_code = ReasonCode.STALE_QUOTE
-            else:
-                reason_code = ReasonCode.KIS_UNAVAILABLE
             outcomes[symbol] = TickerOutcome(
                 run_id=run_id,
                 ticker=symbol,
                 outcome_code=(
                     TickerOutcomeCode.SCREEN_ERROR if is_error else TickerOutcomeCode.REJECTED
                 ),
-                reason_code=reason_code,
+                reason_code=_screen_rejection_reason(event),
                 failed_stage=FailedStage.SCREENING if is_error else None,
                 detail=sanitize_detail({
                     "source": event.source,
                     "status": event.status,
                     "action": event.action,
+                    "screen_reason": (
+                        str(event.reason).replace("\r", " ").replace("\n", " ")[:256]
+                        or "unknown"
+                    ),
                     "observed_date": event.observed_date,
                     "expected_date": event.expected_date,
                 }),

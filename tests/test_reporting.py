@@ -98,6 +98,33 @@ def _outcome(
     )
 
 
+def test_daily_report_renders_persisted_screen_filter_reason(tmp_path: Path) -> None:
+    path = tmp_path / "audit.db"
+    conn = sqlite_audit.connect(path)
+    _start(
+        conn,
+        "screen",
+        kind=RunKind.SCREEN,
+        status=RunStatus.COMPLETED,
+        started_at="2026-07-14T00:05:00+00:00",
+    )
+    sqlite_audit.write_ticker_outcome(
+        conn,
+        TickerOutcome(
+            run_id="screen",
+            ticker="005930",
+            outcome_code=TickerOutcomeCode.REJECTED,
+            reason_code=ReasonCode.SCREEN_REJECTED,
+            detail={"screen_reason": "volume ratio below minimum expansion floor"},
+        ),
+    )
+
+    report = render_daily_report(build_daily_report(ReadOnlyAuditRepository(path), DAY))
+
+    assert "SCREEN_REJECTED — 스크리닝 조건으로 후보에서 제외되었습니다" in report
+    assert "상세사유=volume ratio below minimum expansion floor" in report
+
+
 def _decision(conn, run_id: str, ticker: str, action: str, confidence: float) -> None:
     event = SimpleNamespace(
         ticker=ticker,
