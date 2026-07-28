@@ -367,7 +367,8 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
     soak = connect_soak_store(settings.soak_db_path)
     policy = MarketCyclePolicy(
         ObservedKRXCalendar(
-            PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0)
+            PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0),
+            calendar_witness=adapter.fetch_trading_day,
         )
     )
     campaign = SoakCampaignService(

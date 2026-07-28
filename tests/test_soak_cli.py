@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import date
 
 import pytest
 from pydantic import SecretStr
@@ -82,6 +83,75 @@ def test_invalid_identity_stops_before_any_runtime_or_mutation(tmp_path: Path, m
     assert "MOCK_ISOLATION_BLOCKED" in result.stderr
     assert calls == []
     assert "app-key-secret" not in result.output
+
+
+def test_soak_runtime_wires_only_its_selected_mock_adapter_as_calendar_witness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import trading_bot.cli as cli
+
+    settings = _settings(tmp_path)
+    settings.primary_audit_db_path.touch()
+    captured: dict[str, object] = {}
+    calls: list[str] = []
+
+    class Adapter:
+        _token_manager = object()
+        _request_limiter = object()
+
+        def fetch_trading_day(self, day):
+            calls.append(f"calendar:{day}")
+            return True
+
+        def place_order_cash(self, *args, **kwargs):
+            raise AssertionError("calendar wiring must not submit an order")
+
+    class Connection:
+        def close(self):
+            calls.append("primary:close")
+
+    class Store(Connection):
+        pass
+
+    class Calendar:
+        def __init__(self, _ohlcv, *, calendar_witness, **_kwargs):
+            captured["calendar_witness"] = calendar_witness
+
+    class Policy:
+        def __init__(self, calendar):
+            captured["calendar"] = calendar
+
+        def completed_bar_cutoff(self, _day):
+            return type("Cutoff", (), {"available": True, "cutoff_date": date(2026, 7, 25)})()
+
+    class Quote:
+        def fetch_current_price(self, _ticker):
+            raise AssertionError("calendar wiring must not read a quote")
+
+    monkeypatch.setattr(cli, "validate_store_topology", lambda *args: None)
+    monkeypatch.setattr(cli, "_read_audit_health", lambda *_args: type("Health", (), {"healthy": True})())
+    monkeypatch.setattr(cli, "build_soak_identity_receipt", lambda *_args: object())
+    monkeypatch.setattr(cli, "_build_soak_adapter", lambda _settings: Adapter())
+    monkeypatch.setattr(cli.sqlite_audit, "connect", lambda _path: Connection())
+    monkeypatch.setattr(cli, "connect_soak_store", lambda _path: Store())
+    monkeypatch.setattr(cli, "ObservedKRXCalendar", Calendar)
+    monkeypatch.setattr(cli, "MarketCyclePolicy", Policy)
+    monkeypatch.setattr(cli, "SoakCampaignService", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "KisQuoteAdapter", lambda **_kwargs: Quote())
+    monkeypatch.setattr(cli, "build_data_source", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(cli, "build_llm_provider", lambda _settings: object())
+    monkeypatch.setattr(cli, "KISBroker", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        cli, "build_runtime", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("general runtime called"))
+    )
+
+    runtime = cli._build_soak_runtime(settings, "campaign-1")
+
+    witness = captured["calendar_witness"]
+    assert callable(witness)
+    assert witness(date(2026, 7, 28)) is True
+    assert calls == ["calendar:2026-07-28"]
+    runtime.close()
 
 
 def test_proof_order_is_explicit_and_fails_closed_until_prerequisites_exist(tmp_path: Path, monkeypatch) -> None:

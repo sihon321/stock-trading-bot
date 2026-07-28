@@ -81,6 +81,7 @@ class ObservedKRXCalendar:
         market: str = "KOSPI",
         max_lookback_days: int = 14,
         current_date: Callable[[], date] | None = None,
+        calendar_witness: Callable[[date], object] | None = None,
     ):
         self._adapter = ohlcv_adapter
         self._market = market
@@ -88,6 +89,7 @@ class ObservedKRXCalendar:
         self._current_date = current_date or (
             lambda: datetime.now(ZoneInfo("Asia/Seoul")).date()
         )
+        self._calendar_witness = calendar_witness
         self._cache: dict[date, bool | None] = {}
 
     def is_trading_day(self, day: date) -> bool | None:
@@ -109,11 +111,22 @@ class ObservedKRXCalendar:
             # Daily OHLCV is not a real-time market-status feed. Its current-day
             # frame can be empty shortly after open, so that condition must not
             # be promoted to a confirmed exchange closure.
-            state = None if day == self._current_date() else False
+            state = self._current_day_witness(day) if day == self._current_date() else False
         else:
             state = None
         self._cache[day] = state
         return state
+
+    def _current_day_witness(self, day: date) -> bool | None:
+        """Return only explicit boolean evidence from the optional soak witness."""
+
+        if self._calendar_witness is None:
+            return None
+        try:
+            result = self._calendar_witness(day)
+        except Exception:  # noqa: BLE001 - remote calendar evidence is untrusted.
+            return None
+        return result if type(result) is bool else None
 
     def previous_trading_day(self, day: date) -> date | None:
         candidate = day - timedelta(days=1)

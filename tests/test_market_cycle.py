@@ -139,6 +139,77 @@ def test_observed_calendar_treats_current_day_empty_ohlcv_as_unknown():
     assert calendar.is_trading_day(date(2026, 7, 23)) is False
 
 
+def test_observed_calendar_uses_only_explicit_current_day_mock_witness_for_pykrx_lag():
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    calls: list[date] = []
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(
+                    source="pykrx", status=SourceStatus.UNAVAILABLE, reason="empty OHLCV frame"
+                ),
+            )
+
+    calendar = ObservedKRXCalendar(
+        Adapter(),
+        current_date=lambda: date(2026, 7, 24),
+        calendar_witness=lambda day: calls.append(day) or True,
+    )
+    policy = MarketCyclePolicy(calendar)
+
+    assert calendar.is_trading_day(date(2026, 7, 24)) is True
+    assert calls == [date(2026, 7, 24)]
+    evidence = policy.classify(datetime(2026, 7, 24, 9, 0, tzinfo=KST))
+    assert evidence.session is MarketSession.CONTINUOUS
+    assert evidence.executable
+
+
+@pytest.mark.parametrize("witness", [lambda _day: None, lambda _day: "Y"])
+def test_observed_calendar_keeps_missing_or_invalid_current_day_witness_unknown(witness):
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(
+                    source="pykrx", status=SourceStatus.UNAVAILABLE, reason="empty OHLCV frame"
+                ),
+            )
+
+    calendar = ObservedKRXCalendar(
+        Adapter(), current_date=lambda: date(2026, 7, 24), calendar_witness=witness
+    )
+    evidence = MarketCyclePolicy(calendar).classify(datetime(2026, 7, 24, 10, 0, tzinfo=KST))
+    assert evidence.session is MarketSession.UNKNOWN
+    assert not evidence.executable
+
+
+def test_observed_calendar_treats_witness_exception_as_unknown_and_historical_empty_as_closed():
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(
+                    source="pykrx", status=SourceStatus.UNAVAILABLE, reason="empty OHLCV frame"
+                ),
+            )
+
+    def broken_witness(_day):
+        raise RuntimeError("untrusted provider detail")
+
+    calendar = ObservedKRXCalendar(
+        Adapter(), current_date=lambda: date(2026, 7, 24), calendar_witness=broken_witness
+    )
+    assert calendar.is_trading_day(date(2026, 7, 24)) is None
+    assert calendar.is_trading_day(date(2026, 7, 23)) is False
+
+
 def test_observed_calendar_rejects_available_but_empty_holiday_frame():
     import pandas as pd
 
