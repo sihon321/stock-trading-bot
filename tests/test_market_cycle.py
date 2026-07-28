@@ -246,3 +246,99 @@ def test_observed_calendar_resolves_immediately_previous_confirmed_day():
             )
 
     assert ObservedKRXCalendar(Adapter()).previous_trading_day(date(2026, 7, 13)) == date(2026, 7, 10)
+
+
+@pytest.mark.parametrize("outcome", ["exception", "unavailable", "malformed", "empty"])
+@pytest.mark.parametrize("witness_value, expected", [(True, True), (False, False)])
+def test_observed_calendar_uses_exact_witness_for_every_current_day_pykrx_uncertainty(
+    outcome: str, witness_value: bool, expected: bool
+) -> None:
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    calls: list[date] = []
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            if outcome == "exception":
+                raise RuntimeError("untrusted pykrx response body")
+            if outcome == "malformed":
+                return object()
+            if outcome == "empty":
+                return OhlcvResult(
+                    frame=None,
+                    health=SourceHealth(source="pykrx", status=SourceStatus.UNAVAILABLE, reason="empty OHLCV frame"),
+                )
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(source="pykrx", status=SourceStatus.UNAVAILABLE, reason="provider timeout: payload"),
+            )
+
+    current_day = date(2026, 7, 24)
+    calendar = ObservedKRXCalendar(
+        Adapter(), current_date=lambda: current_day,
+        calendar_witness=lambda day: calls.append(day) or witness_value,
+    )
+
+    assert calendar.is_trading_day(current_day) is expected
+    assert calendar.is_trading_day(current_day) is expected
+    assert calls == [current_day]
+    assert calendar.diagnostic_for(current_day) is None
+
+
+@pytest.mark.parametrize("outcome", ["exception", "unavailable", "malformed", "empty"])
+@pytest.mark.parametrize("witness", [None, lambda _day: None, lambda _day: "Y"])
+def test_observed_calendar_current_day_weak_witness_stays_unknown_with_safe_diagnostic(
+    outcome: str, witness
+) -> None:
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            if outcome == "exception":
+                raise RuntimeError("secret pykrx provider response")
+            if outcome == "malformed":
+                return object()
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(
+                    source="pykrx", status=SourceStatus.UNAVAILABLE,
+                    reason="secret provider payload" if outcome == "unavailable" else "empty OHLCV frame",
+                ),
+            )
+
+    current_day = date(2026, 7, 24)
+    calendar = ObservedKRXCalendar(Adapter(), current_date=lambda: current_day, calendar_witness=witness)
+
+    assert calendar.is_trading_day(current_day) is None
+    diagnostic = calendar.diagnostic_for(current_day)
+    assert diagnostic == (
+        "PYKRX_CURRENT_UNCERTAIN_NO_WITNESS"
+        if witness is None else "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"
+    )
+    assert "secret" not in diagnostic.lower()
+    assert "payload" not in diagnostic.lower()
+
+
+def test_observed_calendar_current_day_witness_exception_is_safe_and_cached() -> None:
+    from trading_bot.data_models import OhlcvResult, SourceHealth, SourceStatus
+
+    calls = 0
+
+    class Adapter:
+        def fetch_market_ohlcv(self, day, *, market, min_rows):
+            return OhlcvResult(
+                frame=None,
+                health=SourceHealth(source="pykrx", status=SourceStatus.UNAVAILABLE, reason="no OHLCV"),
+            )
+
+    def witness(_day):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("KIS secret response")
+
+    current_day = date(2026, 7, 24)
+    calendar = ObservedKRXCalendar(Adapter(), current_date=lambda: current_day, calendar_witness=witness)
+    assert calendar.is_trading_day(current_day) is None
+    assert calendar.is_trading_day(current_day) is None
+    assert calls == 1
+    assert calendar.diagnostic_for(current_day) == "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"

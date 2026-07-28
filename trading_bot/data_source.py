@@ -74,6 +74,9 @@ class ObservedKRXCalendar:
     provider failures remain unknown, so they can never authorize execution.
     """
 
+    _PYKRX_NO_WITNESS = "PYKRX_CURRENT_UNCERTAIN_NO_WITNESS"
+    _KIS_WITNESS_UNAVAILABLE = "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"
+
     def __init__(
         self,
         ohlcv_adapter: Any,
@@ -91,30 +94,57 @@ class ObservedKRXCalendar:
         )
         self._calendar_witness = calendar_witness
         self._cache: dict[date, bool | None] = {}
+        self._diagnostics: dict[date, str | None] = {}
 
     def is_trading_day(self, day: date) -> bool | None:
         if day in self._cache:
             return self._cache[day]
-        result = self._adapter.fetch_market_ohlcv(
-            day.strftime("%Y%m%d"), market=self._market, min_rows=1
-        )
-        if (
-            result.health.status is SourceStatus.AVAILABLE
-            and result.frame is not None
-            and not bool(getattr(result.frame, "empty", False))
-        ):
-            state: bool | None = True
-        elif (
-            result.frame is not None
-            and bool(getattr(result.frame, "empty", False))
-        ) or "empty" in result.health.reason.lower() or "no ohlcv" in result.health.reason.lower():
-            # Daily OHLCV is not a real-time market-status feed. Its current-day
-            # frame can be empty shortly after open, so that condition must not
-            # be promoted to a confirmed exchange closure.
-            state = self._current_day_witness(day) if day == self._current_date() else False
-        else:
-            state = None
+        current_day = day == self._current_date()
+        try:
+            result = self._adapter.fetch_market_ohlcv(
+                day.strftime("%Y%m%d"), market=self._market, min_rows=1
+            )
+            health = result.health
+            frame = result.frame
+            status = health.status
+            reason = health.reason
+            frame_empty = frame is not None and bool(getattr(frame, "empty", False))
+        except Exception:  # noqa: BLE001 - adapter responses are untrusted evidence.
+            return self._resolve_uncertain(day, current_day=current_day)
+
+        if status is SourceStatus.AVAILABLE and frame is not None and not frame_empty:
+            return self._record(day, True)
+
+        if current_day:
+            # Same-day pykrx data can be delayed or malformed at market open. It
+            # has no authority to close or open the date without exact mock KIS
+            # evidence, regardless of any provider message.
+            return self._resolve_uncertain(day, current_day=True)
+
+        if frame_empty or (isinstance(reason, str) and (
+            "empty" in reason.lower() or "no ohlcv" in reason.lower()
+        )):
+            return self._record(day, False)
+        return self._record(day, None)
+
+    def diagnostic_for(self, day: date) -> str | None:
+        """Return a bounded source-level reason only for cached UNKNOWN dates."""
+
+        return self._diagnostics.get(day) if self._cache.get(day) is None else None
+
+    def _resolve_uncertain(self, day: date, *, current_day: bool) -> bool | None:
+        if not current_day:
+            return self._record(day, None)
+        if self._calendar_witness is None:
+            return self._record(day, None, self._PYKRX_NO_WITNESS)
+        state = self._current_day_witness(day)
+        if state is None:
+            return self._record(day, None, self._KIS_WITNESS_UNAVAILABLE)
+        return self._record(day, state)
+
+    def _record(self, day: date, state: bool | None, diagnostic: str | None = None) -> bool | None:
         self._cache[day] = state
+        self._diagnostics[day] = diagnostic if state is None else None
         return state
 
     def _current_day_witness(self, day: date) -> bool | None:
