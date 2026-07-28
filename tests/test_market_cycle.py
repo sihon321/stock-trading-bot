@@ -342,3 +342,57 @@ def test_observed_calendar_current_day_witness_exception_is_safe_and_cached() ->
     assert calendar.is_trading_day(current_day) is None
     assert calls == 1
     assert calendar.diagnostic_for(current_day) == "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"
+
+
+def test_market_policy_propagates_allowlisted_observed_calendar_diagnostic() -> None:
+    class Calendar:
+        def is_trading_day(self, _day):
+            return None
+
+        def previous_trading_day(self, _day):
+            return None
+
+        def diagnostic_for(self, _day):
+            return "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"
+
+    evidence = MarketCyclePolicy(Calendar()).classify(datetime(2026, 7, 24, 10, 0, tzinfo=KST))
+
+    assert evidence.calendar_state is CalendarState.UNKNOWN
+    assert evidence.session is MarketSession.UNKNOWN
+    assert not evidence.executable
+    assert evidence.reason == "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("diagnostic", [None, "provider secret payload", object()])
+def test_market_policy_unknown_diagnostic_is_defensive_and_falls_back_to_generic_reason(diagnostic) -> None:
+    class Calendar:
+        def is_trading_day(self, _day):
+            return None
+
+        def previous_trading_day(self, _day):
+            return None
+
+        def diagnostic_for(self, _day):
+            return diagnostic
+
+    evidence = MarketCyclePolicy(Calendar()).classify(datetime(2026, 7, 24, 10, 0, tzinfo=KST))
+    assert evidence.session is MarketSession.UNKNOWN
+    assert not evidence.executable
+    assert evidence.reason == "calendar unavailable"
+
+
+def test_market_policy_unknown_diagnostic_accessor_failure_falls_back_to_generic_reason() -> None:
+    class Calendar:
+        def is_trading_day(self, _day):
+            return None
+
+        def previous_trading_day(self, _day):
+            return None
+
+        def diagnostic_for(self, _day):
+            raise RuntimeError("secret calendar error")
+
+    evidence = MarketCyclePolicy(Calendar()).classify(datetime(2026, 7, 24, 10, 0, tzinfo=KST))
+    assert evidence.session is MarketSession.UNKNOWN
+    assert not evidence.executable
+    assert evidence.reason == "calendar unavailable"

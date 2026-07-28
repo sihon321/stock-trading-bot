@@ -10,6 +10,10 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 POLICY_VERSION = "krx-continuous-v1"
+_CALENDAR_UNKNOWN_DIAGNOSTICS = frozenset({
+    "PYKRX_CURRENT_UNCERTAIN_NO_WITNESS",
+    "PYKRX_CURRENT_UNCERTAIN_KIS_WITNESS_UNAVAILABLE",
+})
 
 
 class CalendarState(StrEnum):
@@ -80,7 +84,7 @@ class MarketCyclePolicy:
         except Exception:  # provider uncertainty must fail closed
             return self._unknown(kst, "calendar unavailable")
         if trading_day is None:
-            return self._unknown(kst, "calendar unavailable")
+            return self._unknown(kst, self._calendar_unknown_reason(kst.date()))
         if not trading_day:
             return MarketCycleEvidence(
                 kst, kst.date(), CalendarState.CLOSED_DAY, MarketSession.CLOSED_DAY,
@@ -126,3 +130,14 @@ class MarketCyclePolicy:
             MarketSession.UNKNOWN, False, reason,
         )
 
+    def _calendar_unknown_reason(self, day: date) -> str:
+        """Return a calendar's optional, bounded UNKNOWN provenance safely."""
+
+        try:
+            diagnostic_for = getattr(self._calendar, "diagnostic_for", None)
+            diagnostic = diagnostic_for(day) if callable(diagnostic_for) else None
+        except Exception:  # noqa: BLE001 - provenance must never affect blocking.
+            return "calendar unavailable"
+        if type(diagnostic) is str and diagnostic in _CALENDAR_UNKNOWN_DIAGNOSTICS:
+            return diagnostic
+        return "calendar unavailable"
