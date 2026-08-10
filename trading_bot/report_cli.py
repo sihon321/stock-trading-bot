@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import re
 import tempfile
 from collections.abc import Callable
 from datetime import date, datetime
@@ -12,6 +14,13 @@ from zoneinfo import ZoneInfo
 import typer
 
 from .config import ReportSettings
+from .calibration import baseline_policy, build_variant_catalog, evaluate_variants
+from .calibration_reporting import (
+    ReadOnlyCalibrationEvidenceRepository,
+    build_calibration_report,
+    render_calibration_report,
+)
+from .replay import load_replay_bundle
 from .reporting import (
     ReadOnlyAuditRepository,
     build_daily_report,
@@ -135,6 +144,24 @@ def _deliver(rendered: str, output: Path | None) -> None:
     typer.echo(normalized, nl=False)
 
 
+def _existing_regular_input(value: Path) -> Path:
+    raw = Path(value)
+    if raw.is_symlink():
+        raise ValueError("calibration input may not be a symbolic link")
+    try:
+        resolved = raw.resolve(strict=True)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"calibration input does not exist: {raw}") from None
+    if not resolved.is_file():
+        raise ValueError("calibration input must be a regular file")
+    cursor = raw.absolute()
+    while cursor != cursor.parent:
+        if cursor.is_symlink():
+            raise ValueError("calibration input path may not contain symbolic links")
+        cursor = cursor.parent
+    return resolved
+
+
 @report_app.command("daily")
 def daily_command(
     date_text: str | None = typer.Option(None, "--date"),
@@ -189,5 +216,62 @@ def replay_report_command(
         rendered = render_replay_report(build_replay_report(loaded))
         _deliver(rendered, output)
     except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(_diagnostic(exc), err=True)
+        raise typer.Exit(2) from None
+
+
+@report_app.command("calibration")
+def calibration_command(
+    fixtures: list[Path] = typer.Argument(...),
+    audit_db: Path = typer.Option(..., "--audit-db"),
+    soak_db: Path = typer.Option(..., "--soak-db"),
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+    output: Path | None = typer.Option(None, "--output"),
+) -> None:
+    """Replay·mock 증거로 읽기 전용 정책 보정 자문을 생성합니다."""
+
+    try:
+        if not fixtures:
+            raise ValueError("at least one replay fixture is required")
+        if re.fullmatch(r"[^\x00-\x1f]{1,128}", campaign_id) is None:
+            raise ValueError("campaign_id must be non-empty and bounded")
+        paths = tuple(_existing_regular_input(path) for path in fixtures)
+        inodes = {(path.stat().st_dev, path.stat().st_ino) for path in paths}
+        if len(inodes) != len(paths):
+            raise ValueError("duplicate replay fixture")
+
+        scenarios = tuple(
+            scenario
+            for path in paths
+            for scenario in load_replay_bundle(path)
+        )
+        if not scenarios:
+            raise ValueError("replay fixture bundle is empty")
+        scenario_ids = [scenario.scenario_id for scenario in scenarios]
+        if len(scenario_ids) != len(set(scenario_ids)):
+            raise ValueError("duplicate replay scenario identity")
+        expected_baseline = baseline_policy().as_mapping()
+        if any(
+            any(scenario.policy.get(key) != value for key, value in expected_baseline.items())
+            for scenario in scenarios
+        ):
+            raise ValueError("incompatible replay calibration baseline")
+        source_identities = tuple(
+            f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}" for path in paths
+        )
+        if len(set(source_identities)) != len(source_identities):
+            raise ValueError("duplicate replay fixture content")
+
+        evidence = ReadOnlyCalibrationEvidenceRepository(audit_db, soak_db).load(
+            campaign_id
+        )
+        evaluations = evaluate_variants(scenarios, build_variant_catalog())
+        report = build_calibration_report(
+            evidence,
+            evaluations,
+            source_identities=source_identities,
+        )
+        _deliver(render_calibration_report(report), output)
+    except (OSError, KeyError, ValueError, RuntimeError) as exc:
         typer.echo(_diagnostic(exc), err=True)
         raise typer.Exit(2) from None
