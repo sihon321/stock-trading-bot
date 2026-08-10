@@ -28,7 +28,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 - [x] **Phase 7: Deterministic Replay Validation** — Exercise the production decision and execution gates against frozen historical scenarios without live dependencies. (completed 2026-07-13)
 - [x] **Phase 8: Decision Reports & Operator Runbook** — Make validation evidence reviewable and daily operation repeatable, including failure triage. (completed 2026-07-13)
 - [ ] **Phase 9: KIS Mock Soak & Fault Drills** — Collect multi-day broker-facing mock evidence and prove recovery behavior under expected faults.
-- [ ] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review.
+- [x] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review. (completed 2026-08-10)
 
 ## Phase Details
 
@@ -202,12 +202,12 @@ Plans:
   3. Operator can complete an evidence-linked real-money promotion checklist covering replay, soak, reports, unresolved orders, policy freeze, rollback and kill procedures, and explicit manual approval.
   4. Operator can verify that replay, report, soak, and calibration commands cannot enable real-money trading or automatically mutate live configuration.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans complete
 
 - [x] 10-01-PLAN.md
 - [x] 10-02-PLAN.md
 - [x] 10-03-PLAN.md
-- [ ] 10-04-PLAN.md
+- [x] 10-04-PLAN.md
 
 ## Progress
 
@@ -224,4 +224,4 @@ Plans:
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
-| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 3/4 | In Progress|  |
+| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete   | 2026-08-10 |
