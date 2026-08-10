@@ -307,3 +307,26 @@ def test_phase9_freeze_and_scope_contract_is_explicit() -> None:
         "새 전략",
     ):
         assert fences.count(phrase) == 1
+
+
+def test_phase10_readiness_is_complete_manual_and_currently_blocked() -> None:
+    section = _section(_text(), "Phase 10 실거래 승격 준비도")
+    for code in (
+        "REPLAY_VERIFIED", "SOAK_ACCEPTED", "REPORTS_COMPLETE", "ORDERS_RESOLVED",
+        "CALIBRATION_VALID", "POLICY_FROZEN", "ROLLBACK_ACK", "KILL_ACK",
+        "MANUAL_APPROVAL",
+    ):
+        assert section.count(code) == 1
+    for option in (
+        "--replay-result", "--calibration-fixture", "--audit-db", "--soak-db",
+        "--controller-db", "--campaign-id", "--policy-snapshot",
+        "--rollback-ack", "--kill-ack", "--manual-approval",
+    ):
+        assert option in section
+    assert "현재 Phase 9 미완료·안전 실패" in section
+    assert "BLOCKED" in section and "READY" in section
+    for boundary in (
+        "설정을 쓰거나", "주문 제출·재제출", "예약 실행", "Phase 9 waiver",
+        "정책 자동 변경", "수익성 주장", "별도 수동 절차",
+    ):
+        assert boundary in section

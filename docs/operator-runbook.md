@@ -186,3 +186,13 @@ audit failure나 interruption 뒤에는 미완료 controller contract를 새 con
 - 자동 재제출
 - 수익성 주장
 - 새 전략
+
+## Phase 10 실거래 승격 준비도
+
+순서는 증거 수집 → `bot report readiness` 실행 → `BLOCKED`/`READY` 검토 → 정책 snapshot 동결 확인 → rollback/kill 절차 확인 → 명시적 수동 승인 기록이다. 그 뒤의 `TRADING_MODE=real` 변경은 이 명령과 분리된 미래의 수동 재확인 절차이며, 현재 Phase 9 미완료·안전 실패는 waiver할 수 없으므로 `BLOCKED`다.
+
+명령은 `bot report readiness --replay-result <result.json> --calibration-fixture <fixture.json> --audit-db <audit.db> --soak-db <soak.db> --controller-db <controller.db> --campaign-id <id> --policy-snapshot <policy.json> --rollback-ack --kill-ack --manual-approval`이다. 결과의 `assessment_id`와 `calibration_id`는 증거·정책·승인이 바뀌면 무효화되어 다시 계산해야 한다.
+
+검토 코드는 `REPLAY_VERIFIED`, `SOAK_ACCEPTED`, `REPORTS_COMPLETE`, `ORDERS_RESOLVED`, `CALIBRATION_VALID`, `POLICY_FROZEN`, `ROLLBACK_ACK`, `KILL_ACK`, `MANUAL_APPROVAL`이다. 하나라도 `BLOCK`/`UNKNOWN`이면 최종 결과는 `BLOCKED`다. 활성 ambiguity/freeze는 차단하지만 determinate하게 해결된 과거 ambiguity는 warning으로 남긴다.
+
+이 보고 명령은 설정을 쓰거나 `TRADING_MODE=real`을 활성화하지 않고, 주문 제출·재제출·예약 실행·Phase 9 waiver·정책 자동 변경·수익성 주장을 하지 않는다. `READY`도 권한 토큰이 아니며 실제 전환은 별도 수동 절차다.

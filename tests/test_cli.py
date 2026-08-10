@@ -360,8 +360,8 @@ def test_report_group_is_discoverable_once_with_exact_nested_commands() -> None:
     assert top_level.exit_code == 0
     assert top_level.stdout.count("report") == 1
     assert nested.exit_code == 0
-    command_lines = re.findall(r"│\s+(calibration|daily|period|replay)\s", nested.stdout)
-    assert command_lines == ["daily", "period", "replay", "calibration"]
+    command_lines = re.findall(r"│\s+(calibration|daily|period|readiness|replay)\s", nested.stdout)
+    assert command_lines == ["daily", "period", "replay", "calibration", "readiness"]
 
 
 def test_report_calibration_help_has_no_mutation_or_live_authority() -> None:
@@ -378,6 +378,20 @@ def test_report_calibration_help_has_no_mutation_or_live_authority() -> None:
         "schedule", "trading-mode",
     ):
         assert forbidden not in lowered
+
+
+def test_report_readiness_help_has_complete_readonly_inputs() -> None:
+    from trading_bot.cli import app
+
+    result = CliRunner().invoke(app, ["report", "readiness", "--help"])
+
+    assert result.exit_code == 0
+    for option in (
+        "--replay-result", "--calibration-fixture", "--audit-db", "--soak-db",
+        "--controller-db", "--campaign-id", "--policy-snapshot",
+        "--rollback-ack", "--kill-ack", "--manual-approval", "--output",
+    ):
+        assert option in result.stdout
 
 
 def test_screen_command_reports_progress_on_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
