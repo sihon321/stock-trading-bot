@@ -5,16 +5,16 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 09-07-PLAN.md
-last_updated: "2026-07-28T01:12:51Z"
+stopped_at: Phase 10 context gathered
+last_updated: "2026-08-10T04:39:15.517Z"
 last_activity: 2026-07-28
-last_activity_desc: Completed quick task 260728-e0i making mock-soak current-day calendar preflight resilient
+last_activity_desc: "Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety"
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 27
   completed_plans: 26
-  percent: 96
+  percent: 60
 ---
 
 # Project State
@@ -152,9 +152,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-20T01:21:27.877Z
-Stopped at: Completed 09-07-PLAN.md
-Resume file: None
+Last session: 2026-08-10T04:39:15.509Z
+Stopped at: Phase 10 context gathered
+Resume file: .planning/phases/10-advisory-risk-calibration-promotion-readiness/10-CONTEXT.md
 
 ## Operator Next Steps
 
