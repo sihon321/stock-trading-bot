@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import re
 import tempfile
 from collections.abc import Callable
@@ -21,6 +22,12 @@ from .calibration_reporting import (
     render_calibration_report,
 )
 from .replay import load_replay_bundle
+from .promotion_readiness import (
+    ReadinessEvidence,
+    build_readiness_assessment,
+    render_readiness_assessment,
+)
+from .soak_reporting import ReadOnlySoakRepository, build_soak_report
 from .reporting import (
     ReadOnlyAuditRepository,
     build_daily_report,
@@ -272,6 +279,96 @@ def calibration_command(
             source_identities=source_identities,
         )
         _deliver(render_calibration_report(report), output)
+    except (OSError, KeyError, ValueError, RuntimeError) as exc:
+        typer.echo(_diagnostic(exc), err=True)
+        raise typer.Exit(2) from None
+
+
+@report_app.command("readiness")
+def readiness_command(
+    replay_results: list[Path] = typer.Option(..., "--replay-result"),
+    calibration_fixtures: list[Path] = typer.Option(..., "--calibration-fixture"),
+    audit_db: Path = typer.Option(..., "--audit-db"),
+    soak_db: Path = typer.Option(..., "--soak-db"),
+    controller_db: Path = typer.Option(..., "--controller-db"),
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+    policy_snapshot: Path = typer.Option(..., "--policy-snapshot"),
+    rollback_ack: bool = typer.Option(False, "--rollback-ack"),
+    kill_ack: bool = typer.Option(False, "--kill-ack"),
+    manual_approval: bool = typer.Option(False, "--manual-approval"),
+    output: Path | None = typer.Option(None, "--output"),
+) -> None:
+    """검증 증거에 묶인 읽기 전용 실거래 준비도를 평가합니다."""
+
+    try:
+        if not replay_results or not calibration_fixtures:
+            raise ValueError("replay and calibration inputs are required")
+        normalized_results = load_replay_results(
+            [_existing_regular_input(path) for path in replay_results]
+        )
+        replay_verified = all(
+            result.verification_status == "PASSED"
+            for result in normalized_results
+        )
+        fixture_paths = tuple(_existing_regular_input(path) for path in calibration_fixtures)
+        scenarios = tuple(
+            scenario for path in fixture_paths for scenario in load_replay_bundle(path)
+        )
+        calibration_evidence = ReadOnlyCalibrationEvidenceRepository(
+            audit_db, soak_db
+        ).load(campaign_id)
+        calibration_report = build_calibration_report(
+            calibration_evidence,
+            evaluate_variants(scenarios, build_variant_catalog()),
+            source_identities=tuple(
+                f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+                for path in fixture_paths
+            ),
+        )
+        soak_report = build_soak_report(
+            ReadOnlySoakRepository(audit_db, soak_db, controller_db), campaign_id
+        )
+        policy_path = _existing_regular_input(policy_snapshot)
+        raw_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        expected_policy = baseline_policy().as_mapping()
+        if not isinstance(raw_policy, dict) or set(raw_policy) != set(expected_policy):
+            raise ValueError("policy snapshot fields mismatch")
+        policy_items = tuple(sorted((key, float(value)) for key, value in raw_policy.items()))
+        policy_frozen = dict(policy_items) == expected_policy
+        campaign = soak_report.campaign
+        evidence = ReadinessEvidence(
+            replay_verified=replay_verified,
+            credited_days=campaign.credited_days,
+            target_days=campaign.target_days,
+            safety_failure_code=campaign.safety_failure_code,
+            reconciliation_incomplete=soak_report.reconciliation.incomplete,
+            reconciliation_unknown=soak_report.reconciliation.unknown,
+            active_freezes=soak_report.freezes.active_count,
+            cross_store_unknown=soak_report.cross_store_unknown,
+            reports_complete=(
+                not calibration_evidence.excluded_cycle_ids
+                and not calibration_evidence.unknown_cycle_ids
+            ),
+            unresolved_orders=soak_report.freezes.active_count,
+            calibration_valid=True,
+            calibration_id=calibration_report.calibration_id,
+            policy_frozen=policy_frozen,
+            resolved_historical_ambiguity=0,
+            source_identities=tuple(
+                sorted(
+                    [result.stable_result_id for result in normalized_results]
+                    + [calibration_report.calibration_id, campaign_id]
+                )
+            ),
+        )
+        assessment = build_readiness_assessment(
+            evidence,
+            policy_snapshot=policy_items,
+            rollback_ack=rollback_ack,
+            kill_ack=kill_ack,
+            manual_approval=manual_approval,
+        )
+        _deliver(render_readiness_assessment(assessment), output)
     except (OSError, KeyError, ValueError, RuntimeError) as exc:
         typer.echo(_diagnostic(exc), err=True)
         raise typer.Exit(2) from None
