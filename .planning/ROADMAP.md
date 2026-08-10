@@ -202,10 +202,10 @@ Plans:
   3. Operator can complete an evidence-linked real-money promotion checklist covering replay, soak, reports, unresolved orders, policy freeze, rollback and kill procedures, and explicit manual approval.
   4. Operator can verify that replay, report, soak, and calibration commands cannot enable real-money trading or automatically mutate live configuration.
 
-**Plans**: 1/4 plans executed
+**Plans**: 2/4 plans executed
 
 - [x] 10-01-PLAN.md
-- [ ] 10-02-PLAN.md
+- [x] 10-02-PLAN.md
 - [ ] 10-03-PLAN.md
 - [ ] 10-04-PLAN.md
 
@@ -224,4 +224,4 @@ Plans:
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
-| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 1/4 | In Progress|  |
+| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 2/4 | In Progress|  |

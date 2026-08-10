@@ -5,15 +5,15 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed 10-01-PLAN.md; Phase 9 gate remains incomplete
-last_updated: "2026-08-10T05:04:33.389Z"
+stopped_at: Completed 10-02-PLAN.md; Phase 9 gate remains incomplete
+last_updated: "2026-08-10T05:11:46.205Z"
 last_activity: 2026-07-28
 last_activity_desc: "Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety"
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 31
-  completed_plans: 27
+  completed_plans: 28
   percent: 60
 ---
 
@@ -121,6 +121,7 @@ None yet.
 | 260728-d3r | Fix KRX market-session preflight UNKNOWN during KIS mock soak without weakening fail-closed safety | 2026-07-28 | 1ad1ec9 | [260728-d3r-fix-krx-market-session-preflight-unknown](./quick/260728-d3r-fix-krx-market-session-preflight-unknown/) |
 | 260728-e0i | Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety | 2026-07-28 | 270b114 | [260728-e0i-make-kis-mock-soak-market-date-preflight](./quick/260728-e0i-make-kis-mock-soak-market-date-preflight/) |
 | Phase 10 P01 | 7 min | 2 tasks | 4 files |
+| Phase 10 P02 | 6 min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -153,9 +154,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-10T05:04:33.383Z
-Stopped at: Completed 10-01-PLAN.md; Phase 9 gate remains incomplete
-Resume file: .planning/phases/10-advisory-risk-calibration-promotion-readiness/10-02-PLAN.md
+Last session: 2026-08-10T05:11:46.198Z
+Stopped at: Completed 10-02-PLAN.md; Phase 9 gate remains incomplete
+Resume file: .planning/phases/10-advisory-risk-calibration-promotion-readiness/10-03-PLAN.md
 
 ## Operator Next Steps
 
