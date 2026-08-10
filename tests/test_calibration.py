@@ -2,17 +2,24 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 import math
+from pathlib import Path
 
 import pytest
 
+import trading_bot.calibration as calibration_module
 from trading_bot.calibration import (
     CalibrationPolicy,
     PolicyField,
     PolicyVariant,
     baseline_policy,
     build_variant_catalog,
+    evaluate_variants,
     validate_variant,
 )
+from trading_bot.replay import load_replay_bundle
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
 
 def test_baseline_policy_matches_runtime_defaults() -> None:
@@ -125,3 +132,81 @@ def test_catalog_returns_fresh_immutable_values() -> None:
     assert first == second
     assert first is not second
     assert all(math.isfinite(value) for item in first for value in item.policy.as_mapping().values())
+
+
+def test_counterfactual_changes_only_declared_policy_key_before_production_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenarios = load_replay_bundle(FIXTURES / "focused.json")
+    catalog = build_variant_catalog()
+    shipped = calibration_module.run_replay_scenarios
+    calls: list[tuple[object, ...]] = []
+
+    def spy(candidate_scenarios):
+        calls.append(tuple(candidate_scenarios))
+        return shipped(candidate_scenarios)
+
+    monkeypatch.setattr(calibration_module, "run_replay_scenarios", spy)
+    evaluations = evaluate_variants(scenarios, catalog)
+
+    assert len(calls) == len(catalog) == len(evaluations)
+    for variant, candidate_scenarios in zip(catalog, calls, strict=True):
+        for source, candidate in zip(scenarios, candidate_scenarios, strict=True):
+            changed = {
+                key
+                for key in source.policy
+                if source.policy[key] != candidate.policy[key]
+            }
+            assert changed == (
+                set() if variant.changed_field is None else {variant.changed_field.value}
+            )
+            assert replace(candidate, policy=source.policy) == source
+
+
+def test_confidence_position_stop_and_take_variants_use_production_boundaries() -> None:
+    scenarios = load_replay_bundle(FIXTURES / "focused.json")
+    evaluations = {
+        evaluation.variant.variant_id: evaluation
+        for evaluation in evaluate_variants(scenarios, build_variant_catalog())
+    }
+
+    baseline = evaluations["BASELINE"].metrics
+    assert evaluations["BUY_CONFIDENCE_075"].metrics.buy_actions == baseline.buy_actions + 1
+    assert evaluations["BUY_CONFIDENCE_085"].metrics.low_confidence == baseline.low_confidence + 1
+    assert evaluations["SELL_CONFIDENCE_075"].metrics.sell_actions == baseline.sell_actions
+    assert evaluations["SELL_CONFIDENCE_085"].metrics.sell_actions == baseline.sell_actions
+    assert evaluations["MAX_POSITION_500000"].metrics.exposure_total < baseline.exposure_total
+    assert evaluations["MAX_POSITION_1500000"].metrics.exposure_total > baseline.exposure_total
+    assert evaluations["STOP_LOSS_003"].metrics.stop_loss_triggers == 1
+    assert evaluations["STOP_LOSS_007"].metrics.stop_loss_triggers == 1
+    assert evaluations["TAKE_PROFIT_005"].metrics.take_profit_triggers == 1
+    assert evaluations["TAKE_PROFIT_015"].metrics.take_profit_triggers == 0
+
+
+def test_counterfactual_metrics_are_explicit_and_deterministic() -> None:
+    scenarios = load_replay_bundle(FIXTURES / "full_day.json")
+    variants = build_variant_catalog()
+
+    first = evaluate_variants(scenarios, variants)
+    second = evaluate_variants(scenarios, variants)
+
+    assert first == second
+    for evaluation in first:
+        metrics = evaluation.metrics
+        assert metrics.evaluated == (
+            metrics.buy_actions + metrics.hold_actions + metrics.sell_actions
+        )
+        assert metrics.denominator == metrics.evaluated
+        assert 0 <= metrics.order_eligible <= metrics.evaluated
+        assert metrics.exposure_total >= 0
+        assert metrics.expectation_deltas == sum(
+            not outcome.matched for outcome in evaluation.outcomes
+        )
+
+
+def test_counterfactual_rejects_duplicate_step_identity() -> None:
+    scenarios = load_replay_bundle(FIXTURES / "focused.json")
+    duplicated = replace(scenarios[0], steps=scenarios[0].steps * 2)
+
+    with pytest.raises(ValueError, match="duplicate replay step identity"):
+        evaluate_variants((duplicated,), build_variant_catalog()[:1])
