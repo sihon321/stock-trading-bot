@@ -8,12 +8,16 @@ import pytest
 
 import trading_bot.calibration as calibration_module
 from trading_bot.calibration import (
+    CalibrationJudgmentStatus,
     CalibrationPolicy,
     PolicyField,
     PolicyVariant,
+    VariantEvaluation,
+    VariantMetrics,
     baseline_policy,
     build_variant_catalog,
     evaluate_variants,
+    judge_variants,
     validate_variant,
 )
 from trading_bot.replay import load_replay_bundle
@@ -226,3 +230,84 @@ def test_counterfactual_rejects_duplicate_step_identity() -> None:
 
     with pytest.raises(ValueError, match="duplicate replay step identity"):
         evaluate_variants((duplicated,), build_variant_catalog()[:1])
+
+
+def _evaluation(
+    variant: PolicyVariant,
+    *,
+    risk_blocks: int = 2,
+    stop_loss: int = 1,
+    take_profit: int = 1,
+    exposure: float = 1_000_000,
+    orders: int = 4,
+) -> VariantEvaluation:
+    metrics = VariantMetrics(
+        evaluated=10,
+        denominator=10,
+        buy_actions=4,
+        hold_actions=3,
+        sell_actions=3,
+        order_eligible=orders,
+        low_confidence=1,
+        risk_blocks=risk_blocks,
+        stop_loss_triggers=stop_loss,
+        take_profit_triggers=take_profit,
+        exposure_total=exposure,
+        expectation_deltas=0,
+    )
+    return VariantEvaluation(variant, metrics, ())
+
+
+def test_risk_first_judgment_precedes_exposure_and_opportunity_tiebreaks() -> None:
+    baseline, lower_buy, higher_buy = build_variant_catalog()[:3]
+    evaluations = (
+        _evaluation(baseline),
+        _evaluation(lower_buy, risk_blocks=1, exposure=1_500_000, orders=6),
+        _evaluation(higher_buy, risk_blocks=2, exposure=500_000, orders=2),
+    )
+
+    judgment = judge_variants(evaluations)
+
+    assert judgment.status is CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE
+    assert judgment.selected_variant_id == lower_buy.variant_id
+    assert judgment.risk_event_delta == -1
+    assert judgment.exposure_delta == 500_000
+    assert judgment.order_eligible_delta == 2
+
+
+@pytest.mark.parametrize(
+    ("exposure", "expected_status"),
+    [
+        (1_000_000, CalibrationJudgmentStatus.NO_MEANINGFUL_DIFFERENCE),
+        (950_001, CalibrationJudgmentStatus.NO_MEANINGFUL_DIFFERENCE),
+        (900_000, CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE),
+    ],
+)
+def test_materiality_is_deterministic_and_retains_baseline_below_threshold(
+    exposure: float,
+    expected_status: CalibrationJudgmentStatus,
+) -> None:
+    baseline, candidate = build_variant_catalog()[:2]
+    judgment = judge_variants(
+        (_evaluation(baseline), _evaluation(candidate, exposure=exposure))
+    )
+
+    assert judgment.status is expected_status
+    assert judgment.selected_variant_id == (
+        candidate.variant_id
+        if expected_status is CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE
+        else baseline.variant_id
+    )
+
+
+def test_materially_worse_candidates_retain_baseline() -> None:
+    baseline, candidate = build_variant_catalog()[:2]
+    judgment = judge_variants(
+        (
+            _evaluation(baseline),
+            _evaluation(candidate, risk_blocks=3, exposure=500_000, orders=2),
+        )
+    )
+
+    assert judgment.status is CalibrationJudgmentStatus.BASELINE
+    assert judgment.selected_variant_id == "BASELINE"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,8 +10,20 @@ import pytest
 
 from trading_bot import sqlite_audit, soak_store
 from trading_bot.audit_models import RunKind, RunStatus
-from trading_bot.calibration import EvidenceGrade
-from trading_bot.calibration_reporting import ReadOnlyCalibrationEvidenceRepository
+from trading_bot.calibration import (
+    EvidenceGrade,
+    build_variant_catalog,
+    evaluate_variants,
+)
+from trading_bot.calibration_reporting import (
+    ReadOnlyCalibrationEvidenceRepository,
+    build_calibration_report,
+    render_calibration_report,
+)
+from trading_bot.replay import NON_PROFITABILITY_DISCLAIMER, load_replay_bundle
+
+
+REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
 
 def _stores(tmp_path: Path, *, target_days: int = 20) -> tuple[Path, Path]:
@@ -213,3 +226,80 @@ def test_readonly_repository_rejects_missing_or_unsupported_schema_without_creat
     raw.close()
     with pytest.raises(RuntimeError, match="primary audit schema version"):
         ReadOnlyCalibrationEvidenceRepository(audit_path, soak_path).load("campaign-1")
+
+
+def test_calibration_report_renders_exact_deltas_uncertainty_and_no_application(
+    tmp_path: Path,
+) -> None:
+    audit_path, soak_path = _stores(tmp_path)
+    for index in range(1, 11):
+        _run(audit_path, soak_path, index=index, decisions=2)
+    evidence = ReadOnlyCalibrationEvidenceRepository(audit_path, soak_path).load(
+        "campaign-1"
+    )
+    scenarios = load_replay_bundle(REPLAY_FIXTURES / "focused.json")
+    evaluations = evaluate_variants(scenarios, build_variant_catalog())
+
+    first = build_calibration_report(
+        evidence,
+        evaluations,
+        source_identities=("focused.json:fixture-v1", "campaign-1:audit+soak"),
+    )
+    second = build_calibration_report(
+        evidence,
+        evaluations,
+        source_identities=("focused.json:fixture-v1", "campaign-1:audit+soak"),
+    )
+    rendered = render_calibration_report(first)
+
+    assert first == second
+    assert len(first.calibration_id) == 64
+    assert len(first.rows) == 11
+    assert "INSUFFICIENT_EVIDENCE" in rendered
+    assert "eligible_days=10" in rendered
+    assert "normal_cycles=10" in rendered
+    assert "excluded_cycles=0" in rendered
+    assert "unknown_cycles=0" in rendered
+    assert "changed_field=buy_confidence_threshold" in rendered
+    assert "baseline_value=0.8" in rendered
+    assert "candidate_value=0.75" in rendered
+    assert "order_eligible_delta=" in rendered
+    assert "exposure_delta=" in rendered
+    assert "risk_event_delta=" in rendered
+    assert "UNEVALUABLE_MISSING_PORTFOLIO_STATE" in rendered
+    assert NON_PROFITABILITY_DISCLAIMER in rendered
+    assert "RECOMMENDED" not in rendered
+    assert "APPLY" not in rendered
+    assert "TRADING_MODE=real" not in rendered
+
+
+def test_calibration_report_identity_changes_with_source_or_metrics(tmp_path: Path) -> None:
+    audit_path, soak_path = _stores(tmp_path)
+    _run(audit_path, soak_path, index=1)
+    evidence = ReadOnlyCalibrationEvidenceRepository(audit_path, soak_path).load(
+        "campaign-1"
+    )
+    scenarios = load_replay_bundle(REPLAY_FIXTURES / "full_day.json")
+    evaluations = evaluate_variants(scenarios, build_variant_catalog())
+    baseline = build_calibration_report(
+        evidence, evaluations, source_identities=("source-a",)
+    )
+    changed_source = build_calibration_report(
+        evidence, evaluations, source_identities=("source-b",)
+    )
+    changed_metrics = replace(
+        evaluations[0],
+        metrics=replace(
+            evaluations[0].metrics,
+            exposure_total=evaluations[0].metrics.exposure_total + 1,
+        ),
+    )
+    changed_result = build_calibration_report(
+        evidence,
+        (changed_metrics, *evaluations[1:]),
+        source_identities=("source-a",),
+    )
+
+    assert baseline.calibration_id != changed_source.calibration_id
+    assert baseline.calibration_id != changed_result.calibration_id
+    assert render_calibration_report(baseline) == render_calibration_report(baseline)
