@@ -29,6 +29,17 @@ class EvidenceGrade(StrEnum):
     SUFFICIENT = "SUFFICIENT"
 
 
+class CalibrationJudgmentStatus(StrEnum):
+    BASELINE = "BASELINE"
+    PROVISIONAL_CANDIDATE = "PROVISIONAL_CANDIDATE"
+    NO_MEANINGFUL_DIFFERENCE = "NO_MEANINGFUL_DIFFERENCE"
+
+
+MATERIAL_RISK_EVENT_DELTA = 1
+MATERIAL_EXPOSURE_DELTA_KRW = 100_000.0
+MATERIAL_ORDER_OPPORTUNITY_DELTA = 1
+
+
 @dataclass(frozen=True)
 class CalibrationPolicy:
     buy_confidence_threshold: float
@@ -151,6 +162,23 @@ class VariantEvaluation:
     variant: PolicyVariant
     metrics: VariantMetrics
     outcomes: tuple[ReplayOutcome, ...]
+
+
+@dataclass(frozen=True)
+class CalibrationJudgment:
+    status: CalibrationJudgmentStatus
+    selected_variant_id: str
+    ranked_variant_ids: tuple[str, ...]
+    risk_event_delta: int
+    exposure_delta: float
+    order_eligible_delta: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", CalibrationJudgmentStatus(self.status))
+        if not self.selected_variant_id or self.selected_variant_id not in self.ranked_variant_ids:
+            raise ValueError("selected variant must be present in ranking")
+        if not math.isfinite(self.exposure_delta):
+            raise ValueError("exposure delta must be finite")
 
 
 def baseline_policy() -> CalibrationPolicy:
@@ -305,10 +333,105 @@ def evaluate_variants(
     return tuple(evaluations)
 
 
+def _risk_events(metrics: VariantMetrics) -> int:
+    return (
+        metrics.risk_blocks
+        + metrics.stop_loss_triggers
+        + metrics.take_profit_triggers
+    )
+
+
+def judge_variants(
+    evaluations: tuple[VariantEvaluation, ...] | list[VariantEvaluation],
+) -> CalibrationJudgment:
+    """Choose an advisory outcome by risk events, exposure, then opportunity.
+
+    The ordering is intentionally lexicographic and observable; there is no
+    hidden composite score. A changed leader must cross at least one named
+    materiality boundary before it can be called provisional.
+    """
+
+    rows = tuple(evaluations)
+    if not rows:
+        raise ValueError("at least one variant evaluation is required")
+    baselines = [row for row in rows if row.variant.changed_field is None]
+    if len(baselines) != 1 or baselines[0].variant.variant_id != "BASELINE":
+        raise ValueError("exactly one BASELINE evaluation is required")
+    if len({row.variant.variant_id for row in rows}) != len(rows):
+        raise ValueError("duplicate evaluated variant id")
+    baseline = baselines[0]
+    denominator = baseline.metrics.denominator
+    for row in rows:
+        validate_variant(row.variant)
+        if row.metrics.denominator != denominator:
+            raise ValueError("variant evaluations must use one denominator")
+
+    ranked = tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                _risk_events(row.metrics),
+                row.metrics.exposure_total,
+                row.metrics.order_eligible,
+                row.variant.variant_id != "BASELINE",
+                row.variant.variant_id,
+            ),
+        )
+    )
+    leader = ranked[0]
+    risk_delta = _risk_events(leader.metrics) - _risk_events(baseline.metrics)
+    exposure_delta = leader.metrics.exposure_total - baseline.metrics.exposure_total
+    opportunity_delta = (
+        leader.metrics.order_eligible - baseline.metrics.order_eligible
+    )
+    material = (
+        abs(risk_delta) >= MATERIAL_RISK_EVENT_DELTA
+        or abs(exposure_delta) >= MATERIAL_EXPOSURE_DELTA_KRW
+        or abs(opportunity_delta) >= MATERIAL_ORDER_OPPORTUNITY_DELTA
+    )
+    if leader.variant.variant_id == "BASELINE":
+        any_material_difference = any(
+            abs(_risk_events(row.metrics) - _risk_events(baseline.metrics))
+            >= MATERIAL_RISK_EVENT_DELTA
+            or abs(row.metrics.exposure_total - baseline.metrics.exposure_total)
+            >= MATERIAL_EXPOSURE_DELTA_KRW
+            or abs(row.metrics.order_eligible - baseline.metrics.order_eligible)
+            >= MATERIAL_ORDER_OPPORTUNITY_DELTA
+            for row in rows
+            if row is not baseline
+        )
+        status = (
+            CalibrationJudgmentStatus.BASELINE
+            if any_material_difference
+            else CalibrationJudgmentStatus.NO_MEANINGFUL_DIFFERENCE
+        )
+    elif material:
+        status = CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE
+    else:
+        status = CalibrationJudgmentStatus.NO_MEANINGFUL_DIFFERENCE
+        leader = baseline
+        risk_delta = 0
+        exposure_delta = 0.0
+        opportunity_delta = 0
+    return CalibrationJudgment(
+        status=status,
+        selected_variant_id=leader.variant.variant_id,
+        ranked_variant_ids=tuple(row.variant.variant_id for row in ranked),
+        risk_event_delta=risk_delta,
+        exposure_delta=exposure_delta,
+        order_eligible_delta=opportunity_delta,
+    )
+
+
 __all__ = [
     "CalibrationPolicy",
     "CalibrationSourceCounts",
+    "CalibrationJudgment",
+    "CalibrationJudgmentStatus",
     "EvidenceGrade",
+    "MATERIAL_EXPOSURE_DELTA_KRW",
+    "MATERIAL_ORDER_OPPORTUNITY_DELTA",
+    "MATERIAL_RISK_EVENT_DELTA",
     "PolicyField",
     "PolicyVariant",
     "VariantEvaluation",
@@ -316,5 +439,6 @@ __all__ = [
     "baseline_policy",
     "build_variant_catalog",
     "evaluate_variants",
+    "judge_variants",
     "validate_variant",
 ]

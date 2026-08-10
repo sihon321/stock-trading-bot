@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import math
 from pathlib import Path
 import re
@@ -11,7 +12,18 @@ import sqlite3
 from typing import Iterator
 
 from .audit_models import RunStatus
-from .calibration import CalibrationSourceCounts, EvidenceGrade
+from .calibration import (
+    CalibrationJudgment,
+    CalibrationJudgmentStatus,
+    CalibrationSourceCounts,
+    EvidenceGrade,
+    PolicyField,
+    VariantEvaluation,
+    VariantMetrics,
+    baseline_policy,
+    judge_variants,
+)
+from .replay import NON_PROFITABILITY_DISCLAIMER, canonical_json_bytes
 from .soak_reporting import _PRIMARY_SCHEMA, _SOAK_SCHEMA
 from .soak_store import SOAK_SCHEMA_VERSION
 from .sqlite_audit import SCHEMA_VERSION
@@ -74,6 +86,43 @@ class CalibrationEvidence:
             raise ValueError("excluded-cycle count does not reconcile")
         if self.source_counts.unknown_cycles != len(self.unknown_cycle_ids):
             raise ValueError("unknown-cycle count does not reconcile")
+
+
+@dataclass(frozen=True)
+class CalibrationReportRow:
+    variant_id: str
+    changed_field: PolicyField | None
+    baseline_value: float | None
+    candidate_value: float | None
+    selected: bool
+    status: CalibrationJudgmentStatus
+    metrics: VariantMetrics
+    buy_delta: int
+    hold_delta: int
+    sell_delta: int
+    order_eligible_delta: int
+    risk_event_delta: int
+    exposure_delta: float
+
+
+@dataclass(frozen=True)
+class CalibrationReport:
+    calibration_id: str
+    campaign_id: str
+    source_identities: tuple[str, ...]
+    evidence_grade: EvidenceGrade
+    eligible_days: int
+    normal_cycles: int
+    excluded_cycles: int
+    unknown_cycles: int
+    judgment: CalibrationJudgment
+    rows: tuple[CalibrationReportRow, ...]
+    risk_cases: tuple[CalibrationRiskCase, ...]
+    disclaimer: str = NON_PROFITABILITY_DISCLAIMER
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", self.calibration_id) is None:
+            raise ValueError("calibration_id must be a SHA-256 hex digest")
 
 
 class ReadOnlyCalibrationEvidenceRepository:
@@ -503,10 +552,180 @@ def _grade(*, eligible_days: int, target_days: int, has_integrity_risk: bool) ->
     return EvidenceGrade.SUFFICIENT
 
 
+def _metric_risk_events(metrics: VariantMetrics) -> int:
+    return metrics.risk_blocks + metrics.stop_loss_triggers + metrics.take_profit_triggers
+
+
+def build_calibration_report(
+    evidence: CalibrationEvidence,
+    evaluations: tuple[VariantEvaluation, ...] | list[VariantEvaluation],
+    *,
+    source_identities: tuple[str, ...] | list[str],
+) -> CalibrationReport:
+    """Build one canonical advisory report without parsing or mutating runtime state."""
+
+    sources = tuple(sorted(source_identities))
+    if not sources or len(sources) != len(set(sources)):
+        raise ValueError("source identities must be non-empty and unique")
+    if any(re.fullmatch(r"[^\x00-\x1f]{1,256}", source) is None for source in sources):
+        raise ValueError("source identity must be bounded printable text")
+    evaluation_rows = tuple(evaluations)
+    judgment = judge_variants(evaluation_rows)
+    baseline_rows = [row for row in evaluation_rows if row.variant.variant_id == "BASELINE"]
+    if len(baseline_rows) != 1:
+        raise ValueError("report requires exactly one baseline evaluation")
+    baseline = baseline_rows[0]
+    baseline_values = baseline_policy().as_mapping()
+    report_rows: list[CalibrationReportRow] = []
+    for evaluation in evaluation_rows:
+        changed_field = evaluation.variant.changed_field
+        baseline_value = (
+            None if changed_field is None else baseline_values[changed_field.value]
+        )
+        candidate_value = (
+            None
+            if changed_field is None
+            else evaluation.variant.policy.as_mapping()[changed_field.value]
+        )
+        selected = evaluation.variant.variant_id == judgment.selected_variant_id
+        if evaluation.variant.variant_id == "BASELINE":
+            row_status = CalibrationJudgmentStatus.BASELINE
+        elif selected and judgment.status is CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE:
+            row_status = CalibrationJudgmentStatus.PROVISIONAL_CANDIDATE
+        else:
+            row_status = CalibrationJudgmentStatus.NO_MEANINGFUL_DIFFERENCE
+        metrics = evaluation.metrics
+        report_rows.append(
+            CalibrationReportRow(
+                variant_id=evaluation.variant.variant_id,
+                changed_field=changed_field,
+                baseline_value=baseline_value,
+                candidate_value=candidate_value,
+                selected=selected,
+                status=row_status,
+                metrics=metrics,
+                buy_delta=metrics.buy_actions - baseline.metrics.buy_actions,
+                hold_delta=metrics.hold_actions - baseline.metrics.hold_actions,
+                sell_delta=metrics.sell_actions - baseline.metrics.sell_actions,
+                order_eligible_delta=(
+                    metrics.order_eligible - baseline.metrics.order_eligible
+                ),
+                risk_event_delta=(
+                    _metric_risk_events(metrics)
+                    - _metric_risk_events(baseline.metrics)
+                ),
+                exposure_delta=(
+                    metrics.exposure_total - baseline.metrics.exposure_total
+                ),
+            )
+        )
+
+    identity_document = {
+        "schema_version": 1,
+        "campaign_id": evidence.campaign_id,
+        "source_identities": sources,
+        "evidence_grade": evidence.grade,
+        "source_counts": evidence.source_counts,
+        "risk_cases": evidence.risk_cases,
+        "rows": tuple(report_rows),
+        "judgment": judgment,
+        "disclaimer": NON_PROFITABILITY_DISCLAIMER,
+    }
+    calibration_id = hashlib.sha256(canonical_json_bytes(identity_document)).hexdigest()
+    return CalibrationReport(
+        calibration_id=calibration_id,
+        campaign_id=evidence.campaign_id,
+        source_identities=sources,
+        evidence_grade=evidence.grade,
+        eligible_days=evidence.eligible_days,
+        normal_cycles=len(evidence.normal_cycles),
+        excluded_cycles=len(evidence.excluded_cycle_ids),
+        unknown_cycles=len(evidence.unknown_cycle_ids),
+        judgment=judgment,
+        rows=tuple(report_rows),
+        risk_cases=evidence.risk_cases,
+    )
+
+
+def _number_text(value: float | None) -> str:
+    return "NONE" if value is None else f"{value:g}"
+
+
+def render_calibration_report(report: CalibrationReport) -> str:
+    """Render deterministic Korean operator text with stable English evidence codes."""
+
+    lines = [
+        "정책 보정 자문 보고서 [CALIBRATION_ADVISORY_ONLY]",
+        f"calibration_id={report.calibration_id}",
+        f"campaign_id={report.campaign_id}",
+        f"evidence_grade={report.evidence_grade.value}",
+    ]
+    if report.evidence_grade is EvidenceGrade.INSUFFICIENT:
+        lines.append("경고=INSUFFICIENT_EVIDENCE (승격 또는 정책 변경 근거로 사용할 수 없음)")
+    lines.extend(
+        (
+            "표본="
+            f"eligible_days={report.eligible_days} "
+            f"normal_cycles={report.normal_cycles} "
+            f"excluded_cycles={report.excluded_cycles} "
+            f"unknown_cycles={report.unknown_cycles}",
+            "판정="
+            f"status={report.judgment.status.value} "
+            f"selected_variant={report.judgment.selected_variant_id} "
+            f"risk_event_delta={report.judgment.risk_event_delta:+d} "
+            f"exposure_delta={report.judgment.exposure_delta:+g} "
+            f"order_eligible_delta={report.judgment.order_eligible_delta:+d}",
+            "정렬기준=RISK_EVENTS_ASC,EXPOSURE_ASC,ORDER_ELIGIBLE_ASC (숨은 종합점수 없음)",
+        )
+    )
+    for source in report.source_identities:
+        lines.append(f"source_identity={source}")
+    lines.append("비교 행:")
+    for row in report.rows:
+        metrics = row.metrics
+        lines.append(
+            "- "
+            f"variant={row.variant_id} status={row.status.value} "
+            f"selected={str(row.selected).lower()} "
+            f"changed_field={row.changed_field.value if row.changed_field else 'NONE'} "
+            f"baseline_value={_number_text(row.baseline_value)} "
+            f"candidate_value={_number_text(row.candidate_value)} "
+            f"evaluated={metrics.evaluated}/{metrics.denominator} "
+            f"actions=BUY:{metrics.buy_actions},HOLD:{metrics.hold_actions},SELL:{metrics.sell_actions} "
+            f"action_deltas=BUY:{row.buy_delta:+d},HOLD:{row.hold_delta:+d},SELL:{row.sell_delta:+d} "
+            f"order_eligible={metrics.order_eligible} "
+            f"order_eligible_delta={row.order_eligible_delta:+d} "
+            f"risk_triggers=BLOCK:{metrics.risk_blocks},STOP_LOSS:{metrics.stop_loss_triggers},TAKE_PROFIT:{metrics.take_profit_triggers} "
+            f"risk_event_delta={row.risk_event_delta:+d} "
+            f"exposure={metrics.exposure_total:g} exposure_delta={row.exposure_delta:+g} "
+            f"expectation_deltas={metrics.expectation_deltas}"
+        )
+    lines.append("위험 및 평가불가 사례:")
+    if not report.risk_cases:
+        lines.append("- NONE")
+    for case in report.risk_cases:
+        facts = ",".join(f"{key}={value}" for key, value in case.facts) or "NONE"
+        lines.append(
+            f"- code={case.code} run_id={case.run_id or 'NONE'} "
+            f"ticker={case.ticker or 'NONE'} facts={facts}"
+        )
+    lines.extend(
+        (
+            "주의=이 결과는 읽기 전용 반사실 자문이며 실행 설정을 변경하거나 실거래를 활성화하지 않습니다.",
+            report.disclaimer,
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "CalibrationEvidence",
     "CalibrationObservation",
+    "CalibrationReport",
+    "CalibrationReportRow",
     "CalibrationRiskCase",
     "ObservedCycle",
     "ReadOnlyCalibrationEvidenceRepository",
+    "build_calibration_report",
+    "render_calibration_report",
 ]
