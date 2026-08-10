@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 from datetime import date
+import inspect
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from trading_bot import sqlite_audit, soak_store
 from trading_bot.config import ReportSettings
-from trading_bot.report_cli import parse_kst_date, report_app, write_report_text
+from trading_bot.report_cli import (
+    calibration_command,
+    parse_kst_date,
+    report_app,
+    write_report_text,
+)
+
+
+REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
 
 def _clear_live_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,3 +205,133 @@ def test_report_writer_rejects_conflicts_symlinks_nonregular_and_escaping_paths(
         write_report_text(tmp_path / "nested" / ".." / "escape.txt", "보고서\n")
 
     assert not tuple(tmp_path.glob(".report-*.tmp"))
+
+
+def _calibration_stores(tmp_path: Path) -> tuple[Path, Path]:
+    audit_path = tmp_path / "audit.db"
+    soak_path = tmp_path / "soak.db"
+    sqlite_audit.connect(audit_path).close()
+    soak = soak_store.connect_soak_store(soak_path)
+    soak_store.create_campaign(
+        soak,
+        campaign_id="campaign-cli",
+        accepted_profile_fingerprint="sha256:test",
+        accepted_profile_version="official-example-v1",
+        field_contract_version="kis-mock-compat-v1",
+        ambiguity_policy_version="ambiguity-v1",
+        ambiguity_window_seconds=60,
+        ambiguity_poll_cadence_seconds=5,
+        ambiguity_max_observations=12,
+    )
+    soak.close()
+    return audit_path, soak_path
+
+
+def _calibration_command(
+    fixture: Path, audit_path: Path, soak_path: Path, output: Path | None = None
+) -> list[str]:
+    command = [
+        "calibration",
+        str(fixture),
+        "--audit-db",
+        str(audit_path),
+        "--soak-db",
+        str(soak_path),
+        "--campaign-id",
+        "campaign-cli",
+    ]
+    if output is not None:
+        command.extend(("--output", str(output)))
+    return command
+
+
+def test_calibration_command_is_offline_and_renders_every_locked_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_live_credentials(monkeypatch)
+    audit_path, soak_path = _calibration_stores(tmp_path)
+    fixture = REPLAY_FIXTURES / "focused.json"
+
+    result = CliRunner().invoke(
+        report_app, _calibration_command(fixture, audit_path, soak_path)
+    )
+
+    assert result.exit_code == 0
+    assert "CALIBRATION_ADVISORY_ONLY" in result.stdout
+    assert "INSUFFICIENT_EVIDENCE" in result.stdout
+    for field in (
+        "buy_confidence_threshold",
+        "sell_confidence_threshold",
+        "max_position_value",
+        "stop_loss_pct",
+        "take_profit_pct",
+    ):
+        assert field in result.stdout
+    assert "profitability" in result.stdout
+
+
+def test_calibration_terminal_file_and_inputs_are_byte_identical(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audit_path, soak_path = _calibration_stores(tmp_path)
+    fixture = REPLAY_FIXTURES / "focused.json"
+    env_path = tmp_path / ".env"
+    env_path.write_text("TRADING_MODE=mock\n", encoding="utf-8")
+    output = tmp_path / "reports" / "calibration.txt"
+    inputs = (audit_path, soak_path, fixture, env_path)
+    before = {path: path.read_bytes() for path in inputs}
+    command = _calibration_command(fixture, audit_path, soak_path, output)
+
+    first = CliRunner().invoke(report_app, command)
+    second = CliRunner().invoke(report_app, command)
+
+    assert first.exit_code == second.exit_code == 0
+    assert first.stdout == second.stdout
+    assert first.stdout.encode("utf-8") == output.read_bytes()
+    assert before == {path: path.read_bytes() for path in inputs}
+
+
+def test_calibration_rejects_missing_duplicate_symlink_and_conflicting_output(
+    tmp_path: Path,
+) -> None:
+    audit_path, soak_path = _calibration_stores(tmp_path)
+    fixture = REPLAY_FIXTURES / "focused.json"
+    missing = tmp_path / "missing.json"
+    missing_result = CliRunner().invoke(
+        report_app, _calibration_command(missing, audit_path, soak_path)
+    )
+    duplicate_result = CliRunner().invoke(
+        report_app,
+        [
+            "calibration", str(fixture), str(fixture),
+            "--audit-db", str(audit_path), "--soak-db", str(soak_path),
+            "--campaign-id", "campaign-cli",
+        ],
+    )
+    linked = tmp_path / "linked.json"
+    linked.symlink_to(fixture)
+    linked_result = CliRunner().invoke(
+        report_app, _calibration_command(linked, audit_path, soak_path)
+    )
+    conflict = tmp_path / "conflict.txt"
+    conflict.write_text("keep\n", encoding="utf-8")
+    conflict_result = CliRunner().invoke(
+        report_app, _calibration_command(fixture, audit_path, soak_path, conflict)
+    )
+
+    for result in (missing_result, duplicate_result, linked_result, conflict_result):
+        assert result.exit_code == 2
+        assert len(result.stderr) < 300
+    assert not missing.exists()
+    assert conflict.read_text(encoding="utf-8") == "keep\n"
+    assert not tuple(tmp_path.rglob(".report-*.tmp"))
+
+
+def test_calibration_controller_has_no_live_or_policy_mutation_seam() -> None:
+    source = inspect.getsource(calibration_command)
+
+    for forbidden in (
+        "Settings(", "build_runtime", "Kis", "Broker", "place_order",
+        "write_text", "write_bytes", "dotenv", "schedule", "reconcile",
+    ):
+        assert forbidden not in source
