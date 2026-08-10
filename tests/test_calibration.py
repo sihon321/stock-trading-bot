@@ -175,12 +175,28 @@ def test_confidence_position_stop_and_take_variants_use_production_boundaries() 
     assert evaluations["BUY_CONFIDENCE_085"].metrics.low_confidence == baseline.low_confidence + 1
     assert evaluations["SELL_CONFIDENCE_075"].metrics.sell_actions == baseline.sell_actions
     assert evaluations["SELL_CONFIDENCE_085"].metrics.sell_actions == baseline.sell_actions
-    assert evaluations["MAX_POSITION_500000"].metrics.exposure_total < baseline.exposure_total
-    assert evaluations["MAX_POSITION_1500000"].metrics.exposure_total > baseline.exposure_total
     assert evaluations["STOP_LOSS_003"].metrics.stop_loss_triggers == 1
     assert evaluations["STOP_LOSS_007"].metrics.stop_loss_triggers == 1
     assert evaluations["TAKE_PROFIT_005"].metrics.take_profit_triggers == 1
     assert evaluations["TAKE_PROFIT_015"].metrics.take_profit_triggers == 0
+
+    full_day_source = load_replay_bundle(FIXTURES / "full_day.json")
+    full_day = tuple(
+        replace(
+            scenario,
+            policy={**scenario.policy, "buy_cash_fraction": 0.20},
+        )
+        for scenario in full_day_source
+    )
+    position_evaluations = {
+        evaluation.variant.variant_id: evaluation.metrics
+        for evaluation in evaluate_variants(full_day, build_variant_catalog())
+    }
+    assert (
+        position_evaluations["MAX_POSITION_500000"].exposure_total
+        < position_evaluations["BASELINE"].exposure_total
+        < position_evaluations["MAX_POSITION_1500000"].exposure_total
+    )
 
 
 def test_counterfactual_metrics_are_explicit_and_deterministic() -> None:
