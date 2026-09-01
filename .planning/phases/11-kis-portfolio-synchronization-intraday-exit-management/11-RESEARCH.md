@@ -450,19 +450,19 @@ return broker.place_order(limit_sell(refreshed.orderable_quantity, refreshed.quo
 
 All other design choices are locked decisions, verified repository patterns, or cited primary documentation. [VERIFIED: sources listed below]
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does authenticated KIS mock cancellation evidence populate `cncl_yn` and `cnc_cfrm_qty` consistently for partial cancel?**
+1. **RESOLVED — Does authenticated KIS mock cancellation evidence populate `cncl_yn` and `cnc_cfrm_qty` consistently for partial cancel?**
    - What we know: the official field catalog includes them, but current authenticated fixtures focus on empty/partial/no-fill paths. [CITED: official KIS example] [VERIFIED: tests/fixtures]
-   - Recommendation: add deterministic fixtures immediately and an operator-gated mock observation test; normalization must remain UNKNOWN rather than guessing if required cancellation fields conflict.
+   - Adopted resolution: add deterministic fixtures during implementation and classify authenticated cancellation-field confirmation as an operator-gated KIS mock-account UAT item. Normalization remains UNKNOWN/BLOCK and mutation fails closed whenever required cancellation evidence is missing or conflicting; no production behavior guesses from an unconfirmed field combination.
 
-2. **Should portfolio snapshots live in the primary audit DB or an independent projection DB?**
+2. **RESOLVED — Should portfolio snapshots live in the primary audit DB or an independent projection DB?**
    - What we know: both are permitted; primary audit already owns execution cycles and immediate evidence, while Phase 9 uses independently versioned broker snapshot evidence. [VERIFIED: phase context and codebase]
-   - Recommendation: use the primary audit DB for lease, daily evaluation, iteration, and exact snapshot links, but give portfolio snapshot tables their own schema version and append-only rows. This avoids cross-database mutation gating while preserving an independently evolvable projection.
+   - Adopted resolution: use the primary audit DB for lease, daily evaluation, iteration, and exact snapshot links, while giving portfolio snapshot tables their own schema version and append-only rows. This avoids cross-database mutation gating while preserving an independently evolvable projection.
 
-3. **How should the persistent historical `000660` Phase 9 ambiguity affect the account-wide Phase 11 lease?**
+3. **RESOLVED — How should the persistent historical `000660` Phase 9 ambiguity affect the account-wide Phase 11 lease?**
    - What we know: it remains a same-ticker freeze and promotion blocker; D-08 says unattributable unresolved order risk blocks mutation. [VERIFIED: STATE.md and phase context]
-   - Recommendation: the Phase 11 startup comparison must classify it. If complete current KIS truth cannot uniquely attribute/terminalize it, block account mutation rather than merely hiding the ticker, because D-08 is stricter than Phase 8's local-only ticker freeze.
+   - Adopted resolution: the Phase 11 startup comparison must classify it. If complete current KIS truth cannot uniquely attribute or terminalize it, block account mutation rather than merely hiding the ticker, because D-08 is stricter than Phase 8's local-only ticker freeze.
 
 ## Environment Availability
 

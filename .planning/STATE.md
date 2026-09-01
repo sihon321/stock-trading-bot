@@ -5,8 +5,8 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 09
 current_phase_name: kis-mock-soak-fault-drills
 status: executing
-stopped_at: Completed Phase 10 implementation; Phase 9 gate remains incomplete
-last_updated: "2026-08-10T05:19:30.240Z"
+stopped_at: Phase 11 context gathered
+last_updated: "2026-09-01T14:40:18.125Z"
 last_activity: 2026-07-28
 last_activity_desc: "Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety"
 progress:
@@ -46,6 +46,16 @@ Progress: [██████████] 96%
 **Shipped milestone:** v1.0 — 5 phases, 21 roadmap plans, completed 2026-07-03
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 11 added: KIS Portfolio Synchronization & Intraday Exit Management
+- Phase 12 added: Full Portfolio Backtesting & Market Friction Modeling
+- Phase 13 added: Historical LLM Shadow Evaluation & Model Governance
+- Phase 14 added: Operator Dashboard & Alerting
+- Phase 15 added: Unattended Scheduling & Service Resilience
+- Phase 16 added: Controlled Real-Money Pilot & Scale Gates
+- Phase 14 edited: edited fields: title, goal, requirements, success_criteria; expanded to authenticated responsive web UI with non-trading operational actions
 
 ### Decisions
 
@@ -129,7 +139,7 @@ None yet.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Validation | Full portfolio backtest, live-LLM historical replay, web dashboard, unattended scheduling | Future | v1.1 scoping |
+| Roadmap | Full portfolio backtest, LLM shadow evaluation, dashboard, and unattended scheduling | Planned in Phases 12-15 | 2026-08-25 roadmap expansion |
 | Automation | Automatic policy writes or real-money promotion | Prohibited | v1.1 scoping |
 | Phase 06 P01 | 8min | 3 tasks | 6 files |
 | Phase 06 P02 | 12min | 2 tasks | 4 files |
@@ -156,11 +166,11 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-10T05:19:30.233Z
-Stopped at: Completed Phase 10 implementation; Phase 9 gate remains incomplete
-Resume file: .planning/phases/10-advisory-risk-calibration-promotion-readiness/10-04-SUMMARY.md
+Last session: 2026-09-01T14:40:18.113Z
+Stopped at: Phase 11 context gathered
+Resume file: .planning/phases/11-kis-portfolio-synchronization-intraday-exit-management/11-CONTEXT.md
 
 ## Operator Next Steps
 
-- Run `$gsd-verify-work 7` to independently re-verify the completed replay phase.
-- Then run `$gsd-discuss-phase 8` to define decision reports and the operator runbook.
+- Continue Phase 9 Plan 09-08 elapsed-day KIS mock evidence collection without weakening its acceptance gate.
+- Run `$gsd-discuss-phase 11` to define broker portfolio synchronization and intraday exit behavior, then `$gsd-plan-phase 11`.

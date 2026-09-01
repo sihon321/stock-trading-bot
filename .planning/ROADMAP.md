@@ -4,6 +4,8 @@
 
 - ✅ **v1.0 MVP** — Phases 1-5 (shipped 2026-07-03)
 - 🚧 **v1.1 Mock Soak & Replay Validation** — Phases 6-10 (in progress)
+- 📋 **v1.2 Complete Trade Lifecycle & Strategy Evidence** — Phases 11-13 (planned)
+- 📋 **v1.3 Safe Automation & Controlled Production** — Phases 14-16 (planned)
 
 ## Phases
 
@@ -30,7 +32,23 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 - [ ] **Phase 9: KIS Mock Soak & Fault Drills** — Collect multi-day broker-facing mock evidence and prove recovery behavior under expected faults.
 - [x] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review. (completed 2026-08-10)
 
-## Phase Details
+### 📋 v1.2 Complete Trade Lifecycle & Strategy Evidence (Planned)
+
+**Milestone Goal:** Complete the broker-backed buy-hold-sell lifecycle and produce realistic, attributable strategy evidence without granting analysis tools execution authority.
+
+- [ ] **Phase 11: KIS Portfolio Synchronization & Intraday Exit Management** — Synchronize broker-held positions and safely operate daily and intraday exit paths while Phase 9 elapsed-day evidence continues collecting.
+- [ ] **Phase 12: Full Portfolio Backtesting & Market Friction Modeling** — Evaluate the strategy chronologically across a portfolio with realistic fills, Korean fees and taxes, slippage, and no look-ahead.
+- [ ] **Phase 13: Historical LLM Shadow Evaluation & Model Governance** — Compare optional historical LLM signals under a cost-controlled, fully attributable, non-executable shadow workflow.
+
+### 📋 v1.3 Safe Automation & Controlled Production (Planned)
+
+**Milestone Goal:** Add operator visibility and resilient scheduling, then permit only an explicitly approved, capital-capped real-money pilot after every upstream safety gate passes.
+
+- [ ] **Phase 14: Operator Web UI, Dashboard & Alerting** — Provide an authenticated responsive web application for portfolio, decision, order, validation, report, and alert workflows without adding trade authority.
+- [ ] **Phase 15: Unattended Scheduling & Service Resilience** — Schedule calendar-aware daily and intraday workers with leader locking, recovery, health checks, and a global kill switch.
+- [ ] **Phase 16: Controlled Real-Money Pilot & Scale Gates** — Run a manually approved, allowlisted, capital-capped pilot with evidence windows, rollback, and explicit scaling approvals.
+
+## v1.1 Mock Soak & Replay Validation (Phase Details)
 
 ### Phase 6: Audit Evidence & Cycle Boundaries
 
@@ -211,7 +229,7 @@ Plans:
 
 ## Progress
 
-**Execution Order:** Phase 6 → Phase 7 → Phase 8 → Phase 9 → Phase 10
+**Execution Order:** Phase 6 → Phase 7 → Phase 8 → Phase 9 implementation → Phase 10 → Phase 11 → Phase 12 → Phase 13 → Phase 14 → Phase 15 → Phase 16. Phase 9 Plan 09-08 elapsed-day UAT continues in parallel but must pass before Phase 15 unattended operation or Phase 16 real-money pilot.
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -225,3 +243,145 @@ Plans:
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete   | 2026-08-10 |
+| 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 0/TBD | Not Planned |  |
+| 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/TBD | Not Planned |  |
+| 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
+| 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
+| 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
+| 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
+
+## v1.2 Complete Trade Lifecycle & Strategy Evidence (Phase Details)
+
+### Phase 11: KIS Portfolio Synchronization & Intraday Exit Management
+
+**Goal:** Operators can synchronize KIS broker portfolio truth into every execution cycle and safely exit held positions through daily LLM signals and intraday deterministic risk rules, with restart-safe order reconciliation.
+**Requirements**: PORT-01, PORT-02, EXIT-01, EXIT-02
+**Depends on:** Phase 10
+**Success Criteria** (what must be TRUE):
+
+  1. Every cycle starts from complete KIS cash, holding, orderable-quantity, average-price, open-order, and recent-fill truth; incomplete truth blocks mutation.
+  2. Screened candidates and existing holdings form one attributable evaluation universe, and held positions are never dropped merely because they fail screening.
+  3. The daily LLM cycle can SELL a held position while intraday deterministic risk checks can exit without repeated LLM calls.
+  4. Partial fills, cancellation, ambiguity, restart, and duplicate invocation cannot oversell or create a second unjustified POST.
+
+**Plans:** 6 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 11-01-PLAN.md — Normalize and persist complete whole-account KIS portfolio truth and daily evaluation identity.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 11-02-PLAN.md — Enforce account-scoped mutation exclusion and restart recovery before authorization.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 11-03-PLAN.md — Build held-first daily evaluation with once-per-day LLM signals and current-gate reuse.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 11-04-PLAN.md — Coordinate daily and intraday SELLs through one pre-POST re-gated lifecycle.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 11-05-PLAN.md — Deliver foreground intraday check/watch with exact session and interruption behavior.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 11-06-PLAN.md — Add transition alerts, fail-closed evidence, runbook integration, and final regression coverage.
+
+### Phase 12: Full Portfolio Backtesting & Market Friction Modeling
+
+**Goal:** Operators can measure portfolio-level behavior under chronological capital constraints and realistic Korean-market transaction friction without contacting live providers.
+**Requirements**: FUT-01
+**Depends on:** Phase 11
+**Success Criteria** (what must be TRUE):
+
+  1. Multi-ticker scenarios share one chronological cash and holdings ledger, preventing impossible overlapping use of capital.
+  2. Fill, fee, tax, slippage, liquidity, and partial-fill assumptions are versioned and visible in every result.
+  3. Repeating identical inputs produces identical trades, equity curves, drawdowns, exposures, and result identity with no look-ahead.
+  4. Reports separate gross and net results and carry an explicit modeling/forecast limitation rather than a profitability guarantee.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 12 to break down)
+
+### Phase 13: Historical LLM Shadow Evaluation & Model Governance
+
+**Goal:** Operators can compare frozen fixture signals with optional historical LLM outputs while preserving deterministic replay as the canonical baseline and preventing shadow results from trading.
+**Requirements**: FUT-02, GOV-01
+**Depends on:** Phase 12
+**Success Criteria** (what must be TRUE):
+
+  1. Shadow runs have explicit budgets, bounded concurrency, resumable checkpoints, and no broker or configuration-write capability.
+  2. Each output records provider, model, prompt, schema, input snapshot, token/cost facts, code revision, and validation outcome.
+  3. Reports compare agreement, action changes, malformed/refusal rates, cost, and risk-gate effects without replacing the deterministic baseline.
+  4. Promotion of a model or prompt remains a separate manual policy decision backed by immutable evidence.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 13 to break down)
+
+## v1.3 Safe Automation & Controlled Production (Phase Details)
+
+### Phase 14: Operator Web UI, Dashboard & Alerting
+
+**Goal:** Operators can use an authenticated responsive web application to inspect portfolio, decision, order, validation, report, and worker-health evidence and handle non-trading operational workflows without granting the web process trade authority.
+**Requirements**: FUT-03, UI-01, UI-02, OPSV-01
+**Depends on:** Phase 13
+**Success Criteria** (what must be TRUE):
+
+  1. Korean desktop and mobile views cover account summary, holdings, screened candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health.
+  2. Every displayed total drills down to durable source details and preserves UNKNOWN/INCOMPLETE states rather than smoothing them away.
+  3. Operators can generate and export existing read-only reports and acknowledge alerts, while every action is authenticated, authorized, CSRF-protected, and audit logged.
+  4. Alerts are severity-based, deduplicated, evidence-linked, and cover failed/stale workers, unresolved orders, safety latches, and broker divergence.
+  5. The web process has no KIS order, live LLM execution, policy-write, secret-display, real-mode activation, or safety-gate waiver capability; local/private exposure is the secure default.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 14 to break down)
+
+### Phase 15: Unattended Scheduling & Service Resilience
+
+**Goal:** Operators can run calendar-aware daily evaluation and intraday held-position protection unattended, with exactly-once intent, durable recovery, health visibility, and immediate manual stop authority.
+**Requirements**: FUT-04, AUTO-01, AUTO-02
+**Depends on:** Phase 14
+**Additional gate:** Phase 9 Plan 09-08 must be approved before unattended mutation is enabled.
+**Success Criteria** (what must be TRUE):
+
+  1. KRX holiday/session rules schedule one daily decision cycle and a separately bounded held-position risk worker.
+  2. Leader locking, durable job identities, checkpoints, and reconciliation prevent overlapping workers or duplicate order submission after restart.
+  3. Health checks detect missed schedules, stalled workers, stale market data, and notification failure; recovery remains fail closed.
+  4. Manual pause, resume, dry-run, and global kill controls work without deleting audit evidence or releasing unresolved-order freezes.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 15 to break down)
+
+### Phase 16: Controlled Real-Money Pilot & Scale Gates
+
+**Goal:** Operators can conduct a deliberately manual, allowlisted, capital-capped real-money pilot and increase exposure only through new evidence-backed approvals.
+**Requirements**: PROD-01, PROD-02
+**Depends on:** Phase 15
+**Additional gates:** Phase 9 acceptance, Phase 11 mock buy-hold-sell proof, Phase 12 evidence, Phase 15 resilience verification, no unresolved orders, and Phase 10 readiness PASS.
+**Success Criteria** (what must be TRUE):
+
+  1. Real mode cannot start unless every upstream evidence identity is current, all safety gates PASS, and the operator supplies a separate explicit approval.
+  2. Pilot scope is restricted by an immutable symbol allowlist, capital/notional cap, order cap, and immediate kill/rollback procedure.
+  3. Every pilot order uses the same freshness, idempotency, reconciliation, freeze, audit, and notification invariants proven in mock operation.
+  4. Scaling requires a completed dwell/evidence window and a new approval; no tool can automatically promote, widen scope, or clear a safety breach.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 16 to break down)
