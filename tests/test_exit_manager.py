@@ -19,6 +19,11 @@ from trading_bot.portfolio import (
     PortfolioOrder,
     PortfolioSnapshot,
 )
+from trading_bot.domain import Money, Order, OrderSide, Ticker
+from trading_bot.kis_broker import KISBroker, MarketClosedError
+from trading_bot.kis_order import FillStatus, KisOrderAccount, KisOrderQueryResult
+from trading_bot.data_models import SourceHealth, SourceStatus
+from trading_bot.kis_quote import KisQuoteResult
 from trading_bot.risk import RiskAction, RiskDecision
 
 
@@ -164,3 +169,145 @@ def test_daily_loss_is_not_an_exit_input_or_liquidation_trigger() -> None:
         decision=RiskDecision(RiskAction.SELL, "take_profit"),
     )
     assert evaluate_exit_candidate(risk_trigger, _snapshot()).disposition is ExitDisposition.SUBMIT
+
+
+class _BoundaryAdapter:
+    def __init__(self, sequence: list[str], *, fail_post: bool = False) -> None:
+        self.sequence = sequence
+        self.fail_post = fail_post
+        self.post_attempts = 0
+        self.orders: list[Order] = []
+
+    def inquire_daily_ccld(self, **kwargs):
+        return KisOrderQueryResult(
+            [], SourceHealth("kis_order", SourceStatus.AVAILABLE, "ok")
+        )
+
+    def inquire_balance(self, **kwargs):
+        return KisOrderQueryResult(
+            {}, SourceHealth("kis_order", SourceStatus.AVAILABLE, "ok")
+        )
+
+    def place_order_cash(self, *, order, **kwargs):
+        self.sequence.append("post")
+        self.post_attempts += 1
+        self.orders.append(order)
+        if self.fail_post:
+            raise TimeoutError("provider prose must not persist")
+        return type("PostResult", (), {"order_id": "KIS-1"})()
+
+    def parse_fill_status(self, output, *, order_id, ticker):
+        quantity = self.orders[-1].quantity
+        return FillStatus(order_id, ticker, quantity, 0, quantity)
+
+
+class _Lease:
+    account_scope_hash = "a" * 64
+    owner_token = "owner-secret-token"
+
+    def __init__(self, sequence: list[str], *, fail: bool = False) -> None:
+        self.sequence = sequence
+        self.fail = fail
+
+    def assert_active_owner(self) -> None:
+        self.sequence.append("lease")
+        if self.fail:
+            raise RuntimeError("ownership lost")
+
+
+def _live_order(side: OrderSide, quantity: int = 7) -> Order:
+    return Order(Ticker("005930"), side, quantity, Money(70_123.0, "KRW"))
+
+
+def _quote(now: datetime) -> KisQuoteResult:
+    return KisQuoteResult(
+        Money(70_111.0, "KRW"),
+        SourceHealth("kis_quote", SourceStatus.AVAILABLE, "ok"),
+        now,
+    )
+
+
+@pytest.mark.parametrize("side", [OrderSide.BUY, OrderSide.SELL])
+def test_money_boundary_refreshes_regates_asserts_and_posts_once(side: OrderSide) -> None:
+    sequence: list[str] = []
+    now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+    adapter = _BoundaryAdapter(sequence)
+    events = []
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=lambda event: (events.append(event), sequence.append(event.event_type.value)),
+        pre_submit_quote_reader=lambda ticker: _quote(now),
+        clock=lambda: now,
+    )
+
+    result = broker.place_order(
+        _live_order(side),
+        portfolio_refresh=lambda ticker: (sequence.append("refresh"), _snapshot(orderable=3))[1],
+        lease_guard=_Lease(sequence),
+        cycle_snapshot_id="snapshot-current",
+    )
+
+    assert result == "KIS-1"
+    assert adapter.post_attempts == 1
+    assert adapter.orders[0].quantity == 3
+    assert adapter.orders[0].limit_price.amount == 70_111.0
+    assert sequence.index("INTENT_CREATED") < sequence.index("refresh")
+    assert sequence.index("refresh") < sequence.index("lease")
+    assert sequence.index("lease") < sequence.index("SUBMISSION_ATTEMPTED")
+    assert sequence.index("SUBMISSION_ATTEMPTED") < sequence.index("post")
+
+
+@pytest.mark.parametrize("side", [OrderSide.BUY, OrderSide.SELL])
+def test_money_boundary_blocks_changed_truth_or_lease_loss_with_zero_post(side: OrderSide) -> None:
+    for snapshot, lease in (
+        (_snapshot(order_status="OPEN"), _Lease([])),
+        (_snapshot(orderable=3), _Lease([], fail=True)),
+    ):
+        adapter = _BoundaryAdapter([])
+        now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+        broker = KISBroker(
+            order_adapter=adapter,
+            account=KisOrderAccount("12345678", "01"),
+            market_clock=lambda: True,
+            pre_submit_quote_reader=lambda ticker: _quote(now),
+            clock=lambda: now,
+        )
+        with pytest.raises(MarketClosedError):
+            broker.place_order(
+                _live_order(side),
+                portfolio_refresh=lambda ticker, value=snapshot: value,
+                lease_guard=lease,
+                cycle_snapshot_id="snapshot-current",
+            )
+        assert adapter.post_attempts == 0
+
+
+def test_money_boundary_evidence_failure_prevents_post_and_token_is_not_persisted() -> None:
+    adapter = _BoundaryAdapter([])
+    now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+    captured = []
+
+    def sink(event):
+        captured.append(event)
+        if event.event_type.value == "SUBMISSION_ATTEMPTED":
+            raise OSError("audit unavailable")
+
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=sink,
+        pre_submit_quote_reader=lambda ticker: _quote(now),
+        clock=lambda: now,
+    )
+    with pytest.raises(OSError, match="audit unavailable"):
+        broker.place_order(
+            _live_order(OrderSide.SELL),
+            portfolio_refresh=lambda ticker: _snapshot(orderable=3),
+            lease_guard=_Lease([]),
+            cycle_snapshot_id="snapshot-current",
+        )
+    assert adapter.post_attempts == 0
+    assert "owner-secret-token" not in repr(captured)
