@@ -5,8 +5,8 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 11
 current_phase_name: kis-portfolio-synchronization-intraday-exit-management
 status: executing
-stopped_at: Completed 11-01-PLAN.md
-last_updated: "2026-09-04T06:45:48.126Z"
+stopped_at: Completed 11-02-PLAN.md
+last_updated: "2026-09-04T06:56:10.915Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 11 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 11 (kis-portfolio-synchronization-intraday-exit-management) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 11 execution started
 
@@ -114,6 +114,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 11]: Keep Phase 11 whole-account projection separate from the existing Phase 9 touched projection. — Preserves shipped campaign-scoped reconciliation while making account truth complete.
 - [Phase 11]: Version Phase 11 tables through a dedicated metadata owner. — Allows portfolio tables and the primary audit schema to evolve independently in one database.
 - [Phase 11]: The first committed canonical input wins for a KRX date and ticker. — Daily uniqueness and crash recovery prevent repeat provider calls or input replacement.
+- [Phase 11]: Preserve canonical account hashes and hash raw account scopes before lock or durable storage — Prevents raw CANO disclosure while keeping portfolio snapshot scope identity stable
+- [Phase 11]: Treat every non-RELEASED predecessor lease as recovery-only — Heartbeat age never grants mutation authority after a crash
+- [Phase 11]: Persist a new complete post-acquisition portfolio snapshot before reconciliation and activation — Restart authority cannot derive from stale process state
 
 ### Pending Todos
 
@@ -138,6 +141,7 @@ None yet.
 | Phase 10 P03 | 4 min | 2 tasks | 3 files |
 | Phase 10 P04 | 6 min | 2 tasks | 6 files |
 | Phase 11 P01 | 8 min | 2 tasks | 6 files |
+| Phase 11 P02 | 7 min | 2 tasks | 5 files |
 
 ## Deferred Items
 
@@ -170,8 +174,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-09-04T06:45:23.728Z
-Stopped at: Completed 11-01-PLAN.md
+Last session: 2026-09-04T06:55:48.914Z
+Stopped at: Completed 11-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
