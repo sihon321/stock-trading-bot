@@ -96,6 +96,8 @@ from trading_bot.portfolio import (
     PortfolioSnapshot,
     build_evaluation_universe,
     build_held_position_context,
+    canonical_account_scope_hash,
+    collect_portfolio_snapshot,
 )
 from trading_bot.portfolio_store import (
     append_daily_evaluation_event,
@@ -106,6 +108,7 @@ from trading_bot.portfolio_store import (
 )
 from trading_bot.audit_models import DailyEvaluationEventType, DailyEvaluationStatus
 from trading_bot.prompts import render_prompt
+from trading_bot.mutation_lease import acquire_mutation_lease, recover_to_active
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
     FailedStage,
@@ -272,6 +275,9 @@ class _Runtime:
     notifier: Any
     cycle_evidence: Optional[MarketCycleEvidence] = None
     completed_bar_cutoff: Optional[str] = None
+    llm_provider_factory: Optional[Callable[[], Any]] = None
+    portfolio_snapshot_reader: Optional[Callable[[], PortfolioSnapshot]] = None
+    account_scope_hash: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -872,11 +878,52 @@ def build_runtime(
         ohlcv_adapter=ohlcv_adapter,
         quote_adapter=quote_adapter,
     )
+    account = kis_account or _account_from_env()
+    if account is None:
+        raise ValueError(
+            "KIS portfolio synchronization requires KIS_ACCOUNT_CANO and "
+            "KIS_ACCOUNT_PRODUCT_CODE"
+        )
+    profile = (
+        next(
+            item for item in MOCK_TR_PROFILE_CANDIDATES
+            if item.version == "official-example-v1"
+        )
+        if resolved_settings.trading_mode is TradingMode.MOCK
+        else SimpleNamespace(
+            daily_ccld_tr_id="TTTC0081R",
+            balance_tr_id="TTTC8434R",
+        )
+    )
+    portfolio_adapter = KisOrderAdapter(
+        token_manager=token_manager,
+        domain=resolved_settings.active_kis.domain,
+        tr_id_profile=resolved_settings.trading_mode.value,
+        min_interval_seconds=resolved_settings.kis_min_interval_seconds,
+        max_retries=resolved_settings.kis_max_retries,
+        retry_backoff_seconds=resolved_settings.kis_retry_backoff_seconds,
+        timeout_seconds=resolved_settings.order_timeout_seconds,
+    )
+    account_scope_hash = canonical_account_scope_hash(
+        resolved_settings.trading_mode.value,
+        f"{account.cano[-4:]}:{account.account_product_code}",
+    )
+
+    def read_portfolio_snapshot() -> PortfolioSnapshot:
+        return collect_portfolio_snapshot(
+            adapter=portfolio_adapter,
+            account=account,
+            profile=profile,
+            trading_date=datetime.strptime(resolved_trading_date, "%Y%m%d").date(),
+            previous_trading_date=datetime.strptime(cutoff_text, "%Y%m%d").date(),
+            account_scope_hash=account_scope_hash,
+        )
+
     return _Runtime(
         settings=resolved_settings,
         token_manager=token_manager,
         data_source=data_source,
-        llm_provider=build_llm_provider(resolved_settings),
+        llm_provider=None,
         broker=_build_broker(
             resolved_settings,
             token_manager=token_manager,
@@ -887,6 +934,9 @@ def build_runtime(
         notifier=build_notifier(resolved_settings),
         cycle_evidence=cycle_evidence,
         completed_bar_cutoff=cutoff_text,
+        llm_provider_factory=lambda: build_llm_provider(resolved_settings),
+        portfolio_snapshot_reader=read_portfolio_snapshot,
+        account_scope_hash=account_scope_hash,
     )
 
 
@@ -1194,7 +1244,13 @@ def run_cycle(
     resolved_audit_conn = audit_conn if audit_conn is not None else runtime.audit_conn
     resolved_notifier = notifier if notifier is not None else runtime.notifier
     cycle_fn = run_cycle or _run_llm_cycle
-    provider_factory = llm_provider_factory or (lambda: resolved_llm_provider)
+    provider_factory = (
+        llm_provider_factory
+        or (runtime.llm_provider_factory if runtime is not None else None)
+        or (lambda: resolved_llm_provider)
+    )
+    if portfolio_snapshot_reader is None and runtime is not None:
+        portfolio_snapshot_reader = runtime.portfolio_snapshot_reader
 
     resolved_run_id = run_id or uuid.uuid4().hex
     _ensure_audit_schema(resolved_audit_conn)
@@ -1203,18 +1259,40 @@ def run_cycle(
     phase11_snapshot = None
     phase11_targets: dict[str, EvaluationTarget] = {}
     provider_cache: list[Any] = []
+    lease_owned = False
     if phase11_enabled:
-        if mutation_lease is None:
-            raise ValueError("Phase 11 portfolio orchestration requires a mutation lease")
         migrate_portfolio(resolved_audit_conn)
         recover_started_evaluations(resolved_audit_conn)
-        phase11_snapshot = portfolio_snapshot_reader()
-        append_portfolio_snapshot(
-            resolved_audit_conn,
-            phase11_snapshot,
-            cycle_id=resolved_run_id,
-            observation_id=f"{resolved_run_id}:cycle-start",
-        )
+        if mutation_lease is None:
+            if runtime is None or runtime.account_scope_hash is None:
+                raise ValueError("Phase 11 portfolio orchestration requires a mutation lease")
+            mutation_lease = acquire_mutation_lease(
+                resolved_audit_conn,
+                account_scope_hash=runtime.account_scope_hash,
+                lock_dir=Path(resolved_settings.audit_db_path).parent / ".mutation-locks",
+                command="run",
+                cycle_id=resolved_run_id,
+            )
+            lease_owned = True
+        if getattr(mutation_lease, "recovery_required", False):
+            phase11_snapshot = recover_to_active(
+                mutation_lease,
+                terminalize_prior_cycles=lambda: (
+                    sqlite_audit.recover_abandoned_runs(resolved_audit_conn) is not None
+                ),
+                query_fresh_snapshot=portfolio_snapshot_reader,
+                reconcile_prior_orders=lambda current: {
+                    "determinate": all(order.status != "UNKNOWN" for order in current.orders)
+                },
+            )
+        else:
+            phase11_snapshot = portfolio_snapshot_reader()
+            append_portfolio_snapshot(
+                resolved_audit_conn,
+                phase11_snapshot,
+                cycle_id=resolved_run_id,
+                observation_id=f"{resolved_run_id}:cycle-start",
+            )
     sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
     sqlite_audit.start_run(
         resolved_audit_conn,
@@ -1478,11 +1556,15 @@ def run_cycle(
         sqlite_audit.finish_run(
             resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.INTERRUPTED
         )
+        if lease_owned:
+            mutation_lease.release()
         raise
     except BaseException:
         sqlite_audit.finish_run(
             resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.FAILED
         )
+        if lease_owned:
+            mutation_lease.release()
         raise
 
     summary = format_run_summary(
@@ -1499,6 +1581,8 @@ def run_cycle(
         kind=NotificationKind.FINAL_SUMMARY,
         summary=summary,
     )
+    if lease_owned:
+        mutation_lease.release()
     return {
         "run_id": resolved_run_id,
         "dry_run": dry_run,
