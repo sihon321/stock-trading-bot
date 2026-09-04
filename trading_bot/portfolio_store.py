@@ -16,12 +16,17 @@ from trading_bot.audit_models import (
     DailyEvaluationEvent,
     DailyEvaluationEventType,
     DailyEvaluationStatus,
+    OperationalSeverity,
+    TransitionNotification,
+    TransitionObservation,
+    TransitionState,
     sanitize_detail,
+    render_transition_notification,
 )
 from trading_bot.portfolio import PortfolioSnapshot
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _TERMINAL_EVENTS = {
     DailyEvaluationEventType.SIGNAL_FINALIZED,
     DailyEvaluationEventType.LLM_UNAVAILABLE,
@@ -86,9 +91,23 @@ _SCHEMA = (
         iteration_id TEXT NOT NULL REFERENCES watch_iterations(iteration_id),
         state_code TEXT NOT NULL, detail_json TEXT NOT NULL, observed_at TEXT NOT NULL)""",
     """CREATE TABLE transition_states (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, state_identity TEXT NOT NULL UNIQUE,
+        account_scope_hash TEXT NOT NULL, ticker TEXT, event_family TEXT NOT NULL,
+        broker_subject_id TEXT, state_code TEXT NOT NULL,
+        occurrence_count INTEGER NOT NULL, first_observed_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL, duration_seconds REAL NOT NULL,
+        active INTEGER NOT NULL, severity TEXT NOT NULL,
+        last_notification_status TEXT)""",
+    """CREATE TABLE transition_observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT, state_identity TEXT NOT NULL,
-        state_code TEXT NOT NULL, occurrence_count INTEGER NOT NULL,
-        first_observed_at TEXT NOT NULL, last_observed_at TEXT NOT NULL)""",
+        state_code TEXT NOT NULL, severity TEXT NOT NULL,
+        detail_json TEXT NOT NULL, observed_at TEXT NOT NULL)""",
+    """CREATE TABLE transition_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, state_identity TEXT NOT NULL,
+        event_code TEXT NOT NULL, severity TEXT NOT NULL, text TEXT NOT NULL,
+        delivery_status TEXT NOT NULL, failure_category TEXT,
+        observed_at TEXT NOT NULL,
+        UNIQUE(state_identity, event_code))""",
 )
 
 
@@ -171,6 +190,32 @@ def migrate_portfolio(
                 conn.execute(statement)
                 if fail_after_step == "snapshots" and index == 1:
                     raise RuntimeError("injected portfolio migration failure")
+        if version in {1, 2}:
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(transition_states)")
+            }
+            additions = {
+                "account_scope_hash": "TEXT NOT NULL DEFAULT ''",
+                "ticker": "TEXT",
+                "event_family": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "broker_subject_id": "TEXT",
+                "duration_seconds": "REAL NOT NULL DEFAULT 0",
+                "active": "INTEGER NOT NULL DEFAULT 1",
+                "severity": "TEXT NOT NULL DEFAULT 'INFO'",
+                "last_notification_status": "TEXT",
+            }
+            for name, declaration in additions.items():
+                if name not in columns:
+                    conn.execute(
+                        f"ALTER TABLE transition_states ADD COLUMN {name} {declaration}"
+                    )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_transition_state_identity "
+                "ON transition_states(state_identity)"
+            )
+            conn.execute(_SCHEMA[-2].replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+            conn.execute(_SCHEMA[-1].replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         for statement in _LEASE_SCHEMA:
             conn.execute(statement)
         if version == 0:
@@ -308,6 +353,207 @@ def append_watch_iteration(
         conn.rollback()
         raise
     return iteration_id
+
+
+def append_watch_observation(
+    conn: sqlite3.Connection,
+    *,
+    iteration_id: str,
+    state_code: str,
+    detail: Mapping[str, Any] | None = None,
+    observed_at: datetime | None = None,
+) -> int:
+    """Append a sanitized observation to an existing watch iteration."""
+
+    stamp = _aware(observed_at)
+    clean = sanitize_detail(detail)
+    try:
+        cursor = conn.execute(
+            """INSERT INTO watch_observations(
+               iteration_id, state_code, detail_json, observed_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                _stable_code(iteration_id, "iteration_id"),
+                _stable_code(state_code, "state_code"),
+                json.dumps(clean, sort_keys=True),
+                stamp.isoformat(),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return int(cursor.lastrowid)
+
+
+def record_transition_state(
+    conn: sqlite3.Connection,
+    observation: TransitionObservation,
+) -> TransitionNotification | None:
+    """Append an observation and atomically update its restart-stable projection."""
+
+    identity = observation.state_identity
+    stamp = observation.observed_at
+    state_code = _stable_code(observation.normalized_state.upper(), "state_code")
+    family = _stable_code(observation.event_family.upper(), "event_family")
+    active = state_code not in {"RECOVERED", "STOPPED", "FILLED", "RESOLVED"}
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            """SELECT occurrence_count,first_observed_at
+               FROM transition_states WHERE state_identity=?""",
+            (identity,),
+        ).fetchone()
+        prior = conn.execute(
+            """SELECT state_code FROM transition_states
+               WHERE account_scope_hash=? AND COALESCE(ticker,'')=COALESCE(?, '')
+                 AND event_family=?
+                 AND COALESCE(broker_subject_id,'')=COALESCE(?, '')
+               ORDER BY last_observed_at DESC LIMIT 1""",
+            (
+                observation.account_scope_hash,
+                observation.ticker,
+                family,
+                observation.broker_subject_id,
+            ),
+        ).fetchone()
+        if current is None:
+            first = stamp
+            occurrence = 1
+            conn.execute(
+                """INSERT INTO transition_states(
+                   state_identity,account_scope_hash,ticker,event_family,
+                   broker_subject_id,state_code,occurrence_count,
+                   first_observed_at,last_observed_at,duration_seconds,
+                   active,severity,last_notification_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL)""",
+                (
+                    identity,
+                    observation.account_scope_hash,
+                    observation.ticker,
+                    family,
+                    observation.broker_subject_id,
+                    state_code,
+                    occurrence,
+                    stamp.isoformat(),
+                    stamp.isoformat(),
+                    int(active),
+                    observation.severity.value,
+                ),
+            )
+        else:
+            occurrence = int(current[0]) + 1
+            first = datetime.fromisoformat(str(current[1]))
+            duration = max(0.0, (stamp - first).total_seconds())
+            conn.execute(
+                """UPDATE transition_states
+                   SET occurrence_count=?,last_observed_at=?,duration_seconds=?,
+                       active=?,severity=? WHERE state_identity=?""",
+                (
+                    occurrence,
+                    stamp.isoformat(),
+                    duration,
+                    int(active),
+                    observation.severity.value,
+                    identity,
+                ),
+            )
+        conn.execute(
+            """INSERT INTO transition_observations(
+               state_identity,state_code,severity,detail_json,observed_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                identity,
+                state_code,
+                observation.severity.value,
+                json.dumps(dict(observation.detail), sort_keys=True),
+                stamp.isoformat(),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    if current is not None:
+        return None
+    event_code = (
+        "STATE_RECOVERED"
+        if not active
+        else "STATE_CHANGED" if prior is not None else "STATE_BEGIN"
+    )
+    return TransitionNotification(
+        identity,
+        event_code,
+        observation.severity,
+        render_transition_notification(state_code, observation.severity),
+        stamp,
+    )
+
+
+def record_transition_notification(
+    conn: sqlite3.Connection,
+    notification: TransitionNotification,
+    *,
+    delivery_status: str,
+    failure_category: str | None = None,
+) -> int:
+    """Commit delivery evidence separately from the fail-soft transport call."""
+
+    status = _stable_code(delivery_status.upper(), "delivery_status")
+    failure = (
+        _stable_code(failure_category.upper(), "failure_category")
+        if failure_category
+        else None
+    )
+    try:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO transition_notifications(
+               state_identity,event_code,severity,text,delivery_status,
+               failure_category,observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                notification.state_identity,
+                _stable_code(notification.event_code, "event_code"),
+                notification.severity.value,
+                notification.text[:180],
+                status,
+                failure,
+                notification.observed_at.isoformat(),
+            ),
+        )
+        conn.execute(
+            """UPDATE transition_states SET last_notification_status=?
+               WHERE state_identity=?""",
+            (status, notification.state_identity),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return int(cursor.lastrowid or 0)
+
+
+def load_transition_state(
+    conn: sqlite3.Connection, state_identity: str
+) -> TransitionState:
+    row = conn.execute(
+        """SELECT state_code,occurrence_count,first_observed_at,last_observed_at,
+                  duration_seconds,active,severity,last_notification_status
+           FROM transition_states WHERE state_identity=?""",
+        (state_identity,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(state_identity)
+    return TransitionState(
+        state_identity=state_identity,
+        state_code=str(row[0]),
+        occurrence_count=int(row[1]),
+        first_observed_at=datetime.fromisoformat(str(row[2])),
+        last_observed_at=datetime.fromisoformat(str(row[3])),
+        duration_seconds=float(row[4]),
+        active=bool(row[5]),
+        severity=OperationalSeverity(row[6]),
+        last_notification_status=str(row[7]) if row[7] is not None else None,
+    )
 
 
 def start_daily_evaluation(

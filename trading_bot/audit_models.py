@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+import hashlib
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -166,6 +167,118 @@ def sanitize_detail(detail: Mapping[str, Any] | None) -> dict[str, Any]:
             raise TypeError(f"evidence detail must contain scalar facts: {key}")
         clean[key] = value
     return clean
+
+
+class OperationalSeverity(StrEnum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+_TRANSITION_TEXT = {
+    "STARTED": "인트라데이 감시를 시작했습니다.",
+    "STOPPED": "인트라데이 감시를 안전하게 종료했습니다.",
+    "FILLED": "주문 체결 상태가 확정되었습니다.",
+    "LONG_OPEN_ORDER": "주문이 장시간 미체결 상태입니다.",
+    "BROKER_TRUTH_FAILED": "KIS 계좌 원장 확인에 실패했습니다.",
+    "LEASE_LOST": "계정 변경 소유권을 잃어 신규 주문을 차단했습니다.",
+    "ORDER_AMBIGUOUS": "주문 접수 상태가 불명확하여 해당 종목을 동결했습니다.",
+    "INTERRUPTED": "중단 요청을 받아 신규 주문을 멈추고 정산합니다.",
+    "RECOVERED": "이전 불확실 상태가 확정되어 복구되었습니다.",
+    "AUDIT_EVIDENCE_FAILED": "감사 증거 저장에 실패하여 신규 주문을 차단했습니다.",
+}
+
+
+def render_transition_notification(
+    event_code: str, severity: OperationalSeverity
+) -> str:
+    code = str(event_code).strip().upper()
+    level = OperationalSeverity(severity)
+    text = _TRANSITION_TEXT.get(code, "운영 상태가 변경되었습니다.")
+    return f"[{level.value}] {code}: {text}"[:180]
+
+
+def canonical_transition_identity(
+    *,
+    account_scope_hash: str,
+    ticker: str | None,
+    event_family: str,
+    normalized_state: str,
+    broker_subject_id: str | None,
+) -> str:
+    parts = (
+        account_scope_hash.strip().lower(),
+        (ticker or "ACCOUNT").strip().upper(),
+        event_family.strip().upper(),
+        normalized_state.strip().upper(),
+        (broker_subject_id or "NONE").strip(),
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+        raise ValueError("account_scope_hash must be a sha256 value")
+    if any(not item or len(item) > 128 for item in parts[1:]):
+        raise ValueError("transition identity fields must be bounded")
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class TransitionObservation:
+    account_scope_hash: str
+    ticker: str | None
+    event_family: str
+    normalized_state: str
+    broker_subject_id: str | None
+    severity: OperationalSeverity
+    observed_at: datetime
+    detail: Mapping[str, str | int | float | bool | None]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "severity", OperationalSeverity(self.severity))
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        canonical_transition_identity(
+            account_scope_hash=self.account_scope_hash,
+            ticker=self.ticker,
+            event_family=self.event_family,
+            normalized_state=self.normalized_state,
+            broker_subject_id=self.broker_subject_id,
+        )
+        clean = sanitize_detail(self.detail)
+        for key, value in clean.items():
+            if len(key) > 64 or isinstance(value, str) and len(value) > 128:
+                raise ValueError("transition detail must be bounded")
+        object.__setattr__(self, "detail", MappingProxyType(clean))
+
+    @property
+    def state_identity(self) -> str:
+        return canonical_transition_identity(
+            account_scope_hash=self.account_scope_hash,
+            ticker=self.ticker,
+            event_family=self.event_family,
+            normalized_state=self.normalized_state,
+            broker_subject_id=self.broker_subject_id,
+        )
+
+
+@dataclass(frozen=True)
+class TransitionState:
+    state_identity: str
+    state_code: str
+    occurrence_count: int
+    first_observed_at: datetime
+    last_observed_at: datetime
+    duration_seconds: float
+    active: bool
+    severity: OperationalSeverity
+    last_notification_status: str | None = None
+
+
+@dataclass(frozen=True)
+class TransitionNotification:
+    state_identity: str
+    event_code: str
+    severity: OperationalSeverity
+    text: str
+    observed_at: datetime
 
 
 @dataclass(frozen=True)

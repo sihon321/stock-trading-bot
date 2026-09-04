@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import StrEnum
-from typing import Callable
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from trading_bot.domain import Money, Position, Ticker
@@ -18,6 +18,11 @@ from trading_bot.exit_manager import (
 )
 from trading_bot.portfolio import PortfolioSnapshot
 from trading_bot.risk import RiskConfig, evaluate_position_risk
+from trading_bot.audit_models import (
+    OperationalSeverity,
+    TransitionNotification,
+    TransitionObservation,
+)
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -37,6 +42,84 @@ class IntradayIterationOutcome(StrEnum):
     BLOCKED = "BLOCKED"
     INTERRUPTED = "INTERRUPTED"
     FAILED = "FAILED"
+
+
+class TransitionEvidenceError(RuntimeError):
+    """Mandatory alert-attempt evidence failed; later mutation is forbidden."""
+
+
+class TransitionEvidenceGuard:
+    """Keep transport fail-soft while latching evidence persistence fail-closed."""
+
+    def __init__(
+        self,
+        *,
+        transport: Callable[[str], object],
+        evidence_writer: Callable[[TransitionNotification, str, str | None], object],
+    ) -> None:
+        self._transport = transport
+        self._evidence_writer = evidence_writer
+        self._evidence_healthy = True
+
+    def notify(self, notification: TransitionNotification) -> str:
+        try:
+            delivered = bool(self._transport(notification.text))
+            status = "DELIVERED" if delivered else "FAILED"
+            category = None if delivered else "TRANSPORT_FAILED"
+        except Exception:
+            status = "FAILED"
+            category = "TRANSPORT_EXCEPTION"
+        try:
+            self._evidence_writer(notification, status, category)
+        except Exception as exc:
+            self._evidence_healthy = False
+            raise TransitionEvidenceError("notification attempt evidence failed") from exc
+        return status
+
+    def assert_mutation_allowed(self) -> None:
+        if not self._evidence_healthy:
+            raise TransitionEvidenceError("notification evidence is unhealthy")
+
+
+def transition_observations_for_snapshot(
+    snapshot: PortfolioSnapshot,
+    *,
+    observed_at: datetime,
+    long_open_seconds: int = 900,
+) -> tuple[TransitionObservation, ...]:
+    """Normalize current broker order states into bounded operational evidence."""
+
+    observations: list[TransitionObservation] = []
+    for order in snapshot.orders:
+        state = order.status
+        severity = OperationalSeverity.INFO
+        if state == "UNKNOWN":
+            state = "ORDER_AMBIGUOUS"
+            severity = OperationalSeverity.CRITICAL
+        elif state in {"OPEN", "PARTIAL"}:
+            try:
+                opened = datetime.strptime(
+                    f"{order.order_date}{order.order_time[:6]}", "%Y%m%d%H%M%S"
+                ).replace(tzinfo=KST)
+                if (observed_at.astimezone(KST) - opened).total_seconds() >= long_open_seconds:
+                    state = "LONG_OPEN_ORDER"
+                    severity = OperationalSeverity.WARNING
+            except ValueError:
+                state = "BROKER_TRUTH_FAILED"
+                severity = OperationalSeverity.CRITICAL
+        observations.append(
+            TransitionObservation(
+                account_scope_hash=snapshot.account_scope_hash,
+                ticker=order.ticker,
+                event_family="BROKER_ORDER",
+                normalized_state=state,
+                broker_subject_id=order.order_id,
+                severity=severity,
+                observed_at=observed_at,
+                detail={"remaining_quantity": order.remaining_quantity},
+            )
+        )
+    return tuple(observations)
 
 
 @dataclass(frozen=True)
@@ -78,6 +161,7 @@ def run_intraday_check(
     lease: object,
     exit_submitter: Callable[[ExitResult, Money], object],
     audit_sink: Callable[[IntradayIterationResult], object],
+    mutation_guard: Callable[[], object] = lambda: None,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
 
@@ -125,6 +209,7 @@ def run_intraday_check(
             candidate = evaluate_exit_candidate(trigger, snapshot)
             exits.append(candidate)
             if candidate.disposition is ExitDisposition.SUBMIT:
+                mutation_guard()
                 getattr(lease, "assert_active_owner")()
                 exit_submitter(candidate, quote)
         result = IntradayIterationResult(
@@ -173,6 +258,7 @@ def run_intraday_watch(
     reconcile: Callable[[], object] = lambda: True,
     interval_seconds: float = 60,
     max_iterations: int | None = None,
+    mutation_guard: Callable[[], object] = lambda: None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
@@ -204,6 +290,7 @@ def run_intraday_watch(
             lease=lease,
             exit_submitter=exit_submitter,
             audit_sink=audit_sink,
+            mutation_guard=mutation_guard,
         )
         iterations.append(result)
         sleeper(interval_seconds)

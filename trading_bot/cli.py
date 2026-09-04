@@ -105,6 +105,8 @@ from trading_bot.portfolio_store import (
     append_daily_evaluation_event,
     append_portfolio_snapshot,
     append_watch_iteration,
+    record_transition_notification,
+    record_transition_state,
     migrate_portfolio,
     recover_started_evaluations,
     start_daily_evaluation,
@@ -118,7 +120,12 @@ from trading_bot.mutation_lease import (
     recover_to_active,
 )
 from trading_bot.exit_manager import submit_exit
-from trading_bot.intraday import run_intraday_check, run_intraday_watch
+from trading_bot.intraday import (
+    TransitionEvidenceGuard,
+    run_intraday_check,
+    run_intraday_watch,
+    transition_observations_for_snapshot,
+)
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
     FailedStage,
@@ -1899,6 +1906,15 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
         cycle_id=cycle_id,
     )
     latest: list[PortfolioSnapshot] = []
+    transition_guard = TransitionEvidenceGuard(
+        transport=runtime.notifier.send,
+        evidence_writer=lambda note, status, category: record_transition_notification(
+            runtime.audit_conn,
+            note,
+            delivery_status=status,
+            failure_category=category,
+        ),
+    )
 
     def fresh_snapshot() -> PortfolioSnapshot:
         snapshot = reader()
@@ -1909,6 +1925,14 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             cycle_id=cycle_id,
             observation_id=f"{cycle_id}:{uuid.uuid4().hex}",
         )
+        for observation in transition_observations_for_snapshot(
+            snapshot,
+            observed_at=datetime.now(timezone.utc),
+            long_open_seconds=settings.intraday_long_open_warning_seconds,
+        ):
+            notification = record_transition_state(runtime.audit_conn, observation)
+            if notification is not None:
+                transition_guard.notify(notification)
         return snapshot
 
     def reconcile() -> dict[str, bool]:
@@ -1953,6 +1977,7 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             lease=lease,
             exit_submitter=submit,
             audit_sink=audit,
+            mutation_guard=transition_guard.assert_mutation_allowed,
         )
         if mode == "check":
             return run_intraday_check(**kwargs)

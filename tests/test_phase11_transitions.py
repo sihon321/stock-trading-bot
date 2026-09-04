@@ -11,6 +11,7 @@ from trading_bot.audit_models import (
     render_transition_notification,
 )
 from trading_bot.portfolio_store import migrate_portfolio, record_transition_state
+from trading_bot.intraday import TransitionEvidenceError, TransitionEvidenceGuard
 
 
 NOW = datetime(2026, 9, 4, 1, 0, tzinfo=timezone.utc)
@@ -81,3 +82,34 @@ def test_transition_details_reject_secrets_and_raw_payloads() -> None:
             observed_at=NOW,
             detail={"raw_payload": "secret"},
         )
+
+
+def test_transport_failure_is_fail_soft_but_evidence_failure_latches_mutation() -> None:
+    from trading_bot.audit_models import TransitionNotification
+
+    note = TransitionNotification(
+        "b" * 64,
+        "STATE_BEGIN",
+        OperationalSeverity.CRITICAL,
+        "[CRITICAL] ORDER_AMBIGUOUS: 주문 접수 상태가 불명확합니다.",
+        NOW,
+    )
+    attempts = []
+    soft = TransitionEvidenceGuard(
+        transport=lambda text: (_ for _ in ()).throw(RuntimeError("offline")),
+        evidence_writer=lambda notification, status, category: attempts.append(
+            (status, category)
+        ),
+    )
+    assert soft.notify(note) == "FAILED"
+    soft.assert_mutation_allowed()
+    assert attempts == [("FAILED", "TRANSPORT_EXCEPTION")]
+
+    closed = TransitionEvidenceGuard(
+        transport=lambda text: True,
+        evidence_writer=lambda *args: (_ for _ in ()).throw(sqlite3.Error("disk")),
+    )
+    with pytest.raises(TransitionEvidenceError):
+        closed.notify(note)
+    with pytest.raises(TransitionEvidenceError):
+        closed.assert_mutation_allowed()

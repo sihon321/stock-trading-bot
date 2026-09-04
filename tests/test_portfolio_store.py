@@ -168,7 +168,7 @@ def test_portfolio_migration_failure_rolls_back_and_retry_succeeds(tmp_path):
     migrate_portfolio(conn)
     assert conn.execute(
         "SELECT version FROM portfolio_schema_metadata WHERE owner='phase11'"
-    ).fetchone()[0] == 2
+    ).fetchone()[0] == 3
     expected = {
         "portfolio_snapshots", "portfolio_holdings", "portfolio_orders",
         "portfolio_fills", "portfolio_divergences", "daily_evaluations",
