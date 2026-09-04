@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 09
-current_phase_name: kis-mock-soak-fault-drills
+current_phase: 11
+current_phase_name: kis-portfolio-synchronization-intraday-exit-management
 status: executing
-stopped_at: Phase 11 context gathered
-last_updated: "2026-09-01T14:40:18.125Z"
-last_activity: 2026-07-28
-last_activity_desc: "Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety"
+stopped_at: Completed 11-01-PLAN.md
+last_updated: "2026-09-04T06:45:48.126Z"
+last_activity: 2026-09-04
+last_activity_desc: Phase 11 execution started
 progress:
   total_phases: 5
   completed_phases: 4
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 09 — kis-mock-soak-fault-drills
+**Current focus:** Phase 11 — kis-portfolio-synchronization-intraday-exit-management
 
 ## Current Position
 
-Phase: 09 (kis-mock-soak-fault-drills) — EXECUTING
-Plan: 8 of 10
+Phase: 11 (kis-portfolio-synchronization-intraday-exit-management) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-07-28 - Completed quick task 260728-e0i: Make KIS mock soak market-date preflight resilient to every current-day pykrx uncertainty while retaining explicit evidence and fail-closed safety
+Last activity: 2026-09-04 — Phase 11 execution started
 
 Progress: [██████████] 96%
 
@@ -111,6 +111,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 09]: Downgrade missing or contradictory primary/controller links to UNKNOWN instead of omitting them or preserving a persisted PASS. — Missing provenance cannot support a successful operator claim.
 - [Phase 09]: Keep CONTROLLED_INJECTION, KIS_OBSERVED, and SYNTHETIC drill denominators separate from eligible-day and availability accounting. — Prevents synthetic drills from overstating authenticated clean operation.
 - [Phase 09]: Make soak status require the canonical existing triple and construct no KIS, LLM, data, or order collaborator. — Read-only inspection must not acquire live or mutating authority.
+- [Phase 11]: Keep Phase 11 whole-account projection separate from the existing Phase 9 touched projection. — Preserves shipped campaign-scoped reconciliation while making account truth complete.
+- [Phase 11]: Version Phase 11 tables through a dedicated metadata owner. — Allows portfolio tables and the primary audit schema to evolve independently in one database.
+- [Phase 11]: The first committed canonical input wins for a KRX date and ticker. — Daily uniqueness and crash recovery prevent repeat provider calls or input replacement.
 
 ### Pending Todos
 
@@ -134,6 +137,7 @@ None yet.
 | Phase 10 P02 | 6 min | 2 tasks | 4 files |
 | Phase 10 P03 | 4 min | 2 tasks | 3 files |
 | Phase 10 P04 | 6 min | 2 tasks | 6 files |
+| Phase 11 P01 | 8 min | 2 tasks | 6 files |
 
 ## Deferred Items
 
@@ -166,9 +170,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-09-01T14:40:18.113Z
-Stopped at: Phase 11 context gathered
-Resume file: .planning/phases/11-kis-portfolio-synchronization-intraday-exit-management/11-CONTEXT.md
+Last session: 2026-09-04T06:45:23.728Z
+Stopped at: Completed 11-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

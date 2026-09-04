@@ -44,14 +44,34 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ## Future Requirements
 
-Deferred beyond v1.1 and not included in the current roadmap.
+Planned beyond v1.1 in the v1.2 and v1.3 roadmap. These remain unchecked until their
+own phase verification passes; planning them does not weaken the Phase 9 soak or manual
+real-money promotion gates.
+
+### Portfolio Truth & Exit Lifecycle
+
+- [x] **PORT-01**: Every executable cycle can load complete KIS broker truth for cash, holdings, orderable quantity, average price, open orders, and recent fills before making a decision.
+- [x] **PORT-02**: The daily execution universe is the union of screened candidates and broker-held positions, with stale or incomplete held-position evidence failing closed without dropping the holding from review.
+- [x] **EXIT-01**: Operator can run one daily LLM BUY/HOLD/SELL evaluation while deterministic stop-loss, take-profit, and kill rules monitor held positions intraday without repeated LLM calls.
+- [x] **EXIT-02**: SELL orders, partial fills, cancellations, ambiguous acknowledgements, restarts, and duplicate invocations reconcile to broker truth without overselling or blind resubmission.
 
 ### Extended Validation
 
-- **FUT-01**: Operator can run a full portfolio backtest with modeled fills, fees, taxes, and slippage.
-- **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled workflow.
-- **FUT-03**: Operator can review validation data in a web dashboard.
-- **FUT-04**: Operator can schedule unattended cycles after manual-operation evidence is sufficient.
+- [ ] **FUT-01**: Operator can run a full chronological portfolio backtest with modeled fills, fees, Korean-market taxes, and slippage.
+- [ ] **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled, non-executable workflow.
+- [ ] **GOV-01**: Every shadow LLM result is attributable to provider, model, prompt, schema, input snapshot, cost, and code revision and cannot mutate trading policy.
+- [ ] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.
+- [ ] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
+- [ ] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
+- [ ] **OPSV-01**: Operator receives deduplicated, severity-based alerts for stale workers, failed cycles, unresolved orders, safety latches, and broker-state divergence.
+- [ ] **FUT-04**: Operator can schedule unattended cycles only after manual-operation evidence is sufficient.
+- [ ] **AUTO-01**: Scheduled daily and intraday workers use KRX calendar/session rules, leader locking, durable checkpoints, and idempotent invocation identities so one logical job cannot submit twice.
+- [ ] **AUTO-02**: Operator can pause, resume, inspect health, recover after restart, and activate a global kill switch without losing audit or reconciliation evidence.
+
+### Controlled Production
+
+- [ ] **PROD-01**: Operator can start a manually approved, allowlisted, capital-capped real-money pilot only when all replay, soak, exit-lifecycle, automation, unresolved-order, and readiness gates are PASS.
+- [ ] **PROD-02**: Any increase in symbols or capital requires a new evidence window, explicit approval, rollback proof, and zero unresolved safety breaches; automatic promotion remains impossible.
 
 ## Out of Scope
 
@@ -59,10 +79,8 @@ Deferred beyond v1.1 and not included in the current roadmap.
 |---------|--------|
 | Automatic threshold optimization or policy writes | Calibration must remain advisory and manually approved for safety. |
 | Automatic real-money promotion | Real-money enablement requires explicit human approval and remains outside validation commands. |
-| Live LLM calls during historical replay | Frozen fixture signals are required for deterministic, low-cost replay. |
-| Full P&L backtester | v1.1 validates decision and execution gates, not strategy profitability with market microstructure. |
-| Web dashboard | Human-readable CLI reports are sufficient for this milestone. |
-| Always-on loop or intraday polling | Daily manual operation remains the validation model until promotion evidence is complete. |
+| Live LLM calls inside deterministic replay | Phase 13 keeps optional LLM shadow evaluation separate so the canonical replay remains frozen and reproducible. |
+| Automatic strategy optimization | Backtest and calibration outputs remain advisory; they cannot select or write a production policy. |
 | Strategy expansion or ensemble models | The milestone calibrates and validates the shipped strategy rather than adding new strategies. |
 
 ## Traceability
@@ -98,6 +116,29 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 - Mapped to phases: 20
 - Unmapped: 0 ✓
 
+### Future Roadmap Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PORT-01 | Phase 11 | Planned |
+| PORT-02 | Phase 11 | Planned |
+| EXIT-01 | Phase 11 | Planned |
+| EXIT-02 | Phase 11 | Planned |
+| FUT-01 | Phase 12 | Planned |
+| FUT-02 | Phase 13 | Planned |
+| GOV-01 | Phase 13 | Planned |
+| FUT-03 | Phase 14 | Planned |
+| UI-01 | Phase 14 | Planned |
+| UI-02 | Phase 14 | Planned |
+| OPSV-01 | Phase 14 | Planned |
+| FUT-04 | Phase 15 | Planned |
+| AUTO-01 | Phase 15 | Planned |
+| AUTO-02 | Phase 15 | Planned |
+| PROD-01 | Phase 16 | Planned |
+| PROD-02 | Phase 16 | Planned |
+
+**Future coverage:** 16 requirements mapped, 0 unmapped.
+
 ---
 *Requirements defined: 2026-07-11*
-*Last updated: 2026-07-11 after v1.1 roadmap creation*
+*Last updated: 2026-08-25 after adding the v1.2-v1.3 future roadmap*
