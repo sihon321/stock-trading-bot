@@ -7,7 +7,9 @@ dotenv.load_dotenv()
 
 import os
 import json
+import signal
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -102,13 +104,21 @@ from trading_bot.portfolio import (
 from trading_bot.portfolio_store import (
     append_daily_evaluation_event,
     append_portfolio_snapshot,
+    append_watch_iteration,
     migrate_portfolio,
     recover_started_evaluations,
     start_daily_evaluation,
 )
 from trading_bot.audit_models import DailyEvaluationEventType, DailyEvaluationStatus
 from trading_bot.prompts import render_prompt
-from trading_bot.mutation_lease import acquire_mutation_lease, recover_to_active
+from trading_bot.mutation_lease import (
+    LeaseBusyError,
+    LeaseRecoveryBlocked,
+    acquire_mutation_lease,
+    recover_to_active,
+)
+from trading_bot.exit_manager import submit_exit
+from trading_bot.intraday import run_intraday_check, run_intraday_watch
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
     FailedStage,
@@ -128,6 +138,11 @@ app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator 
 app.add_typer(report_app, name="report")
 soak_app = typer.Typer(no_args_is_help=True, help="KIS mock-only soak compatibility workflow.")
 app.add_typer(soak_app, name="soak")
+intraday_app = typer.Typer(
+    no_args_is_help=True,
+    help="LLM-free held-position risk checks against fresh KIS account truth.",
+)
+app.add_typer(intraday_app, name="intraday")
 
 _soak_settings_factory = SoakSettings
 _soak_probe = probe_mock_profile
@@ -296,6 +311,7 @@ class _Runtime:
     llm_provider_factory: Optional[Callable[[], Any]] = None
     portfolio_snapshot_reader: Optional[Callable[[], PortfolioSnapshot]] = None
     account_scope_hash: Optional[str] = None
+    quote_reader: Optional[Callable[[str], Money]] = None
 
 
 @dataclass(frozen=True)
@@ -937,6 +953,12 @@ def build_runtime(
             account_scope_hash=account_scope_hash,
         )
 
+    def read_quote(ticker: str) -> Money:
+        result = quote_adapter.fetch_current_price(ticker)
+        if result.price is None:
+            raise RuntimeError("KIS quote unavailable")
+        return result.price
+
     return _Runtime(
         settings=resolved_settings,
         token_manager=token_manager,
@@ -955,6 +977,7 @@ def build_runtime(
         llm_provider_factory=lambda: build_llm_provider(resolved_settings),
         portfolio_snapshot_reader=read_portfolio_snapshot,
         account_scope_hash=account_scope_hash,
+        quote_reader=read_quote,
     )
 
 
@@ -1850,6 +1873,163 @@ def soak_drill_command(
     except (KeyError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
         typer.echo(str(exc)[:200], err=True)
         raise typer.Exit(2) from None
+
+
+_intraday_stop_requested = lambda: False
+
+
+def _default_intraday_command_runner(mode: str, interval_seconds: int | None) -> Any:
+    """Build the production, LLM-free intraday composition root."""
+
+    settings = Settings()
+    runtime = build_runtime(settings=settings)
+    reader = runtime.portfolio_snapshot_reader
+    quote_reader = runtime.quote_reader
+    scope = runtime.account_scope_hash
+    if reader is None or quote_reader is None or scope is None:
+        runtime.audit_conn.close()
+        raise RuntimeError("intraday KIS collaborators are unavailable")
+    migrate_portfolio(runtime.audit_conn)
+    cycle_id = uuid.uuid4().hex
+    lease = acquire_mutation_lease(
+        runtime.audit_conn,
+        account_scope_hash=scope,
+        lock_dir=Path(settings.audit_db_path).parent / ".mutation-locks",
+        command=f"intraday-{mode}",
+        cycle_id=cycle_id,
+    )
+    latest: list[PortfolioSnapshot] = []
+
+    def fresh_snapshot() -> PortfolioSnapshot:
+        snapshot = reader()
+        latest[:] = [snapshot]
+        append_portfolio_snapshot(
+            runtime.audit_conn,
+            snapshot,
+            cycle_id=cycle_id,
+            observation_id=f"{cycle_id}:{uuid.uuid4().hex}",
+        )
+        return snapshot
+
+    def reconcile() -> dict[str, bool]:
+        snapshot = fresh_snapshot()
+        return {"determinate": all(order.status != "UNKNOWN" for order in snapshot.orders)}
+
+    def submit(candidate: Any, price: Money) -> str | None:
+        if not latest:
+            raise RuntimeError("intraday submission requires current account truth")
+        return submit_exit(
+            candidate,
+            broker=runtime.broker,
+            limit_price=price,
+            portfolio_refresh=reader,
+            lease_guard=lease,
+            cycle_snapshot_id=latest[0].snapshot_id,
+            origin_run_id=cycle_id,
+        )
+
+    def audit(result: Any) -> None:
+        append_watch_iteration(runtime.audit_conn, result)
+
+    try:
+        if lease.recovery_required:
+            recover_to_active(
+                lease,
+                terminalize_prior_cycles=lambda: sqlite_audit.recover_abandoned_runs(
+                    runtime.audit_conn
+                ),
+                query_fresh_snapshot=fresh_snapshot,
+                reconcile_prior_orders=lambda current: {
+                    "determinate": all(
+                        order.status != "UNKNOWN" for order in current.orders
+                    )
+                },
+            )
+        kwargs = dict(
+            clock=lambda: datetime.now(ZoneInfo("Asia/Seoul")),
+            snapshot_reader=fresh_snapshot,
+            quote_reader=quote_reader,
+            risk_config=_risk_config(settings),
+            lease=lease,
+            exit_submitter=submit,
+            audit_sink=audit,
+        )
+        if mode == "check":
+            return run_intraday_check(**kwargs)
+        return run_intraday_watch(
+            **kwargs,
+            sleeper=time.sleep,
+            stop_requested=lambda: bool(_intraday_stop_requested()),
+            reconcile=reconcile,
+            interval_seconds=interval_seconds or settings.intraday_watch_interval_seconds,
+        )
+    finally:
+        if not lease.closed:
+            lease.release()
+        runtime.audit_conn.close()
+
+
+_intraday_command_runner = _default_intraday_command_runner
+
+
+def _render_intraday_error(exc: Exception) -> str:
+    if isinstance(exc, LeaseBusyError):
+        facts = ", ".join(
+            f"{key}={str(value)[:64]}"
+            for key, value in sorted(exc.owner_metadata.items())
+            if key in {"pid", "command", "started_at", "state"}
+        )
+        return f"계정 변경 잠금이 사용 중입니다 ({facts}). 읽기 전용 확인: bot status"
+    if isinstance(exc, LeaseRecoveryBlocked):
+        return "이전 주문 복구가 확정되지 않아 변경을 차단했습니다. 읽기 전용 확인: bot status"
+    return f"인트라데이 실행 실패: {type(exc).__name__}: {str(exc)[:160]}"
+
+
+@intraday_app.command("check")
+def intraday_check_command() -> None:
+    """Run one fresh held-position risk check without an LLM call."""
+
+    try:
+        result = _intraday_command_runner("check", None)
+    except (LeaseBusyError, LeaseRecoveryBlocked, ValueError, RuntimeError, OSError) as exc:
+        typer.echo(_render_intraday_error(exc), err=True)
+        raise typer.Exit(2) from None
+    if result is not None:
+        typer.echo(f"intraday check: {result.outcome.value} ({result.reason_code})")
+
+
+@intraday_app.command("watch")
+def intraday_watch_command(
+    interval_seconds: int = typer.Option(60, "--interval-seconds", min=60),
+) -> None:
+    """Watch held positions in the foreground until cutoff or Ctrl-C."""
+
+    settings = Settings()
+    if interval_seconds < settings.intraday_min_interval_seconds:
+        raise typer.BadParameter(
+            f"interval must be at least {settings.intraday_min_interval_seconds} seconds"
+        )
+    stop = [False]
+    previous = signal.getsignal(signal.SIGINT)
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        stop[0] = True
+
+    global _intraday_stop_requested
+    _intraday_stop_requested = lambda: stop[0]
+    signal.signal(signal.SIGINT, request_stop)
+    try:
+        result = _intraday_command_runner("watch", interval_seconds)
+    except (LeaseBusyError, LeaseRecoveryBlocked, ValueError, RuntimeError, OSError) as exc:
+        typer.echo(_render_intraday_error(exc), err=True)
+        raise typer.Exit(2) from None
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        _intraday_stop_requested = lambda: False
+    typer.echo(
+        f"intraday watch: {result.final_phase.value}; "
+        f"iterations={len(result.iterations)}; interrupted={str(result.interrupted).lower()}"
+    )
 
 
 @app.command("run")

@@ -268,6 +268,48 @@ def append_portfolio_snapshot(
     return snapshot.snapshot_id
 
 
+def append_watch_iteration(
+    conn: sqlite3.Connection,
+    result: Any,
+    *,
+    observed_at: datetime | None = None,
+) -> str:
+    """Persist one terminal intraday iteration and its stable outcome."""
+
+    stamp = _aware(observed_at)
+    iteration_id = _stable_code(result.iteration_id, "iteration_id")
+    phase = _stable_code(result.phase.value, "intraday phase")
+    outcome = _stable_code(result.outcome.value, "intraday outcome")
+    reason = _stable_code(result.reason_code, "intraday reason")
+    detail = sanitize_detail(
+        {
+            "phase": phase,
+            "outcome": outcome,
+            "reason_code": reason,
+            "exit_count": len(result.exit_results),
+        }
+    )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """INSERT INTO watch_iterations(
+               iteration_id, cycle_id, snapshot_id, started_at, terminal_status)
+               VALUES (?, ?, ?, ?, ?)""",
+            (iteration_id, iteration_id, result.snapshot_id, stamp.isoformat(), outcome),
+        )
+        conn.execute(
+            """INSERT INTO watch_observations(
+               iteration_id, state_code, detail_json, observed_at)
+               VALUES (?, ?, ?, ?)""",
+            (iteration_id, phase, json.dumps(detail, sort_keys=True), stamp.isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return iteration_id
+
+
 def start_daily_evaluation(
     conn: sqlite3.Connection,
     *,
