@@ -330,3 +330,77 @@ def test_phase10_readiness_is_complete_manual_and_currently_blocked() -> None:
         "정책 자동 변경", "수익성 주장", "별도 수동 절차",
     ):
         assert boundary in section
+
+
+def test_phase11_intraday_commands_timing_and_shutdown_are_exact() -> None:
+    section = _section(_text(), "Phase 11 인트라데이 운영")
+    for command in (
+        "bot run",
+        "bot intraday check",
+        "bot intraday watch --interval-seconds 60",
+        "bot status",
+    ):
+        assert command in section
+    for phrase in (
+        "60초 기본값이자 최솟값",
+        "09:00",
+        "15:20",
+        "15:30",
+        "PREFLIGHT_READ_ONLY",
+        "ACTIVE",
+        "RECONCILE_ONLY",
+        "STOPPING",
+        "TERMINAL",
+        "Ctrl-C",
+        "신규 POST 중단 → 제출 intent reconciliation → terminal 증거 저장 → lease 해제",
+        "LLM을 만들거나 호출하지 않는다",
+    ):
+        assert phrase in section
+
+
+def test_phase11_recovery_codes_and_prohibitions_are_explicit() -> None:
+    section = _section(_text(), "Phase 11 안전 경계와 복구")
+    for code in (
+        "ACCOUNT_DATA_INCOMPLETE",
+        "LEASE_BUSY",
+        "LEASE_LOST",
+        "ORDER_AMBIGUOUS",
+        "LONG_OPEN_ORDER",
+        "TRANSPORT_FAILED",
+        "AUDIT_EVIDENCE_FAILED",
+        "INFO",
+        "WARNING",
+        "CRITICAL",
+    ):
+        assert code in section
+    for prohibition in (
+        "백그라운드 scheduler/service 금지",
+        "자동 취소 금지",
+        "시장가 주문 금지",
+        "공격적 price chasing 금지",
+        "blind retry/resubmission 금지",
+        "로컬 잔여수량 계산 금지",
+        "실계좌 자동 승격 금지",
+    ):
+        assert prohibition in section
+    assert "OPEN/PARTIAL SELL은 reconciliation-only" in section
+    assert "현재 KIS 원장" in section
+
+
+def test_phase11_authenticated_mock_uat_is_manual_and_sanitized() -> None:
+    section = _section(_text(), "Phase 11 인증 모의계좌 UAT")
+    for phrase in (
+        "KIS 모의투자 자격 증명",
+        "모든 pagination 페이지가 COMPLETE",
+        "보유수량",
+        "주문가능수량",
+        "평균단가",
+        "주문",
+        "체결",
+        "예수금",
+        "partial-fill",
+        "cancel",
+        "자동화 테스트를 대체하지 않는다",
+        "sanitized evidence",
+    ):
+        assert phrase in section
