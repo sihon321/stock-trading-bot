@@ -5,8 +5,8 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 11
 current_phase_name: kis-portfolio-synchronization-intraday-exit-management
 status: executing
-stopped_at: Completed 11-02-PLAN.md
-last_updated: "2026-09-04T06:56:10.915Z"
+stopped_at: Completed 11-03-PLAN.md
+last_updated: "2026-09-04T07:14:21.431Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 11 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 ## Current Position
 
 Phase: 11 (kis-portfolio-synchronization-intraday-exit-management) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 11 execution started
 
@@ -117,6 +117,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 11]: Preserve canonical account hashes and hash raw account scopes before lock or durable storage — Prevents raw CANO disclosure while keeping portfolio snapshot scope identity stable
 - [Phase 11]: Treat every non-RELEASED predecessor lease as recovery-only — Heartbeat age never grants mutation authority after a crash
 - [Phase 11]: Persist a new complete post-acquisition portfolio snapshot before reconciliation and activation — Restart authority cannot derive from stale process state
+- [Phase 11]: Sort broker holdings by ticker, then retain screener rank for screened-only targets; overlap has one identity with HELD then SCREENED provenance. — Keeps daily identity deterministic and attributable.
+- [Phase 11]: Persist exact rendered prompt bytes before provider construction or attempts. — Crash recovery and same-day reuse cannot replace the first committed input.
+- [Phase 11]: Replay finalized signals through a capability-free adapter and a lease-guarded broker. — Historical decisions never become current execution authority.
+- [Phase 11]: Use a post-held complete KIS snapshot for screened-only cash sizing. — Locally projected SELL proceeds never inflate BUY capacity.
 
 ### Pending Todos
 
@@ -142,6 +146,7 @@ None yet.
 | Phase 10 P04 | 6 min | 2 tasks | 6 files |
 | Phase 11 P01 | 8 min | 2 tasks | 6 files |
 | Phase 11 P02 | 7 min | 2 tasks | 5 files |
+| Phase 11 P03 | 14 min | 2 tasks | 6 files |
 
 ## Deferred Items
 
@@ -174,8 +179,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-09-04T06:55:48.914Z
-Stopped at: Completed 11-02-PLAN.md
+Last session: 2026-09-04T07:14:21.424Z
+Stopped at: Completed 11-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
