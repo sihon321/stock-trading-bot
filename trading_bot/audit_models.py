@@ -83,6 +83,25 @@ class DailyEvaluationEventType(StrEnum):
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
 
 
+class MutationLeaseState(StrEnum):
+    ACQUIRING = "ACQUIRING"
+    RECOVERY = "RECOVERY"
+    ACTIVE = "ACTIVE"
+    LOST = "LOST"
+    RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
+    RELEASED = "RELEASED"
+
+
+class MutationLeaseEventType(StrEnum):
+    ACQUIRING = "ACQUIRING"
+    RECOVERY = "RECOVERY"
+    ACTIVE = "ACTIVE"
+    HEARTBEAT = "HEARTBEAT"
+    LOST = "LOST"
+    RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
+    RELEASED = "RELEASED"
+
+
 @dataclass(frozen=True)
 class DailyEvaluationEvent:
     evaluation_id: str

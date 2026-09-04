@@ -21,7 +21,7 @@ from trading_bot.audit_models import (
 from trading_bot.portfolio import PortfolioSnapshot
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _TERMINAL_EVENTS = {
     DailyEvaluationEventType.SIGNAL_FINALIZED,
     DailyEvaluationEventType.LLM_UNAVAILABLE,
@@ -92,6 +92,23 @@ _SCHEMA = (
 )
 
 
+_LEASE_SCHEMA = (
+    """CREATE TABLE mutation_leases (
+        account_scope_hash TEXT PRIMARY KEY, owner_token TEXT NOT NULL,
+        state TEXT NOT NULL, pid INTEGER NOT NULL, command TEXT NOT NULL,
+        started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL,
+        cycle_id TEXT NOT NULL)""",
+    """CREATE TABLE mutation_lease_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, account_scope_hash TEXT NOT NULL,
+        owner_token TEXT NOT NULL, event_type TEXT NOT NULL,
+        from_state TEXT, to_state TEXT NOT NULL,
+        origin_cycle_id TEXT, observer_cycle_id TEXT,
+        detail_json TEXT NOT NULL, observed_at TEXT NOT NULL)""",
+    """CREATE INDEX ix_mutation_lease_events_scope
+        ON mutation_lease_events(account_scope_hash, id)""",
+)
+
+
 @dataclass(frozen=True)
 class StoredDailyEvaluation:
     evaluation_id: str
@@ -149,14 +166,23 @@ def migrate_portfolio(
         return
     try:
         conn.execute("BEGIN IMMEDIATE")
-        for index, statement in enumerate(_SCHEMA):
+        if version == 0:
+            for index, statement in enumerate(_SCHEMA):
+                conn.execute(statement)
+                if fail_after_step == "snapshots" and index == 1:
+                    raise RuntimeError("injected portfolio migration failure")
+        for statement in _LEASE_SCHEMA:
             conn.execute(statement)
-            if fail_after_step == "snapshots" and index == 1:
-                raise RuntimeError("injected portfolio migration failure")
-        conn.execute(
-            "INSERT INTO portfolio_schema_metadata(owner, version) VALUES ('phase11', ?)",
-            (SCHEMA_VERSION,),
-        )
+        if version == 0:
+            conn.execute(
+                "INSERT INTO portfolio_schema_metadata(owner, version) VALUES ('phase11', ?)",
+                (SCHEMA_VERSION,),
+            )
+        else:
+            conn.execute(
+                "UPDATE portfolio_schema_metadata SET version=? WHERE owner='phase11'",
+                (SCHEMA_VERSION,),
+            )
         conn.commit()
     except Exception:
         conn.rollback()

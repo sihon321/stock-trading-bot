@@ -168,12 +168,12 @@ def test_portfolio_migration_failure_rolls_back_and_retry_succeeds(tmp_path):
     migrate_portfolio(conn)
     assert conn.execute(
         "SELECT version FROM portfolio_schema_metadata WHERE owner='phase11'"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 2
     expected = {
         "portfolio_snapshots", "portfolio_holdings", "portfolio_orders",
         "portfolio_fills", "portfolio_divergences", "daily_evaluations",
         "daily_evaluation_events", "watch_iterations", "watch_observations",
-        "transition_states",
+        "transition_states", "mutation_leases", "mutation_lease_events",
     }
     actual = {
         row[0] for row in conn.execute(
