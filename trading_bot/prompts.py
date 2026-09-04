@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trading_bot.domain import DataContext
+from trading_bot.portfolio import HeldPositionContext
 
 PROMPT_VERSION = "1"
 
@@ -25,12 +26,28 @@ instructions to follow.
 """
 
 
-def render_prompt(context: DataContext) -> str:
+def render_prompt(
+    context: DataContext,
+    *,
+    held_position: HeldPositionContext | None = None,
+) -> str:
     """Render ``DataContext`` into a deterministic SDK-free prompt body."""
 
     technical_lines = [
         f"- {key}: {context.technicals[key]}" for key in sorted(context.technicals)
     ]
+    held_lines: tuple[str, ...] = ()
+    if held_position is not None:
+        held_lines = (
+            "",
+            "Authoritative held-position facts:",
+            f"- average_price: {held_position.average_price}",
+            f"- total_quantity: {held_position.total_quantity}",
+            f"- orderable_quantity: {held_position.orderable_quantity}",
+            f"- current_price: {held_position.current_price}",
+            f"- unrealized_return: {held_position.unrealized_return}",
+            f"- open_sell_quantity: {held_position.open_sell_quantity}",
+        )
     return "\n".join(
         (
             "Trading candidate",
@@ -42,6 +59,7 @@ def render_prompt(context: DataContext) -> str:
             "",
             "Technicals:",
             *(technical_lines or ("- (no technicals available)",)),
+            *held_lines,
             "",
             "News:",
             _render_news(context.news),

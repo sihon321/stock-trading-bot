@@ -42,6 +42,37 @@ class EvaluationTarget:
 
 
 @dataclass(frozen=True)
+class EvaluationUniverse:
+    """One attributable daily target per ticker plus account-wide authority."""
+
+    targets: tuple[EvaluationTarget, ...]
+    executable: bool
+    reason_code: str
+
+
+@dataclass(frozen=True)
+class HeldPositionContext:
+    """Trusted normalized position facts rendered separately from market text."""
+
+    average_price: float
+    total_quantity: int
+    orderable_quantity: int
+    current_price: float
+    unrealized_return: float
+    open_sell_quantity: int
+
+
+@dataclass(frozen=True)
+class TickerEvidenceVerdict:
+    """Pure per-target evidence decision; it never removes a daily target."""
+
+    status: str
+    decision: str
+    reason_code: str
+    executable: bool
+
+
+@dataclass(frozen=True)
 class PortfolioHolding:
     ticker: str
     total_quantity: int
@@ -235,6 +266,91 @@ def held_first_targets(
         for ticker in screened if ticker not in held_set
     )
     return tuple(result)
+
+
+def build_evaluation_universe(
+    snapshot: PortfolioSnapshot,
+    screened_candidates: Iterable[Any],
+) -> EvaluationUniverse:
+    """Build a deterministic held-first union from authoritative broker truth.
+
+    Holdings sort by ticker so provider row ordering cannot change evaluation
+    identity. Screened-only candidates retain screener rank order. A candidate
+    may be a ticker string or an object exposing a normalized ``ticker`` field;
+    raw provider mappings are intentionally not accepted here.
+    """
+
+    held_tickers = tuple(sorted({holding.ticker for holding in snapshot.holdings}))
+    screened_tickers: list[str] = []
+    for candidate in screened_candidates:
+        ticker = candidate if isinstance(candidate, str) else getattr(candidate, "ticker", "")
+        ticker = str(ticker)
+        if ticker and ticker not in screened_tickers:
+            screened_tickers.append(ticker)
+    executable = snapshot.mutation_capable
+    return EvaluationUniverse(
+        targets=held_first_targets(held_tickers, screened_tickers),
+        executable=executable,
+        reason_code="READY" if executable else "ACCOUNT_DATA_INCOMPLETE",
+    )
+
+
+def build_held_position_context(
+    snapshot: PortfolioSnapshot,
+    ticker: str,
+    *,
+    current_price: float,
+) -> HeldPositionContext | None:
+    """Return trusted held-position facts without retaining provider mappings."""
+
+    holding = next(
+        (item for item in snapshot.holdings if item.ticker == ticker),
+        None,
+    )
+    if holding is None:
+        return None
+    open_sell_quantity = sum(
+        order.remaining_quantity
+        for order in snapshot.orders
+        if order.ticker == ticker
+        and order.side == "SELL"
+        and not order.terminal
+        and order.status in {"OPEN", "PARTIAL", "NO_FILL"}
+    )
+    unrealized_return = (
+        (float(current_price) - holding.average_price) / holding.average_price
+        if holding.average_price > 0
+        else 0.0
+    )
+    return HeldPositionContext(
+        average_price=holding.average_price,
+        total_quantity=holding.total_quantity,
+        orderable_quantity=holding.orderable_quantity,
+        current_price=float(current_price),
+        unrealized_return=unrealized_return,
+        open_sell_quantity=open_sell_quantity,
+    )
+
+
+def evaluate_ticker_evidence(
+    universe: EvaluationUniverse,
+    target: EvaluationTarget,
+    *,
+    market_evidence_available: bool,
+) -> TickerEvidenceVerdict:
+    """Keep ticker-local market gaps attributable while preserving global block."""
+
+    if target not in universe.targets:
+        raise ValueError("target must belong to the evaluation universe")
+    if not universe.executable:
+        return TickerEvidenceVerdict(
+            "DATA_INCOMPLETE", "HOLD", "ACCOUNT_DATA_INCOMPLETE", False
+        )
+    if not market_evidence_available:
+        return TickerEvidenceVerdict(
+            "DATA_INCOMPLETE", "HOLD", "MARKET_DATA_INCOMPLETE", False
+        )
+    return TickerEvidenceVerdict("READY", "HOLD", "READY", True)
 
 
 def _matches_unresolved(order: PortfolioOrder, unresolved: Mapping[str, Any]) -> bool:
