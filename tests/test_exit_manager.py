@@ -251,7 +251,7 @@ def test_money_boundary_refreshes_regates_asserts_and_posts_once(side: OrderSide
 
     assert result == "KIS-1"
     assert adapter.post_attempts == 1
-    assert adapter.orders[0].quantity == 3
+    assert adapter.orders[0].quantity == (3 if side is OrderSide.SELL else 7)
     assert adapter.orders[0].limit_price.amount == 70_111.0
     assert sequence.index("INTENT_CREATED") < sequence.index("refresh")
     assert sequence.index("refresh") < sequence.index("lease")

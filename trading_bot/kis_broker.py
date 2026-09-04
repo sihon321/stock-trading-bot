@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time as dt_time
+import hashlib
 from typing import Any, Callable, Dict, Optional, Protocol, Sequence
 import uuid
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ from trading_bot.kis_order import (
 )
 from trading_bot.market_cycle import MarketCyclePolicy, QuoteObservation
 from trading_bot.audit_models import FreshnessEvidence, OrderEvent, OrderEventType, sanitize_detail
+from trading_bot.portfolio import PortfolioSnapshot
 
 
 class MarketClosedError(RuntimeError):
@@ -111,8 +113,11 @@ class KISBroker:
     def place_order(
         self, order: Order, *, order_intent_id: Optional[str] = None,
         origin_run_id: Optional[str] = None, observer_run_id: Optional[str] = None,
+        portfolio_refresh: Optional[Callable[[str], PortfolioSnapshot]] = None,
+        lease_guard: Any = None,
+        cycle_snapshot_id: Optional[str] = None,
     ) -> str:
-        """Place a KIS order after query-before-POST reconciliation."""
+        """Place one order through the fresh-truth, evidence-first boundary."""
 
         self._preflight()
         intent_id = order_intent_id or str(uuid.uuid4())
@@ -127,12 +132,34 @@ class KISBroker:
             detail={"local_client_ref": client_ref, "snapped_price": snapped_price},
         ))
 
+        if (portfolio_refresh is None) != (lease_guard is None):
+            raise MarketClosedError(
+                "KIS order skipped: portfolio refresh and lease guard are both required"
+            )
+        refresh_snapshot: PortfolioSnapshot | None = None
+        if portfolio_refresh is not None:
+            try:
+                refresh_snapshot = portfolio_refresh(order.ticker.value)
+                order = self._regate_order(order, refresh_snapshot)
+            except MarketClosedError:
+                raise
+            except Exception:
+                raise MarketClosedError(
+                    "KIS order skipped: affected-ticker portfolio refresh failed"
+                ) from None
+
         existing = self._find_existing_order(order)
         self._emit(OrderEvent(
             order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
             ticker=order.ticker.value, event_type=OrderEventType.DUPLICATE_CHECKED,
             side=order.side.value, requested_qty=order.quantity,
             broker_order_id=existing, broker_status="MATCHED" if existing else "CLEAR",
+            detail={
+                "cycle_snapshot_id": cycle_snapshot_id,
+                "refresh_snapshot_id": (
+                    refresh_snapshot.snapshot_id if refresh_snapshot is not None else None
+                ),
+            },
         ))
         if existing is not None:
             self._last_reconciliation = OrderReconciliation(
@@ -187,11 +214,50 @@ class KISBroker:
                 ))
             if not passed:
                 raise MarketClosedError("KIS order skipped: pre-submit quote is stale")
+            quote_money = getattr(quote, "price", None)
+            if not isinstance(quote_money, Money):
+                raise MarketClosedError("KIS order skipped: quote price is invalid")
+            order = replace(order, limit_price=quote_money)
+            if refresh_snapshot is not None and order.side is OrderSide.BUY:
+                affordable = int(
+                    refresh_snapshot.account.available_cash // quote_money.amount
+                )
+                if affordable <= 0:
+                    raise MarketClosedError("KIS order skipped: BUY cash gate cleared")
+                order = replace(order, quantity=min(order.quantity, affordable))
+            snapped_price = snap_to_tick(order.limit_price.amount, side=order.side)
+        if lease_guard is not None:
+            expected_scope = getattr(lease_guard, "account_scope_hash", None)
+            if (
+                expected_scope is not None
+                and refresh_snapshot is not None
+                and expected_scope != refresh_snapshot.account_scope_hash
+            ):
+                raise MarketClosedError("KIS order skipped: account scope changed")
+            try:
+                lease_guard.assert_active_owner()
+            except Exception:
+                raise MarketClosedError(
+                    "KIS order skipped: mutation ownership lost"
+                ) from None
+        owner_token = str(getattr(lease_guard, "owner_token", ""))
+        owner_token_hash = (
+            hashlib.sha256(owner_token.encode("utf-8")).hexdigest()
+            if owner_token
+            else None
+        )
         self._emit(OrderEvent(
             order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
             ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ATTEMPTED,
             submission_id=submission_id, side=order.side.value,
             requested_qty=order.quantity,
+            detail={
+                "cycle_snapshot_id": cycle_snapshot_id,
+                "refresh_snapshot_id": (
+                    refresh_snapshot.snapshot_id if refresh_snapshot is not None else None
+                ),
+                "lease_owner_fingerprint": owner_token_hash,
+            },
         ))
         try:
             result = self._order_adapter.place_order_cash(
@@ -244,6 +310,37 @@ class KISBroker:
             broker_status="FILLED" if fill.remaining_qty == 0 else "PARTIAL",
         ))
         return result.order_id
+
+    @staticmethod
+    def _regate_order(order: Order, snapshot: PortfolioSnapshot) -> Order:
+        """Recalculate a current order from complete affected-ticker truth."""
+
+        if not isinstance(snapshot, PortfolioSnapshot) or not snapshot.mutation_capable:
+            raise MarketClosedError("KIS order skipped: portfolio truth is incomplete")
+        if any(
+            item.ticker == order.ticker.value
+            and item.side == "SELL"
+            and item.status in {"OPEN", "PARTIAL"}
+            for item in snapshot.orders
+        ):
+            raise MarketClosedError(
+                "KIS order skipped: open SELL requires reconciliation"
+            )
+        if order.side is OrderSide.SELL:
+            holding = next(
+                (
+                    item
+                    for item in snapshot.holdings
+                    if item.ticker == order.ticker.value
+                ),
+                None,
+            )
+            if holding is None or holding.orderable_quantity <= 0:
+                raise MarketClosedError("KIS order skipped: no orderable holding")
+            return replace(order, quantity=holding.orderable_quantity)
+        if snapshot.account.available_cash <= 0:
+            raise MarketClosedError("KIS order skipped: no available cash")
+        return order
 
     def reconcile_order(
         self, *, order_intent_id: str, origin_run_id: str, observer_run_id: str,

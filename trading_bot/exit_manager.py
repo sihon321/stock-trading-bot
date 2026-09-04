@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from trading_bot.portfolio import PortfolioOrder, PortfolioSnapshot
+from trading_bot.domain import Money, Order, OrderSide, Ticker
 from trading_bot.risk import RiskAction, RiskDecision
 
 
@@ -139,4 +140,38 @@ def evaluate_exit_candidate(
         holding.orderable_quantity,
         "EXIT_READY",
         trigger,
+    )
+
+
+def submit_exit(
+    result: ExitResult,
+    *,
+    broker: object,
+    limit_price: Money,
+    portfolio_refresh: object,
+    lease_guard: object,
+    cycle_snapshot_id: str,
+    origin_run_id: str,
+) -> str | None:
+    """Submit only a current ``SUBMIT`` result through the KIS boundary."""
+
+    if result.disposition is not ExitDisposition.SUBMIT or result.quantity <= 0:
+        return None
+    order = Order(
+        Ticker(result.ticker),
+        OrderSide.SELL,
+        result.quantity,
+        limit_price,
+    )
+    place_order = getattr(broker, "place_order")
+    return str(
+        place_order(
+            order,
+            order_intent_id=f"{origin_run_id}:{result.ticker}:SELL",
+            origin_run_id=origin_run_id,
+            observer_run_id=origin_run_id,
+            portfolio_refresh=portfolio_refresh,
+            lease_guard=lease_guard,
+            cycle_snapshot_id=cycle_snapshot_id,
+        )
     )

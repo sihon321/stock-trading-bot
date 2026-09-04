@@ -143,15 +143,33 @@ RunCycleFn = Callable[..., ExecutionResult]
 class _LeaseGuardedBroker:
     """Prove current account ownership at the final broker POST boundary."""
 
-    def __init__(self, broker: Any, lease: Any) -> None:
+    def __init__(
+        self,
+        broker: Any,
+        lease: Any,
+        portfolio_refresh: Optional[Callable[[str], PortfolioSnapshot]] = None,
+        cycle_snapshot_id: Optional[str] = None,
+    ) -> None:
         self._broker = broker
         self._lease = lease
+        self._portfolio_refresh = portfolio_refresh
+        self._cycle_snapshot_id = cycle_snapshot_id
 
     def get_position(self, ticker: Ticker) -> Any:
         return self._broker.get_position(ticker)
 
     def place_order(self, order: Any, **kwargs: Any) -> Any:
-        self._lease.assert_active_owner()
+        if isinstance(self._broker, KISBroker):
+            refresh = self._portfolio_refresh
+            kwargs.update(
+                portfolio_refresh=(
+                    (lambda _ticker: refresh()) if refresh is not None else None
+                ),
+                lease_guard=self._lease,
+                cycle_snapshot_id=self._cycle_snapshot_id,
+            )
+        else:
+            self._lease.assert_active_owner()
         return self._broker.place_order(order, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -1423,7 +1441,12 @@ def run_cycle(
                         raise RuntimeError("ACCOUNT_DATA_INCOMPLETE")
                 context = resolved_data_source.build_context(Ticker(symbol))
                 active_broker = (
-                    _LeaseGuardedBroker(resolved_broker, mutation_lease)
+                    _LeaseGuardedBroker(
+                        resolved_broker,
+                        mutation_lease,
+                        portfolio_snapshot_reader,
+                        phase11_snapshot.snapshot_id if phase11_snapshot else None,
+                    )
                     if phase11_enabled else resolved_broker
                 )
                 available_cash = (
