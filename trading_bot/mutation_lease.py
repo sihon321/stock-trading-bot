@@ -13,9 +13,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from trading_bot.audit_models import MutationLeaseEventType, MutationLeaseState
+from trading_bot.portfolio import PortfolioCompleteness, PortfolioSnapshot
+from trading_bot.portfolio_store import append_portfolio_snapshot
 
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -238,6 +240,108 @@ class MutationLease:
             self._mark_lost(stamp)
             raise LeaseOwnershipLost("mutation lease renewal failed")
 
+    def _transition_recovery(
+        self,
+        target: MutationLeaseState,
+        event_type: MutationLeaseEventType,
+        *,
+        observed_at: datetime,
+        detail: Mapping[str, Any] | None = None,
+    ) -> None:
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                """UPDATE mutation_leases SET state=?, heartbeat_at=?
+                   WHERE account_scope_hash=? AND owner_token=? AND state=?""",
+                (
+                    target.value,
+                    observed_at.isoformat(),
+                    self.account_scope_hash,
+                    self.owner_token,
+                    MutationLeaseState.RECOVERY.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                self._mark_lost(observed_at)
+                raise LeaseOwnershipLost("recovery ownership was lost")
+            _event(
+                self._conn,
+                scope=self.account_scope_hash,
+                token=self.owner_token,
+                event_type=event_type,
+                from_state=MutationLeaseState.RECOVERY.value,
+                to_state=target,
+                origin_cycle_id=self.prior_cycle_id,
+                observer_cycle_id=self.cycle_id,
+                observed_at=observed_at,
+                detail=detail,
+            )
+            self._conn.commit()
+            self.state = target
+        except (LeaseOwnershipLost, LeaseRecoveryBlocked):
+            raise
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def recover_to_active(
+        self,
+        *,
+        terminalize_prior_cycles: Callable[[], Any],
+        query_fresh_snapshot: Callable[[], PortfolioSnapshot],
+        reconcile_prior_orders: Callable[[PortfolioSnapshot], Any],
+        observed_at: datetime | None = None,
+    ) -> PortfolioSnapshot:
+        """Recover abandoned evidence with no POST authority until every proof passes."""
+
+        stamp = _aware(observed_at)
+        if self.closed or self.state is not MutationLeaseState.RECOVERY:
+            raise LeaseOwnershipLost("lease is not the current recovery owner")
+        try:
+            terminalized = terminalize_prior_cycles()
+            if terminalized is False:
+                raise LeaseRecoveryBlocked("prior cycles could not be terminalized")
+            snapshot = query_fresh_snapshot()
+            if not isinstance(snapshot, PortfolioSnapshot):
+                raise LeaseRecoveryBlocked("recovery requires a portfolio snapshot")
+            if (
+                snapshot.completeness is not PortfolioCompleteness.COMPLETE
+                or not snapshot.mutation_capable
+                or snapshot.account_scope_hash != self.account_scope_hash
+                or snapshot.observed_at < self.acquired_at
+            ):
+                raise LeaseRecoveryBlocked("fresh complete broker truth was not proven")
+            append_portfolio_snapshot(
+                self._conn,
+                snapshot,
+                cycle_id=self.cycle_id,
+                observation_id=f"recovery-{uuid.uuid4()}",
+            )
+            reconciliation = reconcile_prior_orders(snapshot)
+            if not _reconciliation_is_determinate(reconciliation):
+                raise LeaseRecoveryBlocked("prior broker subjects remain unresolved")
+            self._transition_recovery(
+                MutationLeaseState.ACTIVE,
+                MutationLeaseEventType.ACTIVE,
+                observed_at=stamp,
+                detail={"snapshot_id": snapshot.snapshot_id},
+            )
+            return snapshot
+        except LeaseOwnershipLost:
+            raise
+        except Exception as exc:
+            if self.state is MutationLeaseState.RECOVERY:
+                self._transition_recovery(
+                    MutationLeaseState.RECOVERY_BLOCKED,
+                    MutationLeaseEventType.RECOVERY_BLOCKED,
+                    observed_at=stamp,
+                    detail={"failure": type(exc).__name__},
+                )
+            if isinstance(exc, LeaseRecoveryBlocked):
+                raise
+            raise LeaseRecoveryBlocked("recovery callback failed") from exc
+
     def release(self, *, observed_at: datetime | None = None) -> None:
         if self.closed:
             return
@@ -425,10 +529,79 @@ def acquire_mutation_lease(
     )
 
 
+def _reconciliation_is_determinate(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Mapping):
+        return value.get("determinate") is True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return all(_reconciliation_is_determinate(item) for item in value)
+    return False
+
+
+def recover_to_active(
+    lease: MutationLease,
+    *,
+    terminalize_prior_cycles: Callable[[], Any],
+    query_fresh_snapshot: Callable[[], PortfolioSnapshot],
+    reconcile_prior_orders: Callable[[PortfolioSnapshot], Any],
+    observed_at: datetime | None = None,
+) -> PortfolioSnapshot:
+    return lease.recover_to_active(
+        terminalize_prior_cycles=terminalize_prior_cycles,
+        query_fresh_snapshot=query_fresh_snapshot,
+        reconcile_prior_orders=reconcile_prior_orders,
+        observed_at=observed_at,
+    )
+
+
+def release_after_reconciliation(
+    lease: MutationLease,
+    *,
+    reconcile_submitted: Callable[[], Any],
+    terminalize_cycle: Callable[[], Any],
+    observed_at: datetime | None = None,
+) -> bool:
+    """Reconcile bounded submitted work, terminalize evidence, then unlock."""
+
+    determinate = False
+    try:
+        try:
+            determinate = _reconciliation_is_determinate(reconcile_submitted())
+        except Exception:
+            determinate = False
+        terminalize_cycle()
+        return determinate
+    finally:
+        lease.release(observed_at=observed_at)
+
+
+def stop_after_ownership_loss(
+    lease: MutationLease,
+    *,
+    reconcile_submitted: Callable[[], Any],
+    terminalize_cycle: Callable[[], Any],
+    observed_at: datetime | None = None,
+) -> bool:
+    """Use the common no-new-POST shutdown path after owner-token loss."""
+
+    if lease.state is not MutationLeaseState.LOST:
+        lease._mark_lost(_aware(observed_at))
+    return release_after_reconciliation(
+        lease,
+        reconcile_submitted=reconcile_submitted,
+        terminalize_cycle=terminalize_cycle,
+        observed_at=observed_at,
+    )
+
+
 __all__ = [
     "LeaseBusyError",
     "LeaseOwnershipLost",
     "LeaseRecoveryBlocked",
     "MutationLease",
     "acquire_mutation_lease",
+    "recover_to_active",
+    "release_after_reconciliation",
+    "stop_after_ownership_loss",
 ]
