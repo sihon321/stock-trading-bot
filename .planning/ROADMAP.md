@@ -36,7 +36,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 
 **Milestone Goal:** Complete the broker-backed buy-hold-sell lifecycle and produce realistic, attributable strategy evidence without granting analysis tools execution authority.
 
-- [ ] **Phase 11: KIS Portfolio Synchronization & Intraday Exit Management** — Synchronize broker-held positions and safely operate daily and intraday exit paths while Phase 9 elapsed-day evidence continues collecting.
+- [x] **Phase 11: KIS Portfolio Synchronization & Intraday Exit Management** — Synchronize broker-held positions and safely operate daily and intraday exit paths while Phase 9 elapsed-day evidence continues collecting. (completed 2026-09-04)
 - [ ] **Phase 12: Full Portfolio Backtesting & Market Friction Modeling** — Evaluate the strategy chronologically across a portfolio with realistic fills, Korean fees and taxes, slippage, and no look-ahead.
 - [ ] **Phase 13: Historical LLM Shadow Evaluation & Model Governance** — Compare optional historical LLM signals under a cost-controlled, fully attributable, non-executable shadow workflow.
 
@@ -243,7 +243,7 @@ Plans:
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete   | 2026-08-10 |
-| 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 5/6 | In Progress|  |
+| 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 6/6 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/TBD | Not Planned |  |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
@@ -264,7 +264,7 @@ Plans:
   3. The daily LLM cycle can SELL a held position while intraday deterministic risk checks can exit without repeated LLM calls.
   4. Partial fills, cancellation, ambiguity, restart, and duplicate invocation cannot oversell or create a second unjustified POST.
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 
 Plans:
 **Wave 1**
@@ -289,7 +289,7 @@ Plans:
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 11-06-PLAN.md — Add transition alerts, fail-closed evidence, runbook integration, and final regression coverage.
+- [x] 11-06-PLAN.md — Add transition alerts, fail-closed evidence, runbook integration, and final regression coverage.
 
 ### Phase 12: Full Portfolio Backtesting & Market Friction Modeling
 
