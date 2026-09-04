@@ -71,6 +71,45 @@ class OrderEventType(StrEnum):
     FRESHNESS_CHECKED = "FRESHNESS_CHECKED"
 
 
+class DailyEvaluationStatus(StrEnum):
+    STARTED = "STARTED"
+    FINALIZED = "FINALIZED"
+
+
+class DailyEvaluationEventType(StrEnum):
+    INPUT_COMMITTED = "INPUT_COMMITTED"
+    PROVIDER_ATTEMPT = "PROVIDER_ATTEMPT"
+    SIGNAL_FINALIZED = "SIGNAL_FINALIZED"
+    LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
+
+
+@dataclass(frozen=True)
+class DailyEvaluationEvent:
+    evaluation_id: str
+    event_type: DailyEvaluationEventType
+    action: str | None
+    confidence: float | None
+    reason_code: str | None
+    detail: Mapping[str, str | int | float | bool | None]
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.evaluation_id:
+            raise ValueError("evaluation_id is required")
+        object.__setattr__(self, "event_type", DailyEvaluationEventType(self.event_type))
+        if self.action is not None and self.action not in {"BUY", "SELL", "HOLD"}:
+            raise ValueError("action must be BUY, SELL, or HOLD")
+        if self.confidence is not None and not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between zero and one")
+        if self.reason_code is not None and re.fullmatch(
+            r"[A-Z][A-Z0-9_]{0,63}", self.reason_code
+        ) is None:
+            raise ValueError("reason_code must be a bounded stable code")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        object.__setattr__(self, "detail", MappingProxyType(sanitize_detail(self.detail)))
+
+
 class NotificationKind(StrEnum):
     IMMEDIATE_ERROR = "IMMEDIATE_ERROR"
     FINAL_SUMMARY = "FINAL_SUMMARY"
