@@ -196,3 +196,51 @@ audit failure나 interruption 뒤에는 미완료 controller contract를 새 con
 검토 코드는 `REPLAY_VERIFIED`, `SOAK_ACCEPTED`, `REPORTS_COMPLETE`, `ORDERS_RESOLVED`, `CALIBRATION_VALID`, `POLICY_FROZEN`, `ROLLBACK_ACK`, `KILL_ACK`, `MANUAL_APPROVAL`이다. 하나라도 `BLOCK`/`UNKNOWN`이면 최종 결과는 `BLOCKED`다. 활성 ambiguity/freeze는 차단하지만 determinate하게 해결된 과거 ambiguity는 warning으로 남긴다.
 
 이 보고 명령은 설정을 쓰거나 `TRADING_MODE=real`을 활성화하지 않고, 주문 제출·재제출·예약 실행·Phase 9 waiver·정책 자동 변경·수익성 주장을 하지 않는다. `READY`도 권한 토큰이 아니며 실제 전환은 별도 수동 절차다.
+
+## Phase 11 인트라데이 운영
+
+Phase 11도 운영자가 터미널에서 직접 시작하고 지켜보는 전경(foreground) 절차다. 일일 평가와 신호 생성은 `bot run`이 담당한다. 보유 종목의 순수 stop-loss/take-profit 재평가는 `bot intraday check` 한 번 또는 `bot intraday watch --interval-seconds 60`으로 수행하며 LLM을 만들거나 호출하지 않는다. 계정과 세션 상태의 읽기 전용 확인은 `bot status`를 사용한다.
+
+watch cadence는 60초 기본값이자 최솟값이다. 더 짧은 값은 KIS 런타임을 만들기 전에 exit code 2로 거부한다. 각 iteration은 새 ID와 새 KIS portfolio snapshot을 가지며 이전 snapshot의 주문 권한을 이어받지 않는다.
+
+| KST | lifecycle | 허용 동작 |
+|---|---|---|
+| 09:00 전 | `PREFLIGHT_READ_ONLY` | 계정·세션 상태만 읽고 신규 주문 POST는 하지 않는다. |
+| 09:00 이상 15:20 미만 | `ACTIVE` | COMPLETE인 현재 KIS 원장, 최신 quote, active lease가 모두 확인된 iteration만 limit SELL을 검토한다. |
+| 15:20 이상 15:30 미만 | `RECONCILE_ONLY` | 신규 POST 권한은 끝난다. 이미 제출된 intent의 주문·미체결·체결 상태만 조회하고 증거를 추가한다. |
+| 15:30 이상 | `TERMINAL` | reconciliation 후 watch를 종료하며 주문을 자동 취소하지 않는다. |
+
+`Ctrl-C`의 signal handler는 stop flag만 설정한다. 다음 안전 checkpoint에서 `STOPPING`으로 전이하며 순서는 **신규 POST 중단 → 제출 intent reconciliation → terminal 증거 저장 → lease 해제**다. signal handler는 원래 값으로 복원한다. 이미 보낸 주문을 취소하거나 같은 intent를 다시 보내지 않는다. restart 시 이전 mutable 상태가 있으면 `RECOVERY_ONLY`에서 시작하며 미해결 주문이 determinate해지기 전에는 `ACTIVE`로 가지 않는다.
+
+## Phase 11 안전 경계와 복구
+
+모든 알림은 bounded Korean text와 stable code만 포함한다. `INFO`는 시작·정상 종료·확정 체결, `WARNING`은 지속 장애 또는 `LONG_OPEN_ORDER`, `CRITICAL`은 `ORDER_AMBIGUOUS`, `LEASE_LOST`, broker truth 실패, `AUDIT_EVIDENCE_FAILED`에 사용한다. 같은 canonical state의 반복 관측은 매번 occurrence와 duration 증거를 추가하지만 begin 알림은 한 번만 보낸다. 상태 변경과 recovery 때만 새 알림을 보낸다.
+
+- `ACCOUNT_DATA_INCOMPLETE`: pagination 또는 필수 계정 필드가 불완전하다. 그 iteration은 BLOCKED이며 다음 iteration에서 현재 KIS 원장을 새로 조회한다.
+- `LEASE_BUSY`: 다른 mutable 명령의 pid, command, 시작 시각, 상태를 bounded metadata로 확인한다. observer fallback 없이 `bot status`만 읽는다.
+- `LEASE_LOST`: 신규 POST를 즉시 막고 제출 intent를 reconcile한 뒤 terminalize·release한다.
+- `ORDER_AMBIGUOUS`: 영향 티커를 동결하고 KIS 주문·미체결·체결을 같은 broker subject로 대조한다. 미접수로 추정하지 않는다.
+- `LONG_OPEN_ORDER`: 기본 900초가 지난 OPEN/PARTIAL 주문을 WARNING으로 표시한다. 상태가 바뀔 때까지 반복 알림은 보내지 않는다.
+- `TRANSPORT_FAILED`: 알림 전송 실패는 거래 결과를 바꾸지 않는 fail-soft다. 실패 attempt 증거를 확인하고 보고서를 직접 검토한다.
+- `AUDIT_EVIDENCE_FAILED`: notification-attempt 또는 필수 transition 증거 저장이 실패했다. 이후 신규 주문 권한을 제거하고 감사 저장소가 복구될 때까지 읽기만 한다.
+
+`OPEN/PARTIAL SELL은 reconciliation-only`이며 다른 SELL과 BUY를 모두 차단한다. quantity와 remaining state는 현재 KIS 원장만 권위가 있고 로컬 계산값은 권위가 아니다. 다음 금지선은 장애 중에도 완화하지 않는다.
+
+- 백그라운드 scheduler/service 금지
+- 자동 취소 금지
+- 시장가 주문 금지
+- 공격적 price chasing 금지
+- blind retry/resubmission 금지
+- 로컬 잔여수량 계산 금지
+- 실계좌 자동 승격 금지
+
+## Phase 11 인증 모의계좌 UAT
+
+이 체크리스트는 KIS 모의투자 자격 증명이 있는 운영자가 수동으로 수행하며 자동화 테스트를 대체하지 않는다. 계좌 번호, token, 원시 응답, 자격 증명은 보관하지 않고 stable ID·count·status만 포함한 sanitized evidence를 남긴다.
+
+- [ ] GET-only 계좌 조회에서 모든 pagination 페이지가 COMPLETE인지 확인한다.
+- [ ] snapshot에 보유수량, 주문가능수량, 평균단가, 주문, 체결, 예수금이 누락 없이 mapping되는지 확인한다.
+- [ ] 모의계좌의 bounded 1주 limit 주문으로 partial-fill 또는 no-fill을 관찰하고 동일 broker subject의 remaining 상태를 확인한다.
+- [ ] cancel은 운영자가 KIS 화면에서 수행한 외부 관측으로만 확인한다. bot의 자동 cancel 기능을 만들거나 호출하지 않는다.
+- [ ] 다음 조회에서 partial-fill/cancel 결과가 append-only reconciliation로 남고 로컬 잔여수량 계산이나 재제출이 없음을 확인한다.
+- [ ] artifact 공유 전 account 값, credential, raw payload, exception 본문이 없는 sanitized evidence인지 다시 검사한다.
