@@ -135,6 +135,12 @@ class Settings(BaseSettings):
     audit_db_path: str = "./data/audit.db"
     discord_webhook_url: Optional[SecretStr] = None
     order_timeout_seconds: float = 5.0
+    intraday_watch_interval_seconds: float = 60.0
+    intraday_min_interval_seconds: float = 60.0
+    intraday_reconciliation_timeout_seconds: float = 60.0
+    intraday_reconciliation_poll_seconds: float = 5.0
+    mutation_lease_heartbeat_seconds: float = 30.0
+    intraday_long_open_warning_seconds: float = 900.0
 
     @model_validator(mode="after")
     def validate_safety_gates(self) -> "Settings":
@@ -165,12 +171,22 @@ class Settings(BaseSettings):
             "naver_news_max_items": self.naver_news_max_items,
             "naver_news_max_chars": self.naver_news_max_chars,
             "order_timeout_seconds": self.order_timeout_seconds,
+            "intraday_min_interval_seconds": self.intraday_min_interval_seconds,
+            "intraday_reconciliation_timeout_seconds": self.intraday_reconciliation_timeout_seconds,
+            "intraday_reconciliation_poll_seconds": self.intraday_reconciliation_poll_seconds,
+            "mutation_lease_heartbeat_seconds": self.mutation_lease_heartbeat_seconds,
+            "intraday_long_open_warning_seconds": self.intraday_long_open_warning_seconds,
         }
         for name, value in positive_fields.items():
             if value <= 0:
                 raise ValueError(
                     f"{name} must be positive, got {value}"
                 )
+        if self.intraday_watch_interval_seconds < self.intraday_min_interval_seconds:
+            raise ValueError(
+                "intraday_watch_interval_seconds must be at least "
+                "intraday_min_interval_seconds"
+            )
 
     @property
     def active_kis(self) -> KisCredentialGroup:

@@ -54,7 +54,7 @@ def test_check_uses_new_snapshot_and_llm_free_risk_exit() -> None:
     )
 
     assert result.outcome is IntradayIterationOutcome.COMPLETED
-    assert calls == ["snapshot", "lease", "post", "COMPLETED"]
+    assert calls == ["snapshot", "lease", "lease", "post", "COMPLETED"]
 
 
 def test_incomplete_iteration_is_blocked_and_next_watch_iteration_queries_again() -> None:
@@ -118,7 +118,7 @@ def test_cutoff_reconciles_without_post_and_terminal_exits() -> None:
         interval_seconds=60,
     )
 
-    assert reconciles == ["reconciled"]
+    assert reconciles and set(reconciles) == {"reconciled"}
     assert watch.final_phase is IntradaySessionPhase.TERMINAL
 
 
@@ -127,7 +127,11 @@ def test_stop_request_interrupts_before_new_iteration_and_reconciles_then_releas
     lease = type(
         "Lease",
         (),
-        {"release_after_reconciliation": lambda self, **kwargs: sequence.append("release")},
+        {
+            "release_after_reconciliation": lambda self, **kwargs: (
+                kwargs["reconcile_submitted"](), sequence.append("release")
+            )
+        },
     )()
     watch = run_intraday_watch(
         clock=lambda: datetime(2026, 9, 4, 10, 0, tzinfo=KST),
