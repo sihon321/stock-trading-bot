@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
 from conftest import make_settings
 from trading_bot.domain import Money
@@ -163,3 +164,24 @@ def test_intraday_settings_defaults_and_bounds() -> None:
     ):
         with pytest.raises(ValidationError):
             make_settings(**{field: 0})
+
+
+def test_cli_exposes_check_watch_and_rejects_short_interval_before_runtime(monkeypatch) -> None:
+    from trading_bot import cli
+
+    calls = []
+    monkeypatch.setattr(cli, "_intraday_command_runner", lambda mode, interval: calls.append((mode, interval)))
+    runner = CliRunner()
+
+    root_help = runner.invoke(cli.app, ["--help"])
+    group_help = runner.invoke(cli.app, ["intraday", "--help"])
+    watch_help = runner.invoke(cli.app, ["intraday", "watch", "--help"])
+    invalid = runner.invoke(cli.app, ["intraday", "watch", "--interval-seconds", "59"])
+    check = runner.invoke(cli.app, ["intraday", "check"])
+
+    assert root_help.exit_code == group_help.exit_code == watch_help.exit_code == 0
+    assert "intraday" in root_help.stdout
+    assert "check" in group_help.stdout and "watch" in group_help.stdout
+    assert "--interval-seconds" in watch_help.stdout
+    assert invalid.exit_code == 2 and calls == [("check", None)]
+    assert check.exit_code == 0
