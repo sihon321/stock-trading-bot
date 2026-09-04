@@ -33,6 +33,8 @@ def render_prompt(
 ) -> str:
     """Render ``DataContext`` into a deterministic SDK-free prompt body."""
 
+    if held_position is None:
+        held_position = getattr(context, "held_position", None)
     technical_lines = [
         f"- {key}: {context.technicals[key]}" for key in sorted(context.technicals)
     ]

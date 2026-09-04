@@ -20,7 +20,7 @@ import typer
 
 from trading_bot.config import LLMProviderName, Settings, TradingMode, startup_banner
 from trading_bot.data_source import ObservedKRXCalendar, build_data_source
-from trading_bot.domain import Money, Ticker
+from trading_bot.domain import Decision, LLMSignal, Money, Ticker
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
 from trading_bot.kis_rate_limit import KisRequestLimiter
@@ -90,6 +90,22 @@ from trading_bot.soak_reporting import (
 )
 from trading_bot.reporting import ReadOnlyAuditRepository, build_daily_report
 from trading_bot.risk import DailyLossState, RiskConfig
+from trading_bot.portfolio import (
+    EvaluationProvenance,
+    EvaluationTarget,
+    PortfolioSnapshot,
+    build_evaluation_universe,
+    build_held_position_context,
+)
+from trading_bot.portfolio_store import (
+    append_daily_evaluation_event,
+    append_portfolio_snapshot,
+    migrate_portfolio,
+    recover_started_evaluations,
+    start_daily_evaluation,
+)
+from trading_bot.audit_models import DailyEvaluationEventType, DailyEvaluationStatus
+from trading_bot.prompts import render_prompt
 from trading_bot import sqlite_audit
 from trading_bot.audit_models import (
     FailedStage,
@@ -119,6 +135,130 @@ _soak_report_builder = build_soak_report
 _soak_report_renderer = render_soak_report
 
 RunCycleFn = Callable[..., ExecutionResult]
+
+
+class _LeaseGuardedBroker:
+    """Prove current account ownership at the final broker POST boundary."""
+
+    def __init__(self, broker: Any, lease: Any) -> None:
+        self._broker = broker
+        self._lease = lease
+
+    def get_position(self, ticker: Ticker) -> Any:
+        return self._broker.get_position(ticker)
+
+    def place_order(self, order: Any, **kwargs: Any) -> Any:
+        self._lease.assert_active_owner()
+        return self._broker.place_order(order, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._broker, name)
+
+
+class _FinalSignalProvider:
+    """Adapter for a committed daily signal; it has no external-call capability."""
+
+    def __init__(self, signal: LLMSignal) -> None:
+        self._signal = signal
+
+    def generate_signal(self, context: Any) -> LLMSignal:
+        return self._signal
+
+
+def _context_with_held_facts(context: Any, held_position: Any) -> Any:
+    if held_position is None:
+        return context
+    return SimpleNamespace(
+        ticker=context.ticker,
+        current_price=context.current_price,
+        technicals=context.technicals,
+        news=context.news,
+        held_position=held_position,
+    )
+
+
+def _terminal_daily_signal(evaluation: Any) -> LLMSignal:
+    terminal = next(
+        (
+            event for event in reversed(evaluation.events)
+            if event.event_type in {
+                DailyEvaluationEventType.SIGNAL_FINALIZED,
+                DailyEvaluationEventType.LLM_UNAVAILABLE,
+            }
+        ),
+        None,
+    )
+    if terminal is None:
+        raise RuntimeError("finalized daily evaluation has no terminal event")
+    if terminal.event_type is DailyEvaluationEventType.LLM_UNAVAILABLE:
+        return LLMSignal(Decision.HOLD, 0.0, terminal.reason_code or "LLM_UNAVAILABLE")
+    return LLMSignal(
+        Decision(str(terminal.action)),
+        float(terminal.confidence),
+        str(terminal.detail.get("reason") or terminal.reason_code or "daily signal"),
+    )
+
+
+def _load_or_generate_daily_signal(
+    *,
+    conn: sqlite3.Connection,
+    trading_date_kst: date,
+    target: EvaluationTarget,
+    context: Any,
+    account_scope_hash: str,
+    provider_factory: Callable[[], Any],
+    provider_cache: list[Any],
+    max_attempts: int,
+) -> tuple[LLMSignal, str]:
+    """Commit immutable input before bounded attempts, then reuse its terminal signal."""
+
+    canonical_input = render_prompt(context).encode("utf-8")
+    evaluation = start_daily_evaluation(
+        conn,
+        trading_date_kst=trading_date_kst,
+        ticker=target.ticker,
+        provenance=tuple(item.value for item in target.provenance),
+        canonical_input=canonical_input,
+        account_scope_hash=account_scope_hash,
+    )
+    if evaluation.status is DailyEvaluationStatus.FINALIZED:
+        return _terminal_daily_signal(evaluation), evaluation.evaluation_id
+
+    if not provider_cache:
+        provider_cache.append(provider_factory())
+    provider = provider_cache[0]
+    for attempt in range(1, max(1, int(max_attempts)) + 1):
+        append_daily_evaluation_event(
+            conn,
+            evaluation.evaluation_id,
+            event_type=DailyEvaluationEventType.PROVIDER_ATTEMPT,
+            detail={"attempt": attempt},
+        )
+        try:
+            signal = provider.generate_signal(context)
+        except Exception:
+            if attempt < max(1, int(max_attempts)):
+                continue
+            append_daily_evaluation_event(
+                conn,
+                evaluation.evaluation_id,
+                event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
+                action="HOLD",
+                reason_code="LLM_UNAVAILABLE",
+                detail={"attempts": attempt},
+            )
+            return LLMSignal(Decision.HOLD, 0.0, "LLM_UNAVAILABLE"), evaluation.evaluation_id
+        append_daily_evaluation_event(
+            conn,
+            evaluation.evaluation_id,
+            event_type=DailyEvaluationEventType.SIGNAL_FINALIZED,
+            action=signal.decision.value,
+            confidence=signal.confidence,
+            reason_code="FINAL_SIGNAL",
+            detail={"reason": signal.reason},
+        )
+        return signal, evaluation.evaluation_id
+    raise AssertionError("bounded provider loop must return")
 
 
 @dataclass(frozen=True)
@@ -988,6 +1128,7 @@ def run_cycle(
     settings: Optional[Settings] = None,
     data_source: Any = None,
     llm_provider: Any = None,
+    llm_provider_factory: Optional[Callable[[], Any]] = None,
     broker: Any = None,
     audit_conn: Optional[sqlite3.Connection] = None,
     notifier: Any = None,
@@ -998,6 +1139,8 @@ def run_cycle(
     kis_account: Optional[KisOrderAccount] = None,
     preflight_result: Optional[PreflightResult] = None,
     order_event_hook: Optional[Callable[[Any], None]] = None,
+    portfolio_snapshot_reader: Optional[Callable[[], PortfolioSnapshot]] = None,
+    mutation_lease: Any = None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
 
@@ -1014,9 +1157,8 @@ def run_cycle(
 
     resolved_trading_date = trading_date or _today_kst()
     fully_injected = all(
-        item is not None
-        for item in (data_source, llm_provider, broker, audit_conn, notifier)
-    )
+        item is not None for item in (data_source, broker, audit_conn, notifier)
+    ) and (llm_provider is not None or llm_provider_factory is not None)
     resolved_preflight = preflight_result
     if resolved_preflight is None:
         resolved_preflight = (
@@ -1033,21 +1175,46 @@ def run_cycle(
         raise SystemExit("preflight blocked: " + ",".join(blocking_codes))
 
     runtime: Optional[_Runtime] = None
-    if any(item is None for item in (data_source, llm_provider, broker, audit_conn, notifier)):
+    if (
+        any(item is None for item in (data_source, broker, audit_conn, notifier))
+        or (llm_provider is None and llm_provider_factory is None)
+    ):
         runtime = build_runtime(
             settings=resolved_settings,
             trading_date=resolved_trading_date,
             kis_account=kis_account,
         )
     resolved_data_source = data_source if data_source is not None else runtime.data_source
-    resolved_llm_provider = llm_provider if llm_provider is not None else runtime.llm_provider
+    resolved_llm_provider = (
+        llm_provider
+        if llm_provider is not None
+        else (runtime.llm_provider if runtime is not None else None)
+    )
     resolved_broker = broker if broker is not None else runtime.broker
     resolved_audit_conn = audit_conn if audit_conn is not None else runtime.audit_conn
     resolved_notifier = notifier if notifier is not None else runtime.notifier
     cycle_fn = run_cycle or _run_llm_cycle
+    provider_factory = llm_provider_factory or (lambda: resolved_llm_provider)
 
     resolved_run_id = run_id or uuid.uuid4().hex
     _ensure_audit_schema(resolved_audit_conn)
+    phase11_enabled = portfolio_snapshot_reader is not None
+    phase11_universe = None
+    phase11_snapshot = None
+    phase11_targets: dict[str, EvaluationTarget] = {}
+    provider_cache: list[Any] = []
+    if phase11_enabled:
+        if mutation_lease is None:
+            raise ValueError("Phase 11 portfolio orchestration requires a mutation lease")
+        migrate_portfolio(resolved_audit_conn)
+        recover_started_evaluations(resolved_audit_conn)
+        phase11_snapshot = portfolio_snapshot_reader()
+        append_portfolio_snapshot(
+            resolved_audit_conn,
+            phase11_snapshot,
+            cycle_id=resolved_run_id,
+            observation_id=f"{resolved_run_id}:cycle-start",
+        )
     sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
     sqlite_audit.start_run(
         resolved_audit_conn,
@@ -1097,9 +1264,19 @@ def run_cycle(
         if ticker is not None:
             tickers = [_validate_ticker(ticker)]
         else:
-            tickers = _candidate_tickers(
-                resolved_data_source.screen_daily_candidates(resolved_trading_date)
-            )
+            screened = resolved_data_source.screen_daily_candidates(resolved_trading_date)
+            if phase11_enabled:
+                assert phase11_snapshot is not None
+                phase11_universe = build_evaluation_universe(
+                    phase11_snapshot, _candidate_tickers(screened)
+                )
+                phase11_targets = {
+                    target.ticker: target for target in phase11_universe.targets
+                }
+                tickers = [target.ticker for target in phase11_universe.targets]
+            else:
+                tickers = _candidate_tickers(screened)
+        screened_refresh_done = False
         for symbol in tickers:
             correlation_id = f"{resolved_run_id}:{symbol}"
             frozen_reason = resolved_preflight.frozen_tickers.get(symbol)
@@ -1138,12 +1315,71 @@ def run_cycle(
                 continue
             terminal: TickerOutcome | None = None
             try:
+                target = phase11_targets.get(symbol)
+                if phase11_enabled and target is None:
+                    assert phase11_snapshot is not None
+                    provenance = (
+                        (EvaluationProvenance.HELD,)
+                        if any(item.ticker == symbol for item in phase11_snapshot.holdings)
+                        else (EvaluationProvenance.SCREENED,)
+                    )
+                    target = EvaluationTarget(symbol, provenance)
+                if (
+                    phase11_enabled
+                    and target is not None
+                    and target.provenance == (EvaluationProvenance.SCREENED,)
+                    and not screened_refresh_done
+                ):
+                    assert portfolio_snapshot_reader is not None
+                    phase11_snapshot = portfolio_snapshot_reader()
+                    append_portfolio_snapshot(
+                        resolved_audit_conn,
+                        phase11_snapshot,
+                        cycle_id=resolved_run_id,
+                        observation_id=f"{resolved_run_id}:post-held",
+                    )
+                    screened_refresh_done = True
+                if phase11_enabled:
+                    mutation_lease.assert_active_owner()
+                    if phase11_snapshot is None or not phase11_snapshot.mutation_capable:
+                        raise RuntimeError("ACCOUNT_DATA_INCOMPLETE")
                 context = resolved_data_source.build_context(Ticker(symbol))
+                active_broker = (
+                    _LeaseGuardedBroker(resolved_broker, mutation_lease)
+                    if phase11_enabled else resolved_broker
+                )
+                available_cash = (
+                    phase11_snapshot.account.available_cash
+                    if phase11_enabled and phase11_snapshot is not None
+                    else _available_cash(resolved_broker, resolved_settings)
+                )
+                provider_for_cycle = resolved_llm_provider
+                if phase11_enabled:
+                    assert target is not None and phase11_snapshot is not None
+                    held = build_held_position_context(
+                        phase11_snapshot,
+                        symbol,
+                        current_price=context.current_price.amount,
+                    )
+                    context = _context_with_held_facts(context, held)
+                    signal, _evaluation_id = _load_or_generate_daily_signal(
+                        conn=resolved_audit_conn,
+                        trading_date_kst=datetime.strptime(
+                            resolved_trading_date, "%Y%m%d"
+                        ).date(),
+                        target=target,
+                        context=context,
+                        account_scope_hash=phase11_snapshot.account_scope_hash,
+                        provider_factory=provider_factory,
+                        provider_cache=provider_cache,
+                        max_attempts=resolved_settings.llm_max_retries,
+                    )
+                    provider_for_cycle = _FinalSignalProvider(signal)
                 result = cycle_fn(
-                    resolved_llm_provider,
+                    provider_for_cycle,
                     context,
-                    broker=resolved_broker,
-                    available_cash=_available_cash(resolved_broker, resolved_settings),
+                    broker=active_broker,
+                    available_cash=available_cash,
                     execution_config=_execution_config(resolved_settings),
                     risk_config=_risk_config(resolved_settings),
                     daily_loss_state=_daily_loss_state(resolved_settings),

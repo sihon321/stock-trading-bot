@@ -72,9 +72,9 @@ class Notifier:
         return True
 
 
-def snapshot(*, cash=1_000_000.0, observed_second=0):
+def snapshot(*, cash=1_000_000.0, observed_second=0, snapshot_id=None):
     return PortfolioSnapshot(
-        snapshot_id=f"snapshot-{cash}-{observed_second}",
+        snapshot_id=snapshot_id or f"snapshot-{cash}-{observed_second}",
         account_scope_hash="a" * 64,
         trading_date=date(2026, 9, 4),
         previous_trading_date=date(2026, 9, 3),
@@ -91,12 +91,22 @@ def snapshot(*, cash=1_000_000.0, observed_second=0):
 
 
 def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
-           lease=None, cycle=None):
+           lease=None, cycle=None, candidates=("005930", "035420")):
     from trading_bot.cli import run_cycle
+
+    if reader is None:
+        read_index = [0]
+
+        def reader():
+            read_index[0] += 1
+            return snapshot(
+                observed_second=read_index[0],
+                snapshot_id=f"snapshot-{run_id}-{read_index[0]}",
+            )
 
     return run_cycle(
         settings=make_settings(llm_max_retries=2),
-        data_source=DataSource(),
+        data_source=DataSource(candidates),
         llm_provider_factory=factory,
         broker=Broker(),
         audit_conn=conn,
@@ -104,7 +114,7 @@ def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
         run_cycle=cycle,
         trading_date=trading_date,
         run_id=run_id,
-        portfolio_snapshot_reader=reader or (lambda: snapshot()),
+        portfolio_snapshot_reader=reader,
         mutation_lease=lease or Lease(),
     )
 
@@ -149,11 +159,9 @@ def test_started_crash_is_finalized_unavailable_and_never_calls_provider():
 
     result = invoke(conn, run_id="phase11-recovery", factory=lambda: Provider(calls))
 
-    assert calls == []
+    assert calls == ["035420"]
     assert result["outcomes"][0]["final_action"] == "HOLD"
     assert conn.execute(
-        "SELECT reason_code FROM daily_evaluation_events WHERE ticker IS NULL "
-        if False else
         "SELECT reason_code FROM daily_evaluation_events WHERE event_type='LLM_UNAVAILABLE'"
     ).fetchone() == ("LLM_UNAVAILABLE",)
 
@@ -168,6 +176,40 @@ def test_date_rollover_allows_one_new_provider_boundary():
 
     assert calls == ["005930", "035420", "005930", "035420"]
     assert conn.execute("SELECT COUNT(*) FROM daily_evaluations").fetchone() == (4,)
+
+
+def test_provider_retries_and_exhaustion_finalize_inside_one_identity():
+    conn = sqlite3.connect(":memory:")
+    retry_calls = []
+    retry_provider = Provider(retry_calls, failures=1)
+
+    invoke(
+        conn, run_id="phase11-retry", factory=lambda: retry_provider,
+        candidates=("005930",),
+    )
+
+    assert retry_calls == ["005930", "005930"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM daily_evaluation_events WHERE event_type='PROVIDER_ATTEMPT'"
+    ).fetchone() == (2,)
+
+    failed_conn = sqlite3.connect(":memory:")
+    failed_calls = []
+    failed_provider = Provider(failed_calls, failures=9)
+    invoke(
+        failed_conn, run_id="phase11-failed", factory=lambda: failed_provider,
+        candidates=("005930",),
+    )
+    invoke(
+        failed_conn, run_id="phase11-failed-replay",
+        factory=lambda: pytest.fail("final unavailable HOLD must be reused"),
+        candidates=("005930",),
+    )
+
+    assert failed_calls == ["005930", "005930"]
+    assert failed_conn.execute(
+        "SELECT COUNT(*) FROM daily_evaluation_events WHERE event_type='LLM_UNAVAILABLE'"
+    ).fetchone() == (1,)
 
 
 def test_reused_signal_rechecks_lease_before_execution_and_post_boundary():
