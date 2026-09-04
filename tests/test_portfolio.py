@@ -6,10 +6,15 @@ from trading_bot.kis_order import KisOrderAccount
 from trading_bot.portfolio import (
     DivergenceSeverity,
     EvaluationProvenance,
+    HeldPositionContext,
     PortfolioCompleteness,
+    build_evaluation_universe,
+    build_held_position_context,
     collect_portfolio_snapshot,
+    evaluate_ticker_evidence,
     held_first_targets,
 )
+from trading_bot.screener import ScreenerCandidate
 from trading_bot.soak_models import BrokerPageEnvelope, MockTrProfile, PageCompleteness
 
 
@@ -189,3 +194,96 @@ def test_held_first_union_deduplicates_overlap_and_preserves_provenance():
         EvaluationProvenance.SCREENED,
     )
     assert targets[-1].provenance == (EvaluationProvenance.SCREENED,)
+
+
+def test_snapshot_universe_sorts_holdings_then_preserves_screen_rank_and_overlap():
+    adapter = FakeAdapter(
+        [envelope()],
+        envelope(
+            {"pdno": "005930", "hldg_qty": "8", "ord_psbl_qty": "5", "pchs_avg_pric": "65000"},
+            {"pdno": "000660", "hldg_qty": "1", "ord_psbl_qty": "1", "pchs_avg_pric": "110000"},
+            summary={"dnca_tot_amt": "900000", "tot_evlu_amt": "1900000"},
+        ),
+    )
+    candidates = (
+        ScreenerCandidate("035420", "KOSPI", 9.0, 1_000_000.0),
+        ScreenerCandidate("005930", "KOSPI", 8.0, 1_000_000.0),
+        ScreenerCandidate("068270", "KOSPI", 7.0, 1_000_000.0),
+    )
+
+    universe = build_evaluation_universe(collect(adapter), candidates)
+
+    assert universe.executable is True
+    assert [target.ticker for target in universe.targets] == [
+        "000660", "005930", "035420", "068270"
+    ]
+    assert universe.targets[1].provenance == (
+        EvaluationProvenance.HELD,
+        EvaluationProvenance.SCREENED,
+    )
+    assert len({target.ticker for target in universe.targets}) == 4
+
+
+def test_incomplete_account_universe_is_visible_but_not_executable():
+    adapter = FakeAdapter(
+        [envelope()],
+        envelope(
+            {"pdno": "005930", "hldg_qty": "8", "ord_psbl_qty": "", "pchs_avg_pric": "65000"},
+            summary={"dnca_tot_amt": "900000", "tot_evlu_amt": "1900000"},
+        ),
+    )
+
+    universe = build_evaluation_universe(collect(adapter), ())
+
+    assert universe.executable is False
+    assert universe.reason_code == "ACCOUNT_DATA_INCOMPLETE"
+
+
+def test_held_context_uses_normalized_position_and_open_sell_quantity():
+    adapter = FakeAdapter(
+        [
+            envelope(
+                {
+                    "odno": "SELL-1", "pdno": "005930", "sll_buy_dvsn_cd": "01",
+                    "ord_qty": "4", "tot_ccld_qty": "1", "rmn_qty": "3",
+                    "ord_unpr": "70000",
+                }
+            )
+        ],
+        envelope(
+            {"pdno": "005930", "hldg_qty": "8", "ord_psbl_qty": "5", "pchs_avg_pric": "65000"},
+            summary={"dnca_tot_amt": "900000", "tot_evlu_amt": "1900000"},
+        ),
+    )
+
+    held = build_held_position_context(collect(adapter), "005930", current_price=71500.0)
+
+    assert held == HeldPositionContext(
+        average_price=65000.0,
+        total_quantity=8,
+        orderable_quantity=5,
+        current_price=71500.0,
+        unrealized_return=0.1,
+        open_sell_quantity=3,
+    )
+
+
+def test_ticker_market_gap_is_attributable_without_blocking_sibling():
+    adapter = FakeAdapter(
+        [envelope()],
+        envelope(
+            {"pdno": "005930", "hldg_qty": "8", "ord_psbl_qty": "5", "pchs_avg_pric": "65000"},
+            {"pdno": "000660", "hldg_qty": "1", "ord_psbl_qty": "1", "pchs_avg_pric": "110000"},
+            summary={"dnca_tot_amt": "900000", "tot_evlu_amt": "1900000"},
+        ),
+    )
+    universe = build_evaluation_universe(collect(adapter), ())
+
+    missing = evaluate_ticker_evidence(universe, universe.targets[0], market_evidence_available=False)
+    sibling = evaluate_ticker_evidence(universe, universe.targets[1], market_evidence_available=True)
+
+    assert (missing.status, missing.decision, missing.reason_code) == (
+        "DATA_INCOMPLETE", "HOLD", "MARKET_DATA_INCOMPLETE"
+    )
+    assert missing.executable is False
+    assert sibling.executable is True
