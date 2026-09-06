@@ -23,6 +23,7 @@ from trading_bot.audit_models import (
     TransitionNotification,
     TransitionObservation,
 )
+from trading_bot.mutation_lease import LeaseOwnershipLost, stop_after_ownership_loss
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -162,6 +163,9 @@ def run_intraday_check(
     exit_submitter: Callable[[ExitResult, Money], object],
     audit_sink: Callable[[IntradayIterationResult], object],
     mutation_guard: Callable[[], object] = lambda: None,
+    stop_requested: Callable[[], bool] = lambda: False,
+    terminalize: Callable[[IntradayIterationResult], object] = lambda result: None,
+    reconcile: Callable[[], object] = lambda: True,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
 
@@ -181,8 +185,18 @@ def run_intraday_check(
         audit_sink(result)
         return result
 
+    result: IntradayIterationResult | None = None
+    submitted = False
     try:
         snapshot = snapshot_reader()
+        if stop_requested():
+            result = IntradayIterationResult(
+                iteration_id, IntradaySessionPhase.STOPPING,
+                IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id, (),
+                "STOP_REQUESTED",
+            )
+            terminalize(result)
+            return result
         if not snapshot.mutation_capable:
             result = IntradayIterationResult(
                 iteration_id,
@@ -192,7 +206,6 @@ def run_intraday_check(
                 (),
                 "ACCOUNT_DATA_INCOMPLETE",
             )
-            audit_sink(result)
             return result
         getattr(lease, "assert_active_owner")()
         exits: list[ExitResult] = []
@@ -204,13 +217,35 @@ def run_intraday_check(
             )
             risk = evaluate_position_risk(position, quote, risk_config)
             trigger = evaluate_risk_exit_trigger(
-                ticker=holding.ticker, cycle_id=iteration_id, decision=risk
+                ticker=holding.ticker,
+                cycle_id=iteration_id,
+                decision=risk,
+                entry_price=holding.average_price,
+                stop_loss_pct=risk_config.stop_loss_pct,
+                take_profit_pct=risk_config.take_profit_pct,
             )
             candidate = evaluate_exit_candidate(trigger, snapshot)
             exits.append(candidate)
             if candidate.disposition is ExitDisposition.SUBMIT:
+                if stop_requested():
+                    result = IntradayIterationResult(
+                        iteration_id, IntradaySessionPhase.STOPPING,
+                        IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id,
+                        tuple(exits), "STOP_REQUESTED",
+                    )
+                    terminalize(result)
+                    return result
                 mutation_guard()
                 getattr(lease, "assert_active_owner")()
+                if stop_requested():
+                    result = IntradayIterationResult(
+                        iteration_id, IntradaySessionPhase.STOPPING,
+                        IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id,
+                        tuple(exits), "STOP_REQUESTED",
+                    )
+                    terminalize(result)
+                    return result
+                submitted = True
                 exit_submitter(candidate, quote)
         result = IntradayIterationResult(
             iteration_id,
@@ -220,6 +255,17 @@ def run_intraday_check(
             tuple(exits),
             "COMPLETED",
         )
+    except LeaseOwnershipLost:
+        result = IntradayIterationResult(
+            iteration_id, IntradaySessionPhase.STOPPING,
+            IntradayIterationOutcome.INTERRUPTED, None, (), "LEASE_OWNERSHIP_LOST",
+        )
+        terminalize(result)
+        if hasattr(lease, "state"):
+            stop_after_ownership_loss(
+                lease, reconcile_submitted=reconcile,
+                terminalize_cycle=lambda: None,
+            )
     except Exception:
         result = IntradayIterationResult(
             iteration_id,
@@ -229,14 +275,24 @@ def run_intraday_check(
             (),
             "ITERATION_FAILED",
         )
-    audit_sink(result)
+    finally:
+        if result is None:
+            result = IntradayIterationResult(
+                iteration_id, IntradaySessionPhase.STOPPING,
+                IntradayIterationOutcome.FAILED, None, (), "ITERATION_FAILED",
+            )
+        audit_sink(result)
     return result
 
 
-def _release(lease: object, reconcile: Callable[[], object]) -> None:
+def _release(
+    lease: object,
+    reconcile: Callable[[], object],
+    terminalize: Callable[[], object] = lambda: None,
+) -> None:
     method = getattr(lease, "release_after_reconciliation", None)
     if method is not None:
-        method(reconcile_submitted=reconcile, terminalize_cycle=lambda: None)
+        method(reconcile_submitted=reconcile, terminalize_cycle=terminalize)
         return
     reconcile()
     release = getattr(lease, "release", None)
@@ -259,6 +315,7 @@ def run_intraday_watch(
     interval_seconds: float = 60,
     max_iterations: int | None = None,
     mutation_guard: Callable[[], object] = lambda: None,
+    terminalize: Callable[[], object] = lambda: None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
@@ -271,12 +328,12 @@ def run_intraday_watch(
         if stop_requested():
             interrupted = True
             final_phase = IntradaySessionPhase.STOPPING
-            _release(lease, reconcile)
+            _release(lease, reconcile, terminalize)
             break
         now = clock()
         final_phase = session_phase_at(now)
         if final_phase is IntradaySessionPhase.TERMINAL:
-            _release(lease, reconcile)
+            _release(lease, reconcile, terminalize)
             break
         if final_phase is IntradaySessionPhase.RECONCILE_ONLY:
             reconcile()
@@ -291,7 +348,14 @@ def run_intraday_watch(
             exit_submitter=exit_submitter,
             audit_sink=audit_sink,
             mutation_guard=mutation_guard,
+            stop_requested=stop_requested,
+            reconcile=reconcile,
         )
         iterations.append(result)
+        if result.outcome is IntradayIterationOutcome.INTERRUPTED:
+            interrupted = True
+            final_phase = IntradaySessionPhase.STOPPING
+            _release(lease, reconcile, terminalize)
+            break
         sleeper(interval_seconds)
     return IntradayWatchResult(tuple(iterations), final_phase, interrupted)
