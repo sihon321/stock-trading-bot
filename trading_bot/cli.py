@@ -193,6 +193,9 @@ class _LeaseGuardedBroker:
                 ),
                 lease_guard=self._lease,
                 cycle_snapshot_id=self._cycle_snapshot_id,
+                trigger_revalidator=kwargs.get(
+                    "trigger_revalidator", lambda _snapshot, _quote: True
+                ),
             )
         else:
             self._lease.assert_active_owner()

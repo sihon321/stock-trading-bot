@@ -86,6 +86,7 @@ class KISBroker:
         pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
         clock: Optional[Callable[[], datetime]] = None,
         freshness_policy_version: str = "quote-freshness-v1",
+        _test_only_allow_unguarded_mutation: bool = False,
     ) -> None:
         self._order_adapter = order_adapter
         self._account = account
@@ -99,6 +100,21 @@ class KISBroker:
         self._pre_submit_quote_reader = pre_submit_quote_reader
         self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
         self._freshness_policy_version = freshness_policy_version
+        self._test_only_allow_unguarded_mutation = bool(
+            _test_only_allow_unguarded_mutation
+        )
+
+    @classmethod
+    def for_test_legacy_mutation(cls, **kwargs: Any) -> "KISBroker":
+        """Construct the sole offline-fixture compatibility seam.
+
+        Production composition must use paired fresh account truth, lease
+        authority, and source-decision revalidation.  This deliberately named
+        constructor exists only for legacy, non-network test fixtures.
+        """
+
+        kwargs["_test_only_allow_unguarded_mutation"] = True
+        return cls(**kwargs)
 
     def set_evidence_sink(self, sink: OrderEvidenceSink) -> None:
         self._evidence_sink = sink
@@ -120,6 +136,15 @@ class KISBroker:
     ) -> str:
         """Place one order through the fresh-truth, evidence-first boundary."""
 
+        paired_capability = (
+            portfolio_refresh is not None
+            and lease_guard is not None
+            and trigger_revalidator is not None
+        )
+        if not paired_capability and not self._test_only_allow_unguarded_mutation:
+            raise MarketClosedError(
+                "KIS order skipped: paired fresh truth, lease, and revalidator are required"
+            )
         self._preflight()
         intent_id = order_intent_id or str(uuid.uuid4())
         origin = origin_run_id or "unattributed"

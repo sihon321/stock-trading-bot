@@ -70,6 +70,21 @@ class _FakeOrderAdapter:
         )
 
 
+@pytest.fixture(autouse=True)
+def _explicit_legacy_test_fixture(monkeypatch, request):
+    """Keep pre-existing fixture coverage on the named non-production seam."""
+
+    if request.node.name == "test_unguarded_mutable_call_is_rejected_before_evidence_or_post":
+        return
+    import trading_bot.kis_broker as module
+
+    monkeypatch.setattr(
+        module,
+        "KISBroker",
+        module.KISBroker.for_test_legacy_mutation,
+    )
+
+
 def _order(quantity: int = 5, price: float = 74_321.0) -> Order:
     return Order(
         ticker=Ticker("005930"),

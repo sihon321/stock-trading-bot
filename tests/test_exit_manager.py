@@ -248,6 +248,7 @@ def test_money_boundary_refreshes_regates_asserts_and_posts_once(side: OrderSide
         portfolio_refresh=lambda ticker: (sequence.append("refresh"), _snapshot(orderable=3))[1],
         lease_guard=_Lease(sequence),
         cycle_snapshot_id="snapshot-current",
+        trigger_revalidator=lambda _snapshot, _quote: True,
     )
 
     assert result == "KIS-1"
@@ -281,6 +282,7 @@ def test_money_boundary_blocks_changed_truth_or_lease_loss_with_zero_post(side: 
                 portfolio_refresh=lambda ticker, value=snapshot: value,
                 lease_guard=lease,
                 cycle_snapshot_id="snapshot-current",
+                trigger_revalidator=lambda _snapshot, _quote: True,
             )
         assert adapter.post_attempts == 0
 
@@ -309,6 +311,7 @@ def test_money_boundary_evidence_failure_prevents_post_and_token_is_not_persiste
             portfolio_refresh=lambda ticker: _snapshot(orderable=3),
             lease_guard=_Lease([]),
             cycle_snapshot_id="snapshot-current",
+            trigger_revalidator=lambda _snapshot, _quote: True,
         )
     assert adapter.post_attempts == 0
     assert "owner-secret-token" not in repr(captured)
