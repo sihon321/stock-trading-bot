@@ -150,6 +150,30 @@ def test_stop_request_interrupts_before_new_iteration_and_reconciles_then_releas
     assert watch.interrupted is True
 
 
+def test_stop_after_snapshot_terminalizes_before_any_exit_submission() -> None:
+    sequence: list[str] = []
+    lease = type("Lease", (), {"assert_active_owner": lambda self: sequence.append("lease")})()
+    flags = iter((False, True))
+
+    result = run_intraday_check(
+        clock=lambda: datetime(2026, 9, 4, 10, 0, tzinfo=KST),
+        snapshot_reader=lambda: (sequence.append("snapshot"), _snapshot())[1],
+        quote_reader=lambda ticker: Money(80_000.0, "KRW"),
+        risk_config=RiskConfig(0.05, 0.10),
+        lease=lease,
+        exit_submitter=lambda candidate, price: sequence.append("post"),
+        audit_sink=lambda item: sequence.append(item.outcome.value),
+        stop_requested=lambda: next(flags),
+        terminalize=lambda item: sequence.append("terminalize"),
+        reconcile=lambda: sequence.append("reconcile"),
+    )
+
+    assert result.outcome is IntradayIterationOutcome.INTERRUPTED
+    assert result.reason_code == "STOP_REQUESTED"
+    assert "post" not in sequence
+    assert sequence[-2:] == ["terminalize", "INTERRUPTED"]
+
+
 def test_intraday_settings_defaults_and_bounds() -> None:
     settings = make_settings()
     assert settings.intraday_watch_interval_seconds == 60
