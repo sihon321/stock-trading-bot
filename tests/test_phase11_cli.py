@@ -160,10 +160,48 @@ def test_started_crash_is_finalized_unavailable_and_never_calls_provider():
     result = invoke(conn, run_id="phase11-recovery", factory=lambda: Provider(calls))
 
     assert calls == ["035420"]
-    assert result["outcomes"][0]["final_action"] == "HOLD"
+    assert result["outcomes"][0]["final_action"] == "HOLD", result["outcomes"][0]["order_reason"]
     assert conn.execute(
         "SELECT reason_code FROM daily_evaluation_events WHERE event_type='LLM_UNAVAILABLE'"
     ).fetchone() == ("LLM_UNAVAILABLE",)
+
+
+def test_held_market_failure_is_durable_hold_and_does_not_block_sibling():
+    class FailingHeldDataSource(DataSource):
+        def build_context(self, ticker):
+            self.contexts.append(ticker.value)
+            if ticker.value == "005930":
+                raise RuntimeError("raw provider error must not be persisted")
+            return super().build_context(ticker)
+
+    conn = sqlite3.connect(":memory:")
+    source = FailingHeldDataSource()
+    calls: list[str] = []
+    snapshots = iter(
+        (snapshot(snapshot_id="held-market-gap-1"), snapshot(snapshot_id="held-market-gap-2"))
+    )
+    from trading_bot.cli import run_cycle
+
+    result = run_cycle(
+        settings=make_settings(llm_max_retries=1),
+        data_source=source,
+        llm_provider_factory=lambda: Provider(calls),
+        broker=Broker(),
+        audit_conn=conn,
+        notifier=Notifier(),
+        trading_date="20260904",
+        run_id="held-market-gap",
+        portfolio_snapshot_reader=lambda: next(snapshots),
+        mutation_lease=Lease(),
+    )
+
+    assert result["outcomes"][0]["final_action"] == "HOLD", result["outcomes"][0]["order_reason"]
+    assert result["outcomes"][0]["order_reason"] == "DATA_INCOMPLETE"
+    assert calls == ["035420"]
+    assert conn.execute(
+        "SELECT action, reason_code FROM daily_evaluation_events "
+        "WHERE reason_code='DATA_INCOMPLETE'"
+    ).fetchone() == ("HOLD", "DATA_INCOMPLETE")
 
 
 def test_date_rollover_allows_one_new_provider_boundary():

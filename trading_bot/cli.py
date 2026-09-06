@@ -100,6 +100,7 @@ from trading_bot.portfolio import (
     build_held_position_context,
     canonical_account_scope_hash,
     collect_portfolio_snapshot,
+    evaluate_ticker_evidence,
 )
 from trading_bot.portfolio_store import (
     append_daily_evaluation_event,
@@ -1469,7 +1470,61 @@ def run_cycle(
                     mutation_lease.assert_active_owner()
                     if phase11_snapshot is None or not phase11_snapshot.mutation_capable:
                         raise RuntimeError("ACCOUNT_DATA_INCOMPLETE")
-                context = resolved_data_source.build_context(Ticker(symbol))
+                try:
+                    context = resolved_data_source.build_context(Ticker(symbol))
+                except Exception:
+                    if not (
+                        phase11_enabled
+                        and target is not None
+                        and EvaluationProvenance.HELD in target.provenance
+                        and phase11_universe is not None
+                        and phase11_snapshot is not None
+                    ):
+                        raise
+                    verdict = evaluate_ticker_evidence(
+                        phase11_universe, target, market_evidence_available=False
+                    )
+                    evaluation = start_daily_evaluation(
+                        resolved_audit_conn,
+                        trading_date_kst=datetime.strptime(
+                            resolved_trading_date, "%Y%m%d"
+                        ).date(),
+                        ticker=symbol,
+                        provenance=tuple(item.value for item in target.provenance),
+                        canonical_input=f"DATA_INCOMPLETE:{symbol}".encode("ascii"),
+                        account_scope_hash=phase11_snapshot.account_scope_hash,
+                    )
+                    if evaluation.status is DailyEvaluationStatus.STARTED:
+                        append_daily_evaluation_event(
+                            resolved_audit_conn,
+                            evaluation.evaluation_id,
+                            event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
+                            action=verdict.decision,
+                            reason_code="DATA_INCOMPLETE",
+                            detail={"market_evidence": "unavailable"},
+                        )
+                    outcomes.append({
+                        "ticker": symbol,
+                        "status": "data_incomplete",
+                        "final_action": verdict.decision,
+                        "parsed_decision": None,
+                        "confidence": None,
+                        "broker_order_id": None,
+                        "order_reason": "DATA_INCOMPLETE",
+                        "requested_qty": None,
+                        "filled_qty": None,
+                        "current_price": None,
+                        "correlation_id": correlation_id,
+                    })
+                    terminal = TickerOutcome(
+                        run_id=resolved_run_id,
+                        ticker=symbol,
+                        outcome_code=TickerOutcomeCode.NO_TRADE,
+                        reason_code=ReasonCode.HOLD_SIGNAL,
+                        detail={"correlation_id": correlation_id, "reason": "DATA_INCOMPLETE"},
+                        final_order_state="DATA_INCOMPLETE",
+                    )
+                    continue
                 active_broker = (
                     _LeaseGuardedBroker(
                         resolved_broker,
