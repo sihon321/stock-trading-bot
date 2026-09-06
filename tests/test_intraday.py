@@ -116,10 +116,11 @@ def test_cutoff_reconciles_without_post_and_terminal_exits() -> None:
         exit_submitter=lambda candidate, price: pytest.fail("cutoff must not POST"),
         audit_sink=lambda result: None,
         reconcile=lambda: reconciles.append("reconciled"),
+        terminalize=lambda: reconciles.append("terminalized"),
         interval_seconds=60,
     )
 
-    assert reconciles and set(reconciles) == {"reconciled"}
+    assert reconciles == ["reconciled", "terminalized", "reconciled"]
     assert watch.final_phase is IntradaySessionPhase.TERMINAL
 
 
@@ -130,6 +131,7 @@ def test_stop_request_interrupts_before_new_iteration_and_reconciles_then_releas
         (),
         {
             "release_after_reconciliation": lambda self, **kwargs: (
+                kwargs["terminalize_cycle"](),
                 kwargs["reconcile_submitted"](), sequence.append("release")
             )
         },
@@ -145,6 +147,7 @@ def test_stop_request_interrupts_before_new_iteration_and_reconciles_then_releas
         exit_submitter=lambda candidate, price: pytest.fail("stop must prevent POST"),
         audit_sink=lambda result: sequence.append("audit"),
         reconcile=lambda: sequence.append("reconcile"),
+        terminalize=lambda: sequence.append("terminalize"),
     )
     assert sequence == ["terminalize", "reconcile", "release"]
     assert watch.interrupted is True

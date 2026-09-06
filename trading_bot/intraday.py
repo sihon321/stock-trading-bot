@@ -164,7 +164,7 @@ def run_intraday_check(
     audit_sink: Callable[[IntradayIterationResult], object],
     mutation_guard: Callable[[], object] = lambda: None,
     stop_requested: Callable[[], bool] = lambda: False,
-    terminalize: Callable[[IntradayIterationResult], object] = lambda result: None,
+    terminalize: Callable[[IntradayIterationResult], object] | None = None,
     reconcile: Callable[[], object] = lambda: True,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
@@ -195,7 +195,8 @@ def run_intraday_check(
                 IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id, (),
                 "STOP_REQUESTED",
             )
-            terminalize(result)
+            if terminalize is not None:
+                terminalize(result)
             return result
         if not snapshot.mutation_capable:
             result = IntradayIterationResult(
@@ -233,7 +234,8 @@ def run_intraday_check(
                         IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id,
                         tuple(exits), "STOP_REQUESTED",
                     )
-                    terminalize(result)
+                    if terminalize is not None:
+                        terminalize(result)
                     return result
                 mutation_guard()
                 getattr(lease, "assert_active_owner")()
@@ -243,7 +245,8 @@ def run_intraday_check(
                         IntradayIterationOutcome.INTERRUPTED, snapshot.snapshot_id,
                         tuple(exits), "STOP_REQUESTED",
                     )
-                    terminalize(result)
+                    if terminalize is not None:
+                        terminalize(result)
                     return result
                 submitted = True
                 exit_submitter(candidate, quote)
@@ -260,12 +263,16 @@ def run_intraday_check(
             iteration_id, IntradaySessionPhase.STOPPING,
             IntradayIterationOutcome.INTERRUPTED, None, (), "LEASE_OWNERSHIP_LOST",
         )
-        terminalize(result)
         if hasattr(lease, "state"):
             stop_after_ownership_loss(
                 lease, reconcile_submitted=reconcile,
-                terminalize_cycle=lambda: None,
+                terminalize_cycle=(
+                    (lambda: terminalize(result))
+                    if terminalize is not None else (lambda: None)
+                ),
             )
+        elif terminalize is not None:
+            terminalize(result)
     except Exception:
         result = IntradayIterationResult(
             iteration_id,
@@ -288,12 +295,17 @@ def run_intraday_check(
 def _release(
     lease: object,
     reconcile: Callable[[], object],
-    terminalize: Callable[[], object] = lambda: None,
+    terminalize: Callable[[], object] | None = None,
 ) -> None:
+    if getattr(lease, "closed", False):
+        return
+    if terminalize is None:
+        raise RuntimeError("active intraday shutdown requires a terminalizer")
     method = getattr(lease, "release_after_reconciliation", None)
     if method is not None:
         method(reconcile_submitted=reconcile, terminalize_cycle=terminalize)
         return
+    terminalize()
     reconcile()
     release = getattr(lease, "release", None)
     if release is not None:
@@ -315,7 +327,7 @@ def run_intraday_watch(
     interval_seconds: float = 60,
     max_iterations: int | None = None,
     mutation_guard: Callable[[], object] = lambda: None,
-    terminalize: Callable[[], object] = lambda: None,
+    terminalize: Callable[[], object] | None = None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
@@ -350,6 +362,9 @@ def run_intraday_watch(
             mutation_guard=mutation_guard,
             stop_requested=stop_requested,
             reconcile=reconcile,
+            terminalize=(
+                (lambda result: terminalize()) if terminalize is not None else None
+            ),
         )
         iterations.append(result)
         if result.outcome is IntradayIterationOutcome.INTERRUPTED:

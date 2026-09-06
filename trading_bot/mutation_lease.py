@@ -560,17 +560,26 @@ def release_after_reconciliation(
     *,
     reconcile_submitted: Callable[[], Any],
     terminalize_cycle: Callable[[], Any],
+    persist_unresolved: Callable[[], Any] | None = None,
     observed_at: datetime | None = None,
 ) -> bool:
-    """Reconcile bounded submitted work, terminalize evidence, then unlock."""
+    """Terminalize, reconcile bounded work, then durably release and unlock.
+
+    The terminal record must exist before a broker query can time out or become
+    ambiguous.  A failed or indeterminate query is itself durable evidence when
+    the caller supplies an unresolved recorder; neither outcome can postpone
+    release of the OS lock descriptor.
+    """
 
     determinate = False
     try:
+        terminalize_cycle()
         try:
             determinate = _reconciliation_is_determinate(reconcile_submitted())
         except Exception:
             determinate = False
-        terminalize_cycle()
+        if not determinate and persist_unresolved is not None:
+            persist_unresolved()
         return determinate
     finally:
         lease.release(observed_at=observed_at)

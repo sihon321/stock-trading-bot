@@ -119,6 +119,7 @@ from trading_bot.mutation_lease import (
     LeaseRecoveryBlocked,
     acquire_mutation_lease,
     recover_to_active,
+    release_after_reconciliation,
 )
 from trading_bot.exit_manager import submit_exit
 from trading_bot.intraday import (
@@ -139,6 +140,8 @@ from trading_bot.audit_models import (
     RunStatus,
     TickerOutcome,
     TickerOutcomeCode,
+    OperationalSeverity,
+    TransitionObservation,
     sanitize_detail,
 )
 
@@ -1387,6 +1390,36 @@ def run_cycle(
         resolved_broker.set_evidence_sink(persist_order_event)
 
     outcomes: list[dict[str, Any]] = []
+
+    def reconcile_daily_shutdown() -> dict[str, bool]:
+        """Bound the final broker-truth check before returning mutation authority."""
+
+        if portfolio_snapshot_reader is None:
+            return {"determinate": True}
+        snapshot = portfolio_snapshot_reader()
+        append_portfolio_snapshot(
+            resolved_audit_conn,
+            snapshot,
+            cycle_id=resolved_run_id,
+            observation_id=f"{resolved_run_id}:shutdown:{uuid.uuid4().hex}",
+        )
+        return {"determinate": all(order.status != "UNKNOWN" for order in snapshot.orders)}
+
+    def terminalize_daily(status: RunStatus) -> None:
+        sqlite_audit.finish_run(
+            resolved_audit_conn, run_id=resolved_run_id, status=status
+        )
+
+    def shutdown_daily(status: RunStatus) -> None:
+        if lease_owned:
+            release_after_reconciliation(
+                mutation_lease,
+                terminalize_cycle=lambda: terminalize_daily(status),
+                reconcile_submitted=reconcile_daily_shutdown,
+            )
+        else:
+            terminalize_daily(status)
+
     try:
         if ticker is not None:
             tickers = [_validate_ticker(ticker)]
@@ -1656,23 +1689,14 @@ def run_cycle(
         error_count = sqlite_audit.count_failed_ticker_outcomes(
             resolved_audit_conn, run_id=resolved_run_id
         )
-        sqlite_audit.finish_run(
-            resolved_audit_conn, run_id=resolved_run_id,
-            status=(RunStatus.COMPLETED_WITH_ERRORS if error_count else RunStatus.COMPLETED),
+        shutdown_daily(
+            RunStatus.COMPLETED_WITH_ERRORS if error_count else RunStatus.COMPLETED
         )
     except KeyboardInterrupt:
-        sqlite_audit.finish_run(
-            resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.INTERRUPTED
-        )
-        if lease_owned:
-            mutation_lease.release()
+        shutdown_daily(RunStatus.INTERRUPTED)
         raise
     except BaseException:
-        sqlite_audit.finish_run(
-            resolved_audit_conn, run_id=resolved_run_id, status=RunStatus.FAILED
-        )
-        if lease_owned:
-            mutation_lease.release()
+        shutdown_daily(RunStatus.FAILED)
         raise
 
     summary = format_run_summary(
@@ -1970,6 +1994,28 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             failure_category=category,
         ),
     )
+    terminalized = False
+
+    def terminalize_intraday() -> None:
+        """Write the cycle terminal fact before reconciliation can become unknown."""
+
+        nonlocal terminalized
+        if terminalized:
+            return
+        terminalized = True
+        observation = TransitionObservation(
+            account_scope_hash=scope,
+            ticker=None,
+            event_family="INTRADAY_LIFECYCLE",
+            normalized_state="STOPPED",
+            broker_subject_id=cycle_id,
+            severity=OperationalSeverity.INFO,
+            observed_at=datetime.now(timezone.utc),
+            detail={"mode": mode},
+        )
+        notification = record_transition_state(runtime.audit_conn, observation)
+        if notification is not None:
+            transition_guard.notify(notification)
 
     def fresh_snapshot() -> PortfolioSnapshot:
         snapshot = reader()
@@ -2035,17 +2081,25 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             mutation_guard=transition_guard.assert_mutation_allowed,
         )
         if mode == "check":
-            return run_intraday_check(**kwargs)
+            return run_intraday_check(
+                **kwargs,
+                terminalize=lambda _result: terminalize_intraday(),
+            )
         return run_intraday_watch(
             **kwargs,
             sleeper=time.sleep,
             stop_requested=lambda: bool(_intraday_stop_requested()),
             reconcile=reconcile,
             interval_seconds=interval_seconds or settings.intraday_watch_interval_seconds,
+            terminalize=terminalize_intraday,
         )
     finally:
         if not lease.closed:
-            lease.release()
+            release_after_reconciliation(
+                lease,
+                terminalize_cycle=terminalize_intraday,
+                reconcile_submitted=reconcile,
+            )
         runtime.audit_conn.close()
 
 
