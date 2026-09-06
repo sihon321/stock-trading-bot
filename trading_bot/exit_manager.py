@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Callable
 
 from trading_bot.portfolio import PortfolioOrder, PortfolioSnapshot
 from trading_bot.domain import Money, Order, OrderSide, Ticker
@@ -22,10 +23,35 @@ class ExitTrigger:
     ticker: str
     cycle_id: str
     reason_code: str
+    entry_price: float | None = None
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
 
     def __post_init__(self) -> None:
         if not self.ticker or not self.cycle_id:
             raise ValueError("exit trigger requires ticker and cycle identity")
+
+    def remains_actionable(
+        self, snapshot: PortfolioSnapshot, current_price: Money
+    ) -> bool:
+        """Re-prove a deterministic risk decision using fresh broker truth."""
+
+        del snapshot  # quantity/open-order gates remain at the broker boundary.
+        if self.kind is ExitTriggerKind.DAILY_LLM_SELL:
+            return True
+        if (
+            self.entry_price is None
+            or self.stop_loss_pct is None
+            or self.take_profit_pct is None
+            or self.entry_price <= 0
+            or current_price.amount <= 0
+        ):
+            return False
+        if self.kind is ExitTriggerKind.INTRADAY_STOP_LOSS:
+            return current_price.amount <= self.entry_price * (1 - abs(self.stop_loss_pct))
+        if self.kind is ExitTriggerKind.INTRADAY_TAKE_PROFIT:
+            return current_price.amount >= self.entry_price * (1 + abs(self.take_profit_pct))
+        return False
 
 
 class ExitDisposition(StrEnum):
@@ -44,6 +70,13 @@ class ExitResult:
     trigger: ExitTrigger | None = None
     broker_subject_id: str | None = None
 
+    def revalidate_refreshed_truth(
+        self, snapshot: PortfolioSnapshot, current_price: Money
+    ) -> bool:
+        return self.trigger is not None and self.trigger.remains_actionable(
+            snapshot, current_price
+        )
+
 
 def evaluate_daily_exit_trigger(
     *, ticker: str, cycle_id: str, decision: str, confidence: float, threshold: float
@@ -61,7 +94,10 @@ def evaluate_daily_exit_trigger(
 
 
 def evaluate_risk_exit_trigger(
-    *, ticker: str, cycle_id: str, decision: RiskDecision
+    *, ticker: str, cycle_id: str, decision: RiskDecision,
+    entry_price: float | None = None,
+    stop_loss_pct: float | None = None,
+    take_profit_pct: float | None = None,
 ) -> ExitTrigger | None:
     """Map the existing pure stop/take decision without copying its formulas."""
 
@@ -74,7 +110,10 @@ def evaluate_risk_exit_trigger(
     kind = kinds.get(decision.reason)
     if kind is None:
         return None
-    return ExitTrigger(kind, ticker, cycle_id, kind.value)
+    return ExitTrigger(
+        kind, ticker, cycle_id, kind.value,
+        entry_price, stop_loss_pct, take_profit_pct,
+    )
 
 
 def _active_sell(snapshot: PortfolioSnapshot, ticker: str) -> PortfolioOrder | None:
@@ -152,6 +191,7 @@ def submit_exit(
     lease_guard: object,
     cycle_snapshot_id: str,
     origin_run_id: str,
+    trigger_revalidator: Callable[[PortfolioSnapshot, Money], bool] | None = None,
 ) -> str | None:
     """Submit only a current ``SUBMIT`` result through the KIS boundary."""
 
@@ -173,5 +213,10 @@ def submit_exit(
             portfolio_refresh=portfolio_refresh,
             lease_guard=lease_guard,
             cycle_snapshot_id=cycle_snapshot_id,
+            trigger_revalidator=(
+                trigger_revalidator
+                if trigger_revalidator is not None
+                else result.revalidate_refreshed_truth
+            ),
         )
     )

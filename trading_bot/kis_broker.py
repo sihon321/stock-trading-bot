@@ -116,6 +116,7 @@ class KISBroker:
         portfolio_refresh: Optional[Callable[[str], PortfolioSnapshot]] = None,
         lease_guard: Any = None,
         cycle_snapshot_id: Optional[str] = None,
+        trigger_revalidator: Optional[Callable[[PortfolioSnapshot, Money], bool]] = None,
     ) -> str:
         """Place one order through the fresh-truth, evidence-first boundary."""
 
@@ -218,6 +219,13 @@ class KISBroker:
             if not isinstance(quote_money, Money):
                 raise MarketClosedError("KIS order skipped: quote price is invalid")
             order = replace(order, limit_price=quote_money)
+            if refresh_snapshot is not None and trigger_revalidator is not None:
+                try:
+                    actionable = bool(trigger_revalidator(refresh_snapshot, quote_money))
+                except Exception:
+                    actionable = False
+                if not actionable:
+                    raise MarketClosedError("EXIT_NO_LONGER_ACTIONABLE")
             if refresh_snapshot is not None and order.side is OrderSide.BUY:
                 affordable = int(
                     refresh_snapshot.account.available_cash // quote_money.amount
