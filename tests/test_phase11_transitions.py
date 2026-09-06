@@ -129,3 +129,33 @@ def test_transport_failure_is_fail_soft_but_evidence_failure_latches_mutation() 
         closed.notify(note)
     with pytest.raises(TransitionEvidenceError):
         closed.assert_mutation_allowed()
+
+
+def test_iteration_safety_reducer_emits_sanitized_lifecycle_families() -> None:
+    from trading_bot.intraday import (
+        IntradayIterationOutcome,
+        IntradayIterationResult,
+        IntradaySessionPhase,
+        transition_observations_for_iteration,
+    )
+
+    result = IntradayIterationResult(
+        iteration_id="iteration-1",
+        phase=IntradaySessionPhase.STOPPING,
+        outcome=IntradayIterationOutcome.INTERRUPTED,
+        snapshot_id="snapshot-1",
+        exit_results=(),
+        reason_code="LEASE_OWNERSHIP_LOST",
+    )
+
+    observations = transition_observations_for_iteration(
+        result,
+        account_scope_hash="a" * 64,
+        observed_at=NOW,
+    )
+
+    assert [(item.event_family, item.normalized_state, item.severity.value) for item in observations] == [
+        ("LEASE", "LEASE_LOST", "CRITICAL"),
+        ("INTRADAY_LIFECYCLE", "INTERRUPTED", "WARNING"),
+    ]
+    assert all("raw" not in item.detail for item in observations)
