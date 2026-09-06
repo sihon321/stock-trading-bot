@@ -146,7 +146,7 @@ def test_stop_request_interrupts_before_new_iteration_and_reconciles_then_releas
         audit_sink=lambda result: sequence.append("audit"),
         reconcile=lambda: sequence.append("reconcile"),
     )
-    assert sequence == ["reconcile", "release"]
+    assert sequence == ["terminalize", "reconcile", "release"]
     assert watch.interrupted is True
 
 

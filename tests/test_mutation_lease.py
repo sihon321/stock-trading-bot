@@ -322,7 +322,7 @@ def test_recovery_blocked_never_grants_post_authority(tmp_path, failure):
     lease.release()
 
 
-def test_ownership_loss_and_normal_shutdown_reconcile_before_release(tmp_path):
+def test_ownership_loss_and_normal_shutdown_terminalize_before_reconcile_and_release(tmp_path):
     conn = connect_portfolio_store(tmp_path / "audit.db")
     lease = acquire_mutation_lease(
         conn,
@@ -346,7 +346,7 @@ def test_ownership_loss_and_normal_shutdown_reconcile_before_release(tmp_path):
         terminalize_cycle=lambda: order.append("terminalize"),
     )
     assert result is False
-    assert order == ["reconcile", "terminalize"]
+    assert order == ["terminalize", "reconcile"]
     assert lease.closed
 
     second = acquire_mutation_lease(
@@ -363,6 +363,27 @@ def test_ownership_loss_and_normal_shutdown_reconcile_before_release(tmp_path):
         terminalize_cycle=lambda: normal_order.append("terminalize"),
     )
     assert determinate is True
-    assert normal_order == ["reconcile", "terminalize"]
+    assert normal_order == ["terminalize", "reconcile"]
     assert second.state is MutationLeaseState.RELEASED
     assert second.closed
+
+
+def test_shutdown_persists_unresolved_before_durable_release_when_reconcile_raises(tmp_path):
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    lease = acquire_mutation_lease(
+        conn,
+        account_scope_hash=SCOPE,
+        lock_dir=tmp_path / "locks",
+        command="run",
+        cycle_id="cycle-unresolved",
+    )
+    order: list[str] = []
+
+    assert release_after_reconciliation(
+        lease,
+        terminalize_cycle=lambda: order.append("terminalize"),
+        reconcile_submitted=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+        persist_unresolved=lambda: order.append("unresolved"),
+    ) is False
+    assert order == ["terminalize", "unresolved"]
+    assert lease.state is MutationLeaseState.RELEASED
