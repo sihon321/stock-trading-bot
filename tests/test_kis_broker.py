@@ -91,6 +91,25 @@ def test_kis_broker_is_broker() -> None:
     assert isinstance(broker, Broker)
 
 
+def test_unguarded_mutable_call_is_rejected_before_evidence_or_post() -> None:
+    from trading_bot.kis_broker import KISBroker, MarketClosedError
+
+    adapter = _FakeOrderAdapter()
+    events = []
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=events.append,
+    )
+
+    with pytest.raises(MarketClosedError, match="paired"):
+        broker.place_order(_order(quantity=1))
+
+    assert adapter.post_attempts == 0
+    assert events == []
+
+
 def test_order_post_not_retried() -> None:
     from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker
 
