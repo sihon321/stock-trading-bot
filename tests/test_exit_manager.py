@@ -11,6 +11,7 @@ from trading_bot.exit_manager import (
     evaluate_daily_exit_trigger,
     evaluate_exit_candidate,
     evaluate_risk_exit_trigger,
+    submit_exit,
 )
 from trading_bot.portfolio import (
     PortfolioAccountSummary,
@@ -311,3 +312,75 @@ def test_money_boundary_evidence_failure_prevents_post_and_token_is_not_persiste
         )
     assert adapter.post_attempts == 0
     assert "owner-secret-token" not in repr(captured)
+
+
+@pytest.mark.parametrize("kind", ["stop_loss", "take_profit"])
+def test_refreshed_risk_exit_that_clears_never_reaches_kis_post(kind: str) -> None:
+    """The original risk decision must be re-proven using fresh broker truth."""
+
+    sequence: list[str] = []
+    adapter = _BoundaryAdapter(sequence)
+    now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+    events = []
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=events.append,
+        pre_submit_quote_reader=lambda ticker: _quote(now),
+        clock=lambda: now,
+    )
+    trigger = evaluate_risk_exit_trigger(
+        ticker="005930", cycle_id="cycle-cleared",
+        decision=RiskDecision(RiskAction.SELL, kind),
+    )
+    candidate = evaluate_exit_candidate(trigger, _snapshot(orderable=3))
+
+    with pytest.raises(MarketClosedError, match="EXIT_NO_LONGER_ACTIONABLE"):
+        submit_exit(
+            candidate,
+            broker=broker,
+            limit_price=Money(70_000.0, "KRW"),
+            portfolio_refresh=lambda ticker: _snapshot(orderable=3),
+            lease_guard=_Lease(sequence),
+            cycle_snapshot_id="snapshot-current",
+            origin_run_id="cycle-cleared",
+            trigger_revalidator=lambda snapshot, quote: False,
+        )
+
+    assert adapter.post_attempts == 0
+    assert "SUBMISSION_ATTEMPTED" not in [event.event_type.value for event in events]
+
+
+def test_refreshed_risk_exit_posts_once_only_after_revalidation() -> None:
+    sequence: list[str] = []
+    adapter = _BoundaryAdapter(sequence)
+    now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        pre_submit_quote_reader=lambda ticker: _quote(now),
+        clock=lambda: now,
+    )
+    trigger = evaluate_risk_exit_trigger(
+        ticker="005930", cycle_id="cycle-live",
+        decision=RiskDecision(RiskAction.SELL, "stop_loss"),
+    )
+    candidate = evaluate_exit_candidate(trigger, _snapshot(orderable=3))
+    calls: list[str] = []
+
+    order_id = submit_exit(
+        candidate,
+        broker=broker,
+        limit_price=Money(70_000.0, "KRW"),
+        portfolio_refresh=lambda ticker: _snapshot(orderable=3),
+        lease_guard=_Lease(sequence),
+        cycle_snapshot_id="snapshot-current",
+        origin_run_id="cycle-live",
+        trigger_revalidator=lambda snapshot, quote: calls.append("revalidated") or True,
+    )
+
+    assert order_id == "KIS-1"
+    assert calls == ["revalidated"]
+    assert adapter.post_attempts == 1
