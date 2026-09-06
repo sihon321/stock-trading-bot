@@ -126,6 +126,7 @@ from trading_bot.intraday import (
     TransitionEvidenceGuard,
     run_intraday_check,
     run_intraday_watch,
+    transition_observations_for_iteration,
     transition_observations_for_snapshot,
 )
 from trading_bot import sqlite_audit
@@ -1413,12 +1414,35 @@ def run_cycle(
             resolved_audit_conn, run_id=resolved_run_id, status=status
         )
 
+    def persist_daily_unresolved() -> None:
+        scope = (
+            phase11_snapshot.account_scope_hash
+            if phase11_snapshot is not None
+            else getattr(mutation_lease, "account_scope_hash", None)
+        )
+        if not isinstance(scope, str) or len(scope) != 64:
+            return
+        record_transition_state(
+            resolved_audit_conn,
+            TransitionObservation(
+                account_scope_hash=scope,
+                ticker=None,
+                event_family="RECONCILIATION",
+                normalized_state="RECONCILIATION_UNRESOLVED",
+                broker_subject_id=resolved_run_id,
+                severity=OperationalSeverity.CRITICAL,
+                observed_at=datetime.now(timezone.utc),
+                detail={"command": "run"},
+            ),
+        )
+
     def shutdown_daily(status: RunStatus) -> None:
         if lease_owned:
             release_after_reconciliation(
                 mutation_lease,
                 terminalize_cycle=lambda: terminalize_daily(status),
                 reconcile_submitted=reconcile_daily_shutdown,
+                persist_unresolved=persist_daily_unresolved,
             )
         else:
             terminalize_daily(status)
@@ -2034,14 +2058,47 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             observed_at=datetime.now(timezone.utc),
             long_open_seconds=settings.intraday_long_open_warning_seconds,
         ):
-            notification = record_transition_state(runtime.audit_conn, observation)
-            if notification is not None:
-                transition_guard.notify(notification)
+            persist_transition(observation)
         return snapshot
+
+    def persist_transition(observation: TransitionObservation) -> None:
+        """Persist the durable projection before optional alert transport."""
+
+        notification = record_transition_state(runtime.audit_conn, observation)
+        if notification is not None:
+            transition_guard.notify(notification)
 
     def reconcile() -> dict[str, bool]:
         snapshot = fresh_snapshot()
-        return {"determinate": all(order.status != "UNKNOWN" for order in snapshot.orders)}
+        determinate = all(order.status != "UNKNOWN" for order in snapshot.orders)
+        if not determinate:
+            persist_transition(
+                TransitionObservation(
+                    account_scope_hash=scope,
+                    ticker=None,
+                    event_family="RECONCILIATION",
+                    normalized_state="RECONCILIATION_UNRESOLVED",
+                    broker_subject_id=cycle_id,
+                    severity=OperationalSeverity.CRITICAL,
+                    observed_at=datetime.now(timezone.utc),
+                    detail={"mode": mode},
+                )
+            )
+        return {"determinate": determinate}
+
+    def persist_reconciliation_unresolved() -> None:
+        persist_transition(
+            TransitionObservation(
+                account_scope_hash=scope,
+                ticker=None,
+                event_family="RECONCILIATION",
+                normalized_state="RECONCILIATION_UNRESOLVED",
+                broker_subject_id=cycle_id,
+                severity=OperationalSeverity.CRITICAL,
+                observed_at=datetime.now(timezone.utc),
+                detail={"mode": mode},
+            )
+        )
 
     def submit(candidate: Any, price: Money) -> str | None:
         if not latest:
@@ -2058,6 +2115,12 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
 
     def audit(result: Any) -> None:
         append_watch_iteration(runtime.audit_conn, result)
+        for observation in transition_observations_for_iteration(
+            result,
+            account_scope_hash=scope,
+            observed_at=datetime.now(timezone.utc),
+        ):
+            persist_transition(observation)
 
     try:
         if lease.recovery_required:
@@ -2073,6 +2136,18 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
                     )
                 },
             )
+            persist_transition(
+                TransitionObservation(
+                    account_scope_hash=scope,
+                    ticker=None,
+                    event_family="RECOVERY",
+                    normalized_state="RECOVERED",
+                    broker_subject_id=cycle_id,
+                    severity=OperationalSeverity.INFO,
+                    observed_at=datetime.now(timezone.utc),
+                    detail={"mode": mode},
+                )
+            )
         kwargs = dict(
             clock=lambda: datetime.now(ZoneInfo("Asia/Seoul")),
             snapshot_reader=fresh_snapshot,
@@ -2082,6 +2157,7 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             exit_submitter=submit,
             audit_sink=audit,
             mutation_guard=transition_guard.assert_mutation_allowed,
+            persist_unresolved=persist_reconciliation_unresolved,
         )
         if mode == "check":
             return run_intraday_check(
@@ -2095,6 +2171,7 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             reconcile=reconcile,
             interval_seconds=interval_seconds or settings.intraday_watch_interval_seconds,
             terminalize=terminalize_intraday,
+            persist_unresolved=persist_reconciliation_unresolved,
         )
     finally:
         if not lease.closed:
@@ -2102,6 +2179,7 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
                 lease,
                 terminalize_cycle=terminalize_intraday,
                 reconcile_submitted=reconcile,
+                persist_unresolved=persist_reconciliation_unresolved,
             )
         runtime.audit_conn.close()
 

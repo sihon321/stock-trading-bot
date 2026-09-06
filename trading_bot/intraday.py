@@ -23,7 +23,12 @@ from trading_bot.audit_models import (
     TransitionNotification,
     TransitionObservation,
 )
-from trading_bot.mutation_lease import LeaseOwnershipLost, stop_after_ownership_loss
+from trading_bot.mutation_lease import (
+    LeaseOwnershipLost,
+    release_after_reconciliation,
+    stop_after_ownership_loss,
+)
+from trading_bot.kis_broker import AmbiguousSubmissionError
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -140,6 +145,84 @@ class IntradayWatchResult:
     interrupted: bool
 
 
+def transition_observations_for_iteration(
+    result: IntradayIterationResult,
+    *,
+    account_scope_hash: str,
+    observed_at: datetime,
+) -> tuple[TransitionObservation, ...]:
+    """Reduce bounded intraday facts to durable, transport-safe observations."""
+
+    observations: list[TransitionObservation] = []
+    for exit_result in result.exit_results:
+        if exit_result.disposition is ExitDisposition.SUBMIT:
+            observations.append(
+                TransitionObservation(
+                    account_scope_hash=account_scope_hash,
+                    ticker=exit_result.ticker,
+                    event_family="RISK_EXIT",
+                    normalized_state="RISK_TRIGGER",
+                    broker_subject_id=result.iteration_id,
+                    severity=OperationalSeverity.WARNING,
+                    observed_at=observed_at,
+                    detail={"reason_code": exit_result.reason_code},
+                )
+            )
+    if result.reason_code in {"ACCOUNT_DATA_INCOMPLETE", "ITERATION_FAILED"}:
+        observations.append(
+            TransitionObservation(
+                account_scope_hash=account_scope_hash,
+                ticker=None,
+                event_family="BROKER_TRUTH",
+                normalized_state="BROKER_TRUTH_FAILED",
+                broker_subject_id=result.iteration_id,
+                severity=OperationalSeverity.CRITICAL,
+                observed_at=observed_at,
+                detail={"reason_code": result.reason_code},
+            )
+        )
+    if result.reason_code == "ORDER_AMBIGUOUS":
+        observations.append(
+            TransitionObservation(
+                account_scope_hash=account_scope_hash,
+                ticker=None,
+                event_family="ORDER_SUBMISSION",
+                normalized_state="ORDER_AMBIGUOUS",
+                broker_subject_id=result.iteration_id,
+                severity=OperationalSeverity.CRITICAL,
+                observed_at=observed_at,
+                detail={"reason_code": result.reason_code},
+            )
+        )
+    if result.reason_code == "LEASE_OWNERSHIP_LOST":
+        observations.append(
+            TransitionObservation(
+                account_scope_hash=account_scope_hash,
+                ticker=None,
+                event_family="LEASE",
+                normalized_state="LEASE_LOST",
+                broker_subject_id=result.iteration_id,
+                severity=OperationalSeverity.CRITICAL,
+                observed_at=observed_at,
+                detail={"reason_code": result.reason_code},
+            )
+        )
+    if result.outcome is IntradayIterationOutcome.INTERRUPTED:
+        observations.append(
+            TransitionObservation(
+                account_scope_hash=account_scope_hash,
+                ticker=None,
+                event_family="INTRADAY_LIFECYCLE",
+                normalized_state="INTERRUPTED",
+                broker_subject_id=result.iteration_id,
+                severity=OperationalSeverity.WARNING,
+                observed_at=observed_at,
+                detail={"reason_code": result.reason_code},
+            )
+        )
+    return tuple(observations)
+
+
 def session_phase_at(observed_at: datetime) -> IntradaySessionPhase:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("intraday clock must be timezone-aware")
@@ -166,6 +249,7 @@ def run_intraday_check(
     stop_requested: Callable[[], bool] = lambda: False,
     terminalize: Callable[[IntradayIterationResult], object] | None = None,
     reconcile: Callable[[], object] = lambda: True,
+    persist_unresolved: Callable[[], object] | None = None,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
 
@@ -270,9 +354,19 @@ def run_intraday_check(
                     (lambda: terminalize(result))
                     if terminalize is not None else (lambda: None)
                 ),
+                persist_unresolved=persist_unresolved,
             )
         elif terminalize is not None:
             terminalize(result)
+    except AmbiguousSubmissionError:
+        result = IntradayIterationResult(
+            iteration_id,
+            IntradaySessionPhase.STOPPING,
+            IntradayIterationOutcome.FAILED,
+            None,
+            (),
+            "ORDER_AMBIGUOUS",
+        )
     except Exception:
         result = IntradayIterationResult(
             iteration_id,
@@ -296,6 +390,7 @@ def _release(
     lease: object,
     reconcile: Callable[[], object],
     terminalize: Callable[[], object] | None = None,
+    persist_unresolved: Callable[[], object] | None = None,
 ) -> None:
     if getattr(lease, "closed", False):
         return
@@ -303,10 +398,26 @@ def _release(
         raise RuntimeError("active intraday shutdown requires a terminalizer")
     method = getattr(lease, "release_after_reconciliation", None)
     if method is not None:
-        method(reconcile_submitted=reconcile, terminalize_cycle=terminalize)
+        method(
+            reconcile_submitted=reconcile,
+            terminalize_cycle=terminalize,
+            persist_unresolved=persist_unresolved,
+        )
+        return
+    if hasattr(lease, "state"):
+        release_after_reconciliation(
+            lease,
+            reconcile_submitted=reconcile,
+            terminalize_cycle=terminalize,
+            persist_unresolved=persist_unresolved,
+        )
         return
     terminalize()
-    reconcile()
+    try:
+        reconcile()
+    except Exception:
+        if persist_unresolved is not None:
+            persist_unresolved()
     release = getattr(lease, "release", None)
     if release is not None:
         release()
@@ -328,6 +439,7 @@ def run_intraday_watch(
     max_iterations: int | None = None,
     mutation_guard: Callable[[], object] = lambda: None,
     terminalize: Callable[[], object] | None = None,
+    persist_unresolved: Callable[[], object] | None = None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
@@ -340,12 +452,12 @@ def run_intraday_watch(
         if stop_requested():
             interrupted = True
             final_phase = IntradaySessionPhase.STOPPING
-            _release(lease, reconcile, terminalize)
+            _release(lease, reconcile, terminalize, persist_unresolved)
             break
         now = clock()
         final_phase = session_phase_at(now)
         if final_phase is IntradaySessionPhase.TERMINAL:
-            _release(lease, reconcile, terminalize)
+            _release(lease, reconcile, terminalize, persist_unresolved)
             break
         if final_phase is IntradaySessionPhase.RECONCILE_ONLY:
             reconcile()
@@ -362,6 +474,7 @@ def run_intraday_watch(
             mutation_guard=mutation_guard,
             stop_requested=stop_requested,
             reconcile=reconcile,
+            persist_unresolved=persist_unresolved,
             terminalize=(
                 (lambda result: terminalize()) if terminalize is not None else None
             ),
@@ -370,7 +483,7 @@ def run_intraday_watch(
         if result.outcome is IntradayIterationOutcome.INTERRUPTED:
             interrupted = True
             final_phase = IntradaySessionPhase.STOPPING
-            _release(lease, reconcile, terminalize)
+            _release(lease, reconcile, terminalize, persist_unresolved)
             break
         sleeper(interval_seconds)
     return IntradayWatchResult(tuple(iterations), final_phase, interrupted)

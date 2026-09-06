@@ -183,6 +183,8 @@ _TRANSITION_TEXT = {
     "BROKER_TRUTH_FAILED": "KIS 계좌 원장 확인에 실패했습니다.",
     "LEASE_LOST": "계정 변경 소유권을 잃어 신규 주문을 차단했습니다.",
     "ORDER_AMBIGUOUS": "주문 접수 상태가 불명확하여 해당 종목을 동결했습니다.",
+    "RECONCILIATION_UNRESOLVED": "주문 조정 결과가 확정되지 않아 변경을 차단했습니다.",
+    "RISK_TRIGGER": "보유 종목 위험 기준이 충족되어 주문 전 검증을 시작했습니다.",
     "INTERRUPTED": "중단 요청을 받아 신규 주문을 멈추고 정산합니다.",
     "RECOVERED": "이전 불확실 상태가 확정되어 복구되었습니다.",
     "AUDIT_EVIDENCE_FAILED": "감사 증거 저장에 실패하여 신규 주문을 차단했습니다.",
