@@ -51,6 +51,22 @@ def test_repeated_transition_observations_are_durable_but_notify_once() -> None:
     assert notifications[0].event_code == "STATE_BEGIN"
 
 
+def test_state_change_atomically_recovers_prior_active_projection() -> None:
+    conn = sqlite3.connect(":memory:")
+    migrate_portfolio(conn)
+
+    opened = record_transition_state(conn, observation(state="OPEN"))
+    filled = record_transition_state(conn, observation(state="FILLED", seconds=1))
+
+    rows = conn.execute(
+        "SELECT state_code, active FROM transition_states ORDER BY state_code"
+    ).fetchall()
+    assert rows == [("FILLED", 0), ("OPEN", 0)]
+    assert opened is not None and opened.event_code == "STATE_BEGIN"
+    assert filled is not None and filled.event_code == "STATE_RECOVERED"
+    assert conn.execute("SELECT COUNT(*) FROM transition_observations").fetchone() == (2,)
+
+
 @pytest.mark.parametrize(
     ("code", "severity", "phrase"),
     [
