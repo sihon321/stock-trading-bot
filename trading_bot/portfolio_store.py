@@ -409,14 +409,31 @@ def record_transition_state(
                WHERE account_scope_hash=? AND COALESCE(ticker,'')=COALESCE(?, '')
                  AND event_family=?
                  AND COALESCE(broker_subject_id,'')=COALESCE(?, '')
+                 AND active=1 AND state_identity<>?
                ORDER BY last_observed_at DESC LIMIT 1""",
             (
                 observation.account_scope_hash,
                 observation.ticker,
                 family,
                 observation.broker_subject_id,
+                identity,
             ),
         ).fetchone()
+        if prior is not None:
+            conn.execute(
+                """UPDATE transition_states SET active=0
+                   WHERE account_scope_hash=? AND COALESCE(ticker,'')=COALESCE(?, '')
+                     AND event_family=?
+                     AND COALESCE(broker_subject_id,'')=COALESCE(?, '')
+                     AND active=1 AND state_identity<>?""",
+                (
+                    observation.account_scope_hash,
+                    observation.ticker,
+                    family,
+                    observation.broker_subject_id,
+                    identity,
+                ),
+            )
         if current is None:
             first = stamp
             occurrence = 1
