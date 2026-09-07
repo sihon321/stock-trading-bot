@@ -5,8 +5,8 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 11
 current_phase_name: kis-portfolio-synchronization-intraday-exit-management
 status: verifying
-stopped_at: Completed 11-04-PLAN.md
-last_updated: "2026-09-06T23:21:44.386Z"
+stopped_at: Completed 11-09-PLAN.md
+last_updated: "2026-09-07T04:39:00.691Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 11 execution started
 progress:
@@ -121,6 +121,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 11]: Persist exact rendered prompt bytes before provider construction or attempts. — Crash recovery and same-day reuse cannot replace the first committed input.
 - [Phase 11]: Replay finalized signals through a capability-free adapter and a lease-guarded broker. — Historical decisions never become current execution authority.
 - [Phase 11]: Use a post-held complete KIS snapshot for screened-only cash sizing. — Locally projected SELL proceeds never inflate BUY capacity.
+- [Phase 11]: State-bearing lease loss requires a real terminalizer; recurring risk and broker-truth alerts use durable fact subjects instead of iteration UUIDs. — Preserves ordered shutdown evidence and restart-safe transition deduplication.
 
 ### Pending Todos
 
@@ -148,6 +149,7 @@ None yet.
 | Phase 11 P02 | 7 min | 2 tasks | 5 files |
 | Phase 11 P03 | 14 min | 2 tasks | 6 files |
 | Phase 11 P04 | 12 min | 2 tasks | 4 files |
+| Phase 11 P09 | 12 min | 2 tasks | 5 files |
 
 ## Deferred Items
 
@@ -180,8 +182,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-09-06T23:21:04.221Z
-Stopped at: Completed 11-04-PLAN.md
+Last session: 2026-09-07T04:39:00.684Z
+Stopped at: Completed 11-09-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

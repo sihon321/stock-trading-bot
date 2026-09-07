@@ -243,7 +243,7 @@ Plans:
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete   | 2026-08-10 |
-| 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 8/8 | Complete   | 2026-09-04 |
+| 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/TBD | Not Planned |  |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
@@ -264,9 +264,11 @@ Plans:
   3. The daily LLM cycle can SELL a held position while intraday deterministic risk checks can exit without repeated LLM calls.
   4. Partial fills, cancellation, ambiguity, restart, and duplicate invocation cannot oversell or create a second unjustified POST.
 
-**Plans:** 8/8 plans complete
+**Plans:** 9/9 plans complete
 
 Plans:
+
+- [x] 11-09-PLAN.md
 
 - [x] 11-08-PLAN.md
 
