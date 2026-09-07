@@ -387,3 +387,33 @@ def test_shutdown_persists_unresolved_before_durable_release_when_reconcile_rais
     ) is False
     assert order == ["terminalize", "unresolved"]
     assert lease.state is MutationLeaseState.RELEASED
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_ownership_loss_forwards_unresolved_persistence_for_indeterminate_reconcile(
+    tmp_path, raises
+):
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    lease = acquire_mutation_lease(
+        conn,
+        account_scope_hash=SCOPE,
+        lock_dir=tmp_path / "locks",
+        command="watch",
+        cycle_id=f"ownership-loss-{raises}",
+    )
+    order: list[str] = []
+
+    def reconcile() -> bool:
+        order.append("reconcile")
+        if raises:
+            raise RuntimeError("offline")
+        return False
+
+    assert stop_after_ownership_loss(
+        lease,
+        terminalize_cycle=lambda: order.append("terminalize"),
+        reconcile_submitted=reconcile,
+        persist_unresolved=lambda: order.append("unresolved"),
+    ) is False
+    assert order == ["terminalize", "reconcile", "unresolved"]
+    assert lease.closed

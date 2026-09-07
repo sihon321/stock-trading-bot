@@ -12,6 +12,7 @@ from trading_bot.audit_models import (
 )
 from trading_bot.portfolio_store import migrate_portfolio, record_transition_state
 from trading_bot.intraday import TransitionEvidenceError, TransitionEvidenceGuard
+from trading_bot.exit_manager import ExitDisposition, ExitResult
 
 
 NOW = datetime(2026, 9, 4, 1, 0, tzinfo=timezone.utc)
@@ -159,3 +160,106 @@ def test_iteration_safety_reducer_emits_sanitized_lifecycle_families() -> None:
         ("INTRADAY_LIFECYCLE", "INTERRUPTED", "WARNING"),
     ]
     assert all("raw" not in item.detail for item in observations)
+
+
+def test_recurring_production_risk_and_broker_truth_subjects_are_restart_stable() -> None:
+    from trading_bot.intraday import (
+        IntradayIterationOutcome,
+        IntradayIterationResult,
+        IntradaySessionPhase,
+        transition_observations_for_iteration,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    migrate_portfolio(conn)
+
+    def reduce(result: IntradayIterationResult, stamp: datetime):
+        return [
+            record_transition_state(conn, item)
+            for item in transition_observations_for_iteration(
+                result, account_scope_hash="a" * 64, observed_at=stamp
+            )
+        ]
+
+    risk_a = IntradayIterationResult(
+        "iteration-a", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.COMPLETED,
+        "snapshot-a", (ExitResult(ExitDisposition.SUBMIT, "005930", 1, "STOP_LOSS"),),
+        "COMPLETED",
+    )
+    risk_b = IntradayIterationResult(
+        "iteration-b", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.COMPLETED,
+        "snapshot-b", (ExitResult(ExitDisposition.SUBMIT, "005930", 1, "STOP_LOSS"),),
+        "COMPLETED",
+    )
+    broker_a = IntradayIterationResult(
+        "iteration-c", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.BLOCKED,
+        "snapshot-c", (), "ACCOUNT_DATA_INCOMPLETE",
+    )
+    broker_b = IntradayIterationResult(
+        "iteration-d", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.BLOCKED,
+        "snapshot-d", (), "ACCOUNT_DATA_INCOMPLETE",
+    )
+
+    notes = (
+        reduce(risk_a, NOW)
+        + reduce(risk_b, NOW + timedelta(seconds=5))
+        + reduce(broker_a, NOW)
+        + reduce(broker_b, NOW + timedelta(seconds=5))
+    )
+    rows = conn.execute(
+        "SELECT event_family, broker_subject_id, occurrence_count, duration_seconds "
+        "FROM transition_states ORDER BY event_family"
+    ).fetchall()
+
+    assert rows == [
+        ("BROKER_TRUTH", "ACCOUNT_DATA_INCOMPLETE", 2, 5.0),
+        ("RISK_EXIT", "005930:STOP_LOSS", 2, 5.0),
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM transition_observations").fetchone() == (4,)
+    assert sum(note is not None for note in notes) == 2
+
+
+def test_changed_production_risk_and_broker_truth_facts_remain_distinct() -> None:
+    from trading_bot.intraday import (
+        IntradayIterationOutcome,
+        IntradayIterationResult,
+        IntradaySessionPhase,
+        transition_observations_for_iteration,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    migrate_portfolio(conn)
+    results = (
+        IntradayIterationResult(
+            "iteration-a", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.COMPLETED,
+            "snapshot-a", (ExitResult(ExitDisposition.SUBMIT, "005930", 1, "STOP_LOSS"),),
+            "COMPLETED",
+        ),
+        IntradayIterationResult(
+            "iteration-b", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.COMPLETED,
+            "snapshot-b", (ExitResult(ExitDisposition.SUBMIT, "000660", 1, "TAKE_PROFIT"),),
+            "COMPLETED",
+        ),
+        IntradayIterationResult(
+            "iteration-c", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.BLOCKED,
+            "snapshot-c", (), "ACCOUNT_DATA_INCOMPLETE",
+        ),
+        IntradayIterationResult(
+            "iteration-d", IntradaySessionPhase.ACTIVE, IntradayIterationOutcome.FAILED,
+            "snapshot-d", (), "ITERATION_FAILED",
+        ),
+    )
+
+    notifications = []
+    for index, result in enumerate(results):
+        notifications.extend(
+            record_transition_state(conn, item)
+            for item in transition_observations_for_iteration(
+                result,
+                account_scope_hash="a" * 64,
+                observed_at=NOW + timedelta(seconds=index),
+            )
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM transition_states").fetchone() == (4,)
+    assert sum(note is not None for note in notifications) == 4

@@ -17,6 +17,11 @@ from trading_bot.intraday import (
     run_intraday_watch,
     session_phase_at,
 )
+from trading_bot.mutation_lease import (
+    LeaseOwnershipLost,
+    acquire_mutation_lease,
+)
+from trading_bot.portfolio_store import connect_portfolio_store
 from trading_bot.portfolio import PortfolioCompleteness
 from trading_bot.risk import RiskConfig
 from test_exit_manager import _snapshot
@@ -212,3 +217,72 @@ def test_cli_exposes_check_watch_and_rejects_short_interval_before_runtime(monke
     assert "--interval-seconds" in watch_help.stdout
     assert invalid.exit_code == 2 and calls == [("check", None)]
     assert check.exit_code == 0
+
+
+def test_typed_ownership_loss_terminalizes_reconciles_persists_and_unlocks(
+    tmp_path, monkeypatch
+) -> None:
+    """The real active-cycle path must never skip durable shutdown on lease loss."""
+
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    lease = acquire_mutation_lease(
+        conn,
+        account_scope_hash="a" * 64,
+        lock_dir=tmp_path / "locks",
+        command="intraday-check",
+        cycle_id="typed-loss-cycle",
+    )
+    sequence: list[str] = []
+    audited = []
+    real_assert = lease.assert_active_owner
+    real_release = lease.release
+    assertions = 0
+
+    def lose_before_submit(*args, **kwargs) -> None:
+        nonlocal assertions
+        assertions += 1
+        if assertions == 2:
+            conn.execute(
+                "UPDATE mutation_leases SET owner_token='replacement' "
+                "WHERE account_scope_hash=?",
+                (lease.account_scope_hash,),
+            )
+            conn.commit()
+        real_assert(*args, **kwargs)
+
+    def record_release(*args, **kwargs) -> None:
+        sequence.append("release")
+        real_release(*args, **kwargs)
+
+    import trading_bot.mutation_lease as lease_module
+
+    real_flock = lease_module.fcntl.flock
+
+    def record_unlock(fd: int, operation: int) -> None:
+        if operation == lease_module.fcntl.LOCK_UN:
+            sequence.append("unlock")
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(lease, "assert_active_owner", lose_before_submit)
+    monkeypatch.setattr(lease, "release", record_release)
+    monkeypatch.setattr(lease_module.fcntl, "flock", record_unlock)
+
+    result = run_intraday_check(
+        clock=lambda: datetime(2026, 9, 4, 10, 0, tzinfo=KST),
+        snapshot_reader=lambda: _snapshot(),
+        quote_reader=lambda ticker: Money(80_000.0, "KRW"),
+        risk_config=RiskConfig(0.05, 0.10),
+        lease=lease,
+        exit_submitter=lambda candidate, price: sequence.append("post"),
+        audit_sink=audited.append,
+        terminalize=lambda item: sequence.append("terminalize"),
+        reconcile=lambda: sequence.append("reconcile") or False,
+        persist_unresolved=lambda: sequence.append("unresolved"),
+    )
+
+    assert result.reason_code == "LEASE_OWNERSHIP_LOST"
+    assert result.outcome is IntradayIterationOutcome.INTERRUPTED
+    assert audited == [result]
+    assert "post" not in sequence
+    assert sequence == ["terminalize", "reconcile", "unresolved", "release", "unlock"]
+    assert lease.closed
