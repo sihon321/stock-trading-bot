@@ -590,6 +590,7 @@ def stop_after_ownership_loss(
     *,
     reconcile_submitted: Callable[[], Any],
     terminalize_cycle: Callable[[], Any],
+    persist_unresolved: Callable[[], Any] | None = None,
     observed_at: datetime | None = None,
 ) -> bool:
     """Use the common no-new-POST shutdown path after owner-token loss."""
@@ -600,6 +601,7 @@ def stop_after_ownership_loss(
         lease,
         reconcile_submitted=reconcile_submitted,
         terminalize_cycle=terminalize_cycle,
+        persist_unresolved=persist_unresolved,
         observed_at=observed_at,
     )
 

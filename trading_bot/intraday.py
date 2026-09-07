@@ -162,7 +162,9 @@ def transition_observations_for_iteration(
                     ticker=exit_result.ticker,
                     event_family="RISK_EXIT",
                     normalized_state="RISK_TRIGGER",
-                    broker_subject_id=result.iteration_id,
+                    broker_subject_id=(
+                        f"{exit_result.ticker}:{exit_result.reason_code}"
+                    ),
                     severity=OperationalSeverity.WARNING,
                     observed_at=observed_at,
                     detail={"reason_code": exit_result.reason_code},
@@ -175,7 +177,7 @@ def transition_observations_for_iteration(
                 ticker=None,
                 event_family="BROKER_TRUTH",
                 normalized_state="BROKER_TRUTH_FAILED",
-                broker_subject_id=result.iteration_id,
+                broker_subject_id=result.reason_code,
                 severity=OperationalSeverity.CRITICAL,
                 observed_at=observed_at,
                 detail={"reason_code": result.reason_code},
@@ -348,12 +350,11 @@ def run_intraday_check(
             IntradayIterationOutcome.INTERRUPTED, None, (), "LEASE_OWNERSHIP_LOST",
         )
         if hasattr(lease, "state"):
+            if terminalize is None:
+                raise RuntimeError("active intraday ownership loss requires a terminalizer")
             stop_after_ownership_loss(
                 lease, reconcile_submitted=reconcile,
-                terminalize_cycle=(
-                    (lambda: terminalize(result))
-                    if terminalize is not None else (lambda: None)
-                ),
+                terminalize_cycle=lambda: terminalize(result),
                 persist_unresolved=persist_unresolved,
             )
         elif terminalize is not None:
