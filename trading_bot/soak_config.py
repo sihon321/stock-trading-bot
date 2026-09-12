@@ -69,7 +69,9 @@ class SoakSettings(BaseSettings):
     kis_max_retries: int = 3
     kis_retry_backoff_seconds: float = 1.0
     kis_timeout_seconds: float = 5.0
+    kis_query_timeout_seconds: float = 15.0
     kis_token_refresh_margin_seconds: int = 600
+    kis_token_cache_path: Path = Path("./data/.kis-token-cache/tokens.json")
 
     @model_validator(mode="after")
     def validate_mock_topology(self) -> "SoakSettings":
@@ -83,6 +85,7 @@ class SoakSettings(BaseSettings):
                 self.kis_min_interval_seconds,
                 self.kis_max_retries,
                 self.kis_timeout_seconds,
+                self.kis_query_timeout_seconds,
                 self.kis_token_refresh_margin_seconds,
             )
         ) or self.kis_retry_backoff_seconds < 0:

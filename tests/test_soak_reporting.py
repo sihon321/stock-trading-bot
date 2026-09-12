@@ -306,6 +306,88 @@ def test_campaign_scoped_snapshots_keep_broker_completeness_without_weakening_ru
     assert report.cross_store_unknown == 1
 
 
+def test_no_order_pre_run_snapshot_is_campaign_scoped_but_remains_incomplete(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.append_snapshot(
+        soak,
+        snapshot_id="pre-run-balance-incomplete",
+        campaign_id="campaign-1",
+        run_id="preflight",
+        stage=ReconciliationStage.PRE_RUN,
+        completeness=PageCompleteness.INCOMPLETE,
+        detail={"reason_code": "BALANCE_SUMMARY_INCOMPLETE"},
+    )
+    soak.close()
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.complete == 0
+    assert report.reconciliation.incomplete == 1
+    assert report.reconciliation.unknown == 0
+    assert report.cross_store_unknown == 0
+
+
+def test_legacy_no_order_pre_run_snapshot_is_campaign_scoped(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.append_snapshot(
+        soak,
+        snapshot_id="legacy-pre-run-balance-incomplete",
+        campaign_id="campaign-1",
+        run_id="generated-before-execution",
+        stage=ReconciliationStage.PRE_RUN,
+        completeness=PageCompleteness.INCOMPLETE,
+        accounts=[{"available_cash": 1000}],
+        detail={"reason_code": "BALANCE_SUMMARY_INCOMPLETE"},
+    )
+    soak.close()
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.incomplete == 1
+    assert report.reconciliation.unknown == 0
+    assert report.cross_store_unknown == 0
+
+
+def test_run_bound_pre_run_snapshot_keeps_valid_primary_audit_reference(
+    tmp_path: Path,
+) -> None:
+    paths = _stores(tmp_path)
+    audit = sqlite_audit.connect(paths[0])
+    sqlite_audit.start_run(
+        audit,
+        run_id="run-1",
+        trading_mode="mock",
+        dry_run=False,
+        run_kind=RunKind.RUN,
+        started_at="2026-07-20T00:00:00+00:00",
+        trading_date_kst="20260720",
+        target="mock",
+    )
+    audit.close()
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.append_snapshot(
+        soak,
+        snapshot_id="run-bound-pre-run",
+        campaign_id="campaign-1",
+        run_id="run-1",
+        stage=ReconciliationStage.PRE_RUN,
+        completeness=PageCompleteness.COMPLETE,
+    )
+    soak.close()
+
+    report = build_soak_report(_repository(paths), "campaign-1")
+
+    assert report.reconciliation.complete == 1
+    assert report.reconciliation.unknown == 0
+    assert report.cross_store_unknown == 0
+
+
 def test_campaign_scoped_resume_comparisons_require_snapshot_and_primary_intent(
     tmp_path: Path,
 ) -> None:

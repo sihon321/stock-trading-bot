@@ -6,7 +6,14 @@ import sqlite3
 
 import pytest
 
-from trading_bot.soak_models import CampaignKind, CampaignState, FreezeState
+from trading_bot.soak_models import (
+    CampaignKind,
+    CampaignState,
+    FreezeState,
+    PageCompleteness,
+    ReconciliationStage,
+    ReconciliationVerdict,
+)
 
 
 def _campaign(store, *, campaign_id: str = "campaign-1") -> None:
@@ -20,6 +27,207 @@ def _campaign(store, *, campaign_id: str = "campaign-1") -> None:
         ambiguity_poll_cadence_seconds=5,
         ambiguity_max_observations=12,
     )
+
+
+def _campaign_policy() -> dict[str, object]:
+    return {
+        "accepted_profile_fingerprint": "sha256:approved-profile",
+        "accepted_profile_version": "official-example-v1",
+        "field_contract_version": "kis-mock-compat-v1",
+        "ambiguity_policy_version": "ambiguity-v1",
+        "ambiguity_window_seconds": 60,
+        "ambiguity_poll_cadence_seconds": 5,
+        "ambiguity_max_observations": 12,
+    }
+
+
+def test_partial_start_resume_is_exact_idempotent_and_append_only(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    conn = soak_store.connect_soak_store(tmp_path / "soak.db")
+    soak_store.create_or_resume_campaign(
+        conn, campaign_id="campaign-1", **_campaign_policy()
+    )
+    receipt = {
+        "receipt_id": "campaign-1:identity",
+        "campaign_id": "campaign-1",
+        "target": "mock",
+        "domain_class": "mock.example.test",
+        "account_suffix": "1234",
+        "profile_version": "official-example-v1",
+        "policy_version": "mock-isolation-v1",
+        "detail": {"tr_profile": "official-example-v1"},
+    }
+    first_receipt_id = soak_store.append_or_validate_identity_receipt(conn, **receipt)
+    soak_store.append_snapshot(
+        conn,
+        snapshot_id="startup-1",
+        campaign_id="campaign-1",
+        run_id="startup",
+        stage=ReconciliationStage.STARTUP,
+        completeness=PageCompleteness.INCOMPLETE,
+        detail={"reason_code": "BALANCE_QUERY_TIMEOUT"},
+    )
+
+    status = soak_store.create_or_resume_campaign(
+        conn, campaign_id="campaign-1", **_campaign_policy()
+    )
+    second_receipt_id = soak_store.append_or_validate_identity_receipt(conn, **receipt)
+    soak_store.append_snapshot(
+        conn,
+        snapshot_id="startup-2",
+        campaign_id="campaign-1",
+        run_id="startup",
+        stage=ReconciliationStage.STARTUP,
+        completeness=PageCompleteness.COMPLETE,
+    )
+
+    assert status["state"] is CampaignState.ACTIVE
+    assert first_receipt_id == second_receipt_id
+    assert conn.execute("SELECT COUNT(*) FROM soak_campaigns").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM soak_identity_receipts").fetchone()[0] == 1
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT snapshot_id FROM soak_snapshots ORDER BY rowid"
+        ).fetchall()
+    ] == ["startup-1", "startup-2"]
+
+
+def test_partial_start_resume_rejects_policy_or_identity_drift_before_retry(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    conn = soak_store.connect_soak_store(tmp_path / "soak.db")
+    soak_store.create_or_resume_campaign(
+        conn, campaign_id="campaign-1", **_campaign_policy()
+    )
+    receipt = {
+        "receipt_id": "campaign-1:identity",
+        "campaign_id": "campaign-1",
+        "target": "mock",
+        "domain_class": "mock.example.test",
+        "account_suffix": "1234",
+        "profile_version": "official-example-v1",
+        "policy_version": "mock-isolation-v1",
+        "detail": {"tr_profile": "official-example-v1"},
+    }
+    soak_store.append_or_validate_identity_receipt(conn, **receipt)
+    soak_store.append_snapshot(
+        conn,
+        snapshot_id="startup-1",
+        campaign_id="campaign-1",
+        run_id="startup",
+        stage=ReconciliationStage.STARTUP,
+        completeness=PageCompleteness.INCOMPLETE,
+    )
+
+    drifted_policy = {**_campaign_policy(), "target_eligible_days": 21}
+    with pytest.raises(ValueError, match="SOAK_START_RESUME_BLOCKED:POLICY_DRIFT"):
+        soak_store.create_or_resume_campaign(
+            conn, campaign_id="campaign-1", **drifted_policy
+        )
+    with pytest.raises(ValueError, match="SOAK_START_RESUME_BLOCKED:IDENTITY_DRIFT"):
+        soak_store.append_or_validate_identity_receipt(
+            conn, **{**receipt, "account_suffix": "9999"}
+        )
+
+
+def test_partial_start_resume_never_backfills_missing_identity_after_snapshot(tmp_path) -> None:
+    from trading_bot import soak_store
+
+    conn = soak_store.connect_soak_store(tmp_path / "soak.db")
+    soak_store.create_or_resume_campaign(
+        conn, campaign_id="campaign-1", **_campaign_policy()
+    )
+    soak_store.append_snapshot(
+        conn,
+        snapshot_id="startup-1",
+        campaign_id="campaign-1",
+        run_id="startup",
+        stage=ReconciliationStage.STARTUP,
+        completeness=PageCompleteness.INCOMPLETE,
+    )
+
+    with pytest.raises(ValueError, match="SOAK_START_RESUME_BLOCKED:IDENTITY_MISSING"):
+        soak_store.append_or_validate_identity_receipt(
+            conn,
+            receipt_id="campaign-1:identity",
+            campaign_id="campaign-1",
+            target="mock",
+            domain_class="mock.example.test",
+            account_suffix="1234",
+            profile_version="official-example-v1",
+            policy_version="mock-isolation-v1",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM soak_identity_receipts").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "blocker", ("terminal", "day", "event", "comparison", "complete_startup")
+)
+def test_partial_start_resume_rejects_mutable_or_terminal_evidence(
+    tmp_path, blocker: str
+) -> None:
+    from trading_bot import soak_store
+
+    conn = soak_store.connect_soak_store(tmp_path / f"{blocker}.db")
+    soak_store.create_or_resume_campaign(
+        conn, campaign_id="campaign-1", **_campaign_policy()
+    )
+    soak_store.append_snapshot(
+        conn,
+        snapshot_id="startup-1",
+        campaign_id="campaign-1",
+        run_id="startup",
+        stage=ReconciliationStage.STARTUP,
+        completeness=PageCompleteness.INCOMPLETE,
+    )
+    if blocker == "terminal":
+        conn.execute("UPDATE soak_campaigns SET state='COMPLETED' WHERE campaign_id='campaign-1'")
+        conn.commit()
+    elif blocker == "day":
+        soak_store.designate_day(
+            conn,
+            campaign_id="campaign-1",
+            trading_date="2026-08-11",
+            run_id="run-1",
+            run_kind="RUN",
+            terminal=False,
+        )
+    elif blocker == "event":
+        soak_store.append_campaign_event(
+            conn,
+            campaign_id="campaign-1",
+            run_id="run-1",
+            ticker="005930",
+            order_intent_id="intent-1",
+            event_code="ORDER_INTENT_ATTRIBUTED",
+        )
+    elif blocker == "comparison":
+        soak_store.append_comparison(
+            conn,
+            comparison_id="comparison-1",
+            campaign_id="campaign-1",
+            run_id="run-1",
+            ticker="005930",
+            order_intent_id="intent-1",
+            verdict=ReconciliationVerdict.UNKNOWN,
+            remaining_order_terminal=False,
+        )
+    else:
+        soak_store.append_snapshot(
+            conn,
+            snapshot_id="startup-complete",
+            campaign_id="campaign-1",
+            run_id="startup",
+            stage=ReconciliationStage.STARTUP,
+            completeness=PageCompleteness.COMPLETE,
+        )
+
+    with pytest.raises(ValueError, match="SOAK_START_RESUME_BLOCKED"):
+        soak_store.create_or_resume_campaign(
+            conn, campaign_id="campaign-1", **_campaign_policy()
+        )
 
 
 def test_migration_is_idempotent_and_reopen_preserves_schema(tmp_path) -> None:

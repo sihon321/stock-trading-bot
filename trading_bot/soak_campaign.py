@@ -15,7 +15,7 @@ from .soak_store import (
     append_campaign_event,
     append_drill_link,
     consume_availability_failure,
-    create_campaign,
+    create_or_resume_campaign,
     designate_day,
     latch_safety_failure,
     load_campaign_state,
@@ -98,7 +98,7 @@ class SoakCampaignService:
         self.reconciler = reconciler
 
     def start_campaign(self, **policy: Any) -> dict[str, Any]:
-        return create_campaign(self.store, **policy)
+        return create_or_resume_campaign(self.store, **policy)
 
     def load_status(self, campaign_id: str) -> dict[str, Any]:
         return load_campaign_state(self.store, campaign_id=campaign_id)

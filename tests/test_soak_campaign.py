@@ -84,6 +84,7 @@ def _candidate(
         confidence=0.99,
         reason_code="HOLD_SIGNAL",
         reason_ko="hold",
+        reason_detail=None,
         ticker_state=EvidenceState.COMPLETE,
         order_state="NOT_APPLICABLE",
         reconciliation_state=reconciliation,

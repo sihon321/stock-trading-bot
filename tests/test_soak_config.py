@@ -53,6 +53,13 @@ def test_soak_settings_schema_is_structurally_mock_only(tmp_path: Path) -> None:
     assert fields.isdisjoint({"kis_real", "trading_mode", "confirm_real_trading", "real_account"})
     assert settings.target_eligible_days == 20
     assert settings.availability_failure_budget == 2
+    assert settings.kis_timeout_seconds == 5.0
+    assert settings.kis_query_timeout_seconds == 15.0
+
+
+def test_query_timeout_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="mock KIS query controls must be positive"):
+        _settings(tmp_path, kis_query_timeout_seconds=0)
 
 
 @pytest.mark.parametrize(

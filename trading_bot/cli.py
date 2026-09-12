@@ -11,7 +11,7 @@ import signal
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from pathlib import Path
@@ -71,16 +71,20 @@ from trading_bot.soak_reconcile import (
 from trading_bot.soak_models import (
     FaultName,
     PageCompleteness,
+    PRE_RUN_PREFLIGHT_RUN_ID,
     ReconciliationStage,
     ReconciliationVerdict,
 )
 from trading_bot.soak_store import (
+    append_campaign_event,
     append_comparison,
-    append_identity_receipt,
+    append_or_validate_identity_receipt,
     append_snapshot,
     connect_soak_store,
     fingerprint_accepted_profile,
+    freeze_ticker,
     load_campaign_state,
+    transition_freeze,
 )
 from trading_bot.soak_campaign import SoakCampaignService
 from trading_bot.soak_controller import bootstrap_controller_journal
@@ -345,6 +349,54 @@ class _SoakRuntime:
     close: Callable[[], None]
 
 
+@dataclass
+class _PostSubmissionTracker:
+    """Run one broker-truth check per accepted or ambiguous submission.
+
+    Accepted acknowledgements wait for the local RECONCILED event so the
+    comparison sees fill evidence.  If that local readback fails, the caller
+    flushes the pending acknowledgement after the production cycle; this is a
+    query-only broker-truth check and never resubmits the order.
+    """
+
+    callback: Callable[[], None]
+    submission_count: int = 0
+    post_count: int = 0
+    _submitted: set[str] = field(default_factory=set)
+    _pending: set[str] = field(default_factory=set)
+    _completed: set[str] = field(default_factory=set)
+
+    def observe(self, event: Any) -> None:
+        intent_id = str(getattr(event, "order_intent_id", "") or "")
+        if not intent_id:
+            return
+        if event.event_type is OrderEventType.SUBMISSION_ACCEPTED:
+            self._record_submission(intent_id)
+            self._pending.add(intent_id)
+        elif event.event_type is OrderEventType.SUBMISSION_AMBIGUOUS:
+            self._record_submission(intent_id)
+            self._run_once(intent_id)
+        elif event.event_type is OrderEventType.RECONCILED and intent_id in self._pending:
+            self._run_once(intent_id)
+
+    def flush_pending(self) -> None:
+        for intent_id in sorted(self._pending - self._completed):
+            self._run_once(intent_id)
+
+    def _record_submission(self, intent_id: str) -> None:
+        if intent_id not in self._submitted:
+            self._submitted.add(intent_id)
+            self.submission_count += 1
+
+    def _run_once(self, intent_id: str) -> None:
+        if intent_id in self._completed:
+            return
+        self._completed.add(intent_id)
+        self._pending.discard(intent_id)
+        self.post_count += 1
+        self.callback()
+
+
 def _reconciliation_complete(result: Any) -> bool:
     return bool(getattr(result, "complete", result is True))
 
@@ -378,17 +430,33 @@ def _orchestrate_soak_run(
     observed = (
         datetime.fromisoformat(observed_at) if isinstance(observed_at, str) else observed_at
     )
+    admission = runtime.campaign.admit_designated_run(
+        campaign_id=runtime.campaign_id,
+        run_id=run_id,
+        observed_at=observed,
+    )
+    admission_code = getattr(admission.code, "value", str(admission.code))
+    if admission_code != "ADMITTED":
+        raise RuntimeError(f"SOAK_RUN_NOT_ADMITTED:{admission_code}")
     _require_soak_reconciliation(runtime, ReconciliationStage.PRE_RUN, run_id)
     post_count = 0
+    post_reconciliation_error: RuntimeError | None = None
 
     def post_submission() -> None:
-        nonlocal post_count
-        _require_soak_reconciliation(
-            runtime, ReconciliationStage.POST_SUBMISSION, run_id
-        )
+        nonlocal post_count, post_reconciliation_error
         post_count += 1
+        try:
+            _require_soak_reconciliation(
+                runtime, ReconciliationStage.POST_SUBMISSION, run_id
+            )
+        except RuntimeError as exc:
+            # The broker must finish recording its terminal ambiguity evidence before
+            # the campaign stops. Re-raise after the mutable run has been terminalized.
+            post_reconciliation_error = exc
 
     result = runtime.execute_designated(run_id, post_submission)
+    if post_reconciliation_error is not None:
+        raise post_reconciliation_error
     declared = int(result.get("submissions", post_count))
     if declared != post_count:
         raise RuntimeError("POST_SUBMISSION_RECONCILIATION_CARDINALITY_MISMATCH")
@@ -531,6 +599,129 @@ def _persist_snapshot_evidence(store: sqlite3.Connection, snapshot: Any) -> None
     )
 
 
+def _snapshot_run_id(
+    stage: ReconciliationStage,
+    run_id: str,
+    intent_ids: tuple[str, ...],
+    tickers: tuple[str, ...],
+) -> str:
+    """Keep no-order PRE_RUN observations campaign-scoped until execution starts."""
+
+    if stage is ReconciliationStage.PRE_RUN and not intent_ids and not tickers:
+        return PRE_RUN_PREFLIGHT_RUN_ID
+    return run_id
+
+
+def _order_event_types(
+    primary: sqlite3.Connection, order_intent_id: str
+) -> set[str]:
+    return {
+        str(row[0])
+        for row in primary.execute(
+            "SELECT event_type FROM order_events WHERE order_intent_id=?",
+            (order_intent_id,),
+        )
+    }
+
+
+def _accepted_without_local_reconciliation(events: set[str]) -> bool:
+    return (
+        OrderEventType.SUBMISSION_ACCEPTED.value in events
+        and not events.intersection(
+            {
+                OrderEventType.RECONCILED.value,
+                OrderEventType.BROKER_OBSERVED.value,
+            }
+        )
+    )
+
+
+def _campaign_order_intent_ids(
+    soak: sqlite3.Connection, *, campaign_id: str
+) -> set[str]:
+    """Return only intents explicitly attributed before broker mutation."""
+
+    return {
+        str(row[0])
+        for row in soak.execute(
+            """SELECT DISTINCT order_intent_id FROM soak_events
+               WHERE campaign_id=? AND event_code='ORDER_INTENT_ATTRIBUTED'
+                 AND order_intent_id IS NOT NULL""",
+            (campaign_id,),
+        )
+    }
+
+
+def _audit_trading_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    try:
+        if "-" not in text:
+            return datetime.strptime(text, "%Y%m%d").date()
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _resume_snapshot_window(
+    primary: sqlite3.Connection,
+    *,
+    intent_ids: tuple[str, ...],
+    today: date,
+) -> SnapshotWindow | None:
+    """Cover every attributed intent's immutable origin trading date."""
+
+    origins: list[date] = []
+    for intent_id in intent_ids:
+        rows = primary.execute(
+            """SELECT DISTINCT e.origin_run_id,r.trading_date_kst
+               FROM order_events e JOIN runs r ON r.run_id=e.origin_run_id
+               WHERE e.order_intent_id=?""",
+            (intent_id,),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        origin = _audit_trading_date(rows[0][1])
+        if origin is None:
+            return None
+        origins.append(origin)
+    return SnapshotWindow(min(origins, default=today), max([today, *origins]))
+
+
+def _has_terminal_subject_comparison(
+    soak: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    ticker: str,
+    order_intent_id: str,
+) -> bool:
+    return soak.execute(
+        """SELECT 1 FROM soak_comparisons
+           WHERE campaign_id=? AND ticker=? AND order_intent_id=?
+             AND verdict='MATCHED' AND remaining_order_terminal=1
+           ORDER BY id DESC LIMIT 1""",
+        (campaign_id, ticker, order_intent_id),
+    ).fetchone() is not None
+
+
+def _active_subject_freeze(
+    soak: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    ticker: str,
+    order_intent_id: str,
+) -> tuple[str, str] | None:
+    row = soak.execute(
+        """SELECT f.freeze_id,f.freeze_kind FROM soak_ticker_freezes f
+           WHERE f.campaign_id=? AND f.ticker=? AND f.order_intent_id=?
+             AND f.state='FROZEN' AND NOT EXISTS (
+               SELECT 1 FROM soak_ticker_freezes r
+               WHERE r.freeze_id=f.freeze_id AND r.state='RELEASED')
+           ORDER BY f.id DESC LIMIT 1""",
+        (campaign_id, ticker, order_intent_id),
+    ).fetchone()
+    return (str(row[0]), str(row[1])) if row is not None else None
+
+
 def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntime:
     """Build the genuine mock adapters and isolated primary/soak store owners."""
 
@@ -575,7 +766,7 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
     )
 
     def persist_receipt() -> int:
-        return append_identity_receipt(
+        return append_or_validate_identity_receipt(
             soak,
             receipt_id=f"{campaign_id}:identity",
             campaign_id=campaign_id,
@@ -589,12 +780,42 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
 
     def reconcile(stage: ReconciliationStage, run_id: str) -> Any:
         today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        resume_events: dict[str, set[str]] = {}
         if stage is ReconciliationStage.RESUME:
+            attributed_intents = _campaign_order_intent_ids(
+                soak, campaign_id=campaign_id
+            )
             rows = primary.execute(
                 """SELECT order_intent_id,MAX(ticker) FROM order_events
                    WHERE order_intent_id IS NOT NULL GROUP BY order_intent_id
-                   HAVING COUNT(*)=1 AND MAX(event_type)='INTENT_CREATED'"""
+                   HAVING (COUNT(*)=1 AND MAX(event_type)='INTENT_CREATED')
+                       OR SUM(CASE WHEN event_type='SUBMISSION_AMBIGUOUS' THEN 1 ELSE 0 END) > 0
+                       OR (
+                         SUM(CASE WHEN event_type='SUBMISSION_ACCEPTED' THEN 1 ELSE 0 END) > 0
+                         AND SUM(CASE WHEN event_type IN ('RECONCILED','BROKER_OBSERVED')
+                                      THEN 1 ELSE 0 END) = 0
+                       )"""
             ).fetchall()
+            unresolved_rows = []
+            for row in rows:
+                intent_id = str(row[0])
+                if intent_id not in attributed_intents:
+                    continue
+                ticker = str(row[1])
+                events = _order_event_types(primary, intent_id)
+                resume_events[intent_id] = events
+                if (
+                    _accepted_without_local_reconciliation(events)
+                    and _has_terminal_subject_comparison(
+                        soak,
+                        campaign_id=campaign_id,
+                        ticker=ticker,
+                        order_intent_id=intent_id,
+                    )
+                ):
+                    continue
+                unresolved_rows.append(row)
+            rows = unresolved_rows
         else:
             rows = primary.execute(
                 "SELECT DISTINCT order_intent_id,ticker FROM order_events WHERE origin_run_id=?",
@@ -602,22 +823,31 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
             ).fetchall()
         intent_ids = tuple(str(row[0]) for row in rows if row[0])
         tickers = tuple(str(row[1]) for row in rows if row[1])
+        window = SnapshotWindow(today, today)
+        if stage is ReconciliationStage.RESUME:
+            resume_window = _resume_snapshot_window(
+                primary, intent_ids=intent_ids, today=today
+            )
+            if resume_window is None:
+                return SimpleNamespace(complete=False)
+            window = resume_window
+        snapshot_run_id = _snapshot_run_id(stage, run_id, intent_ids, tickers)
         snapshot = collect_broker_snapshot(
             adapter,
-            SnapshotCampaign(campaign_id, run_id, account, receipt.account_suffix, profile),
+            SnapshotCampaign(
+                campaign_id, snapshot_run_id, account, receipt.account_suffix, profile
+            ),
             stage,
-            SnapshotWindow(today, today),
+            window,
             {"order_ids": (), "tickers": tickers},
         )
         _persist_snapshot_evidence(soak, snapshot)
         complete = snapshot.completeness is PageCompleteness.COMPLETE
         for intent_id in intent_ids:
             local = load_local_order_evidence(primary, order_intent_id=intent_id)
-            events = {
-                row[0] for row in primary.execute(
-                    "SELECT event_type FROM order_events WHERE order_intent_id=?", (intent_id,)
-                )
-            }
+            events = resume_events.get(intent_id)
+            if events is None:
+                events = _order_event_types(primary, intent_id)
             if stage is ReconciliationStage.RESUME and events == {"INTENT_CREATED"}:
                 append_comparison(
                     soak, comparison_id=uuid.uuid4().hex, campaign_id=campaign_id,
@@ -646,6 +876,51 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
             complete = complete and comparison.complete and (
                 comparison.verdict is not ReconciliationVerdict.UNKNOWN
             )
+            accepted_unresolved = _accepted_without_local_reconciliation(events)
+            active = _active_subject_freeze(
+                soak,
+                campaign_id=campaign_id,
+                ticker=local["ticker"],
+                order_intent_id=intent_id,
+            )
+            if (
+                (
+                    OrderEventType.SUBMISSION_AMBIGUOUS.value in events
+                    or accepted_unresolved
+                )
+                and comparison.verdict is ReconciliationVerdict.UNKNOWN
+                and active is None
+            ):
+                ambiguity = OrderEventType.SUBMISSION_AMBIGUOUS.value in events
+                freeze_ticker(
+                    soak,
+                    freeze_id=str(uuid.uuid4()),
+                    campaign_id=campaign_id,
+                    ticker=local["ticker"],
+                    order_intent_id=intent_id,
+                    freeze_kind="AMBIGUITY" if ambiguity else "REMAINING_ORDER",
+                    detail={
+                        "reason_code": (
+                            "AMBIGUOUS_SUBMISSION"
+                            if ambiguity
+                            else "ACCEPTED_ORDER_UNRESOLVED"
+                        )
+                    },
+                )
+            elif (
+                accepted_unresolved
+                and active is not None
+                and active[1] == "REMAINING_ORDER"
+                and comparison.verdict is ReconciliationVerdict.MATCHED
+                and comparison.remaining_order_terminal
+            ):
+                transition_freeze(
+                    soak,
+                    freeze_id=active[0],
+                    release_evidence_type="COMPARISON",
+                    release_evidence_id=comparison.comparison_id,
+                    detail={"reason_code": "DETERMINATE_TERMINAL_BROKER_TRUTH"},
+                )
             if comparison.verdict is ReconciliationVerdict.MISMATCHED:
                 campaign.record_safety_breach(
                     campaign_id=campaign_id,
@@ -691,16 +966,24 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
     def execute_designated(
         run_id: str, post_submission: Callable[[], None]
     ) -> dict[str, Any]:
-        submission_count = 0
+        tracker = _PostSubmissionTracker(post_submission)
 
         def order_event_hook(event: Any) -> None:
-            nonlocal submission_count
-            if event.event_type in {
-                OrderEventType.SUBMISSION_ACCEPTED,
-                OrderEventType.SUBMISSION_AMBIGUOUS,
-            }:
-                submission_count += 1
-                post_submission()
+            if event.event_type is OrderEventType.INTENT_CREATED:
+                append_campaign_event(
+                    soak,
+                    observation_id=(
+                        f"{campaign_id}:{event.order_intent_id}:attribution"
+                    ),
+                    campaign_id=campaign_id,
+                    run_id=event.origin_run_id,
+                    ticker=event.ticker,
+                    order_intent_id=event.order_intent_id,
+                    event_code="ORDER_INTENT_ATTRIBUTED",
+                    detail={"attribution_source": "SOAK_DESIGNATED_RUN"},
+                    observed_at=event.observed_at,
+                )
+            tracker.observe(event)
 
         frozen_rows = soak.execute(
             """SELECT f.ticker FROM soak_ticker_freezes f
@@ -711,21 +994,24 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         preflight = PreflightResult(
             (), True, {str(row[0]): ReasonCode.AMBIGUOUS_SUBMISSION for row in frozen_rows}
         )
-        result = run_cycle(
-            execute=True,
-            settings=mock_settings,
-            data_source=data_source,
-            llm_provider=llm,
-            broker=broker,
-            audit_conn=primary,
-            notifier=NoopNotifier(),
-            run_cycle=_run_llm_cycle,
-            trading_date=_today_kst(),
-            run_id=run_id,
-            preflight_result=preflight,
-            order_event_hook=order_event_hook,
-        )
-        result["submissions"] = submission_count
+        try:
+            result = run_cycle(
+                execute=True,
+                settings=mock_settings,
+                data_source=data_source,
+                llm_provider=llm,
+                broker=broker,
+                audit_conn=primary,
+                notifier=NoopNotifier(),
+                run_cycle=_run_llm_cycle,
+                trading_date=_today_kst(),
+                run_id=run_id,
+                preflight_result=preflight,
+                order_event_hook=order_event_hook,
+            )
+        finally:
+            tracker.flush_pending()
+        result["submissions"] = tracker.submission_count
         return result
 
     return _SoakRuntime(
@@ -830,6 +1116,7 @@ def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
             max_retries=settings.kis_max_retries,
             retry_backoff_seconds=settings.kis_retry_backoff_seconds,
             timeout_seconds=settings.kis_timeout_seconds,
+            cache_path=settings.kis_token_cache_path,
         ),
         request_limiter=limiter,
     )
@@ -841,6 +1128,7 @@ def _build_soak_adapter(settings: SoakSettings) -> KisOrderAdapter:
         max_retries=settings.kis_max_retries,
         retry_backoff_seconds=settings.kis_retry_backoff_seconds,
         timeout_seconds=settings.kis_timeout_seconds,
+        query_timeout_seconds=settings.kis_query_timeout_seconds,
         request_limiter=limiter,
     )
 
@@ -858,9 +1146,17 @@ def _build_quote_adapter(settings: Settings, token_manager: KisTokenManager) -> 
     )
 
 
-def _account_from_env() -> Optional[KisOrderAccount]:
-    cano = os.getenv("KIS_ACCOUNT_CANO")
-    product_code = os.getenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+def _account_from_env(settings: Settings | None = None) -> Optional[KisOrderAccount]:
+    """Resolve the account matching the selected trading environment."""
+
+    use_mock_account = settings is not None and settings.trading_mode is TradingMode.MOCK
+    cano = os.getenv(
+        "SOAK_KIS_MOCK_ACCOUNT_CANO" if use_mock_account else "KIS_ACCOUNT_CANO"
+    )
+    product_code = os.getenv(
+        "SOAK_KIS_MOCK_ACCOUNT_PRODUCT_CODE" if use_mock_account else "KIS_ACCOUNT_PRODUCT_CODE",
+        "01",
+    )
     if not cano:
         return None
     return KisOrderAccount(cano=cano, account_product_code=product_code)
@@ -883,7 +1179,7 @@ def _build_broker(
 
     if token_manager is None:
         raise ValueError("real broker requires the shared KisTokenManager")
-    real_account = account or _account_from_env()
+    real_account = account or _account_from_env(settings)
     if real_account is None:
         raise ValueError(
             "real KIS broker requires KIS_ACCOUNT_CANO and optional "
@@ -927,7 +1223,7 @@ def build_runtime(
         ohlcv_adapter=ohlcv_adapter,
         quote_adapter=quote_adapter,
     )
-    account = kis_account or _account_from_env()
+    account = kis_account or _account_from_env(resolved_settings)
     if account is None:
         raise ValueError(
             "KIS portfolio synchronization requires KIS_ACCOUNT_CANO and "
@@ -1138,6 +1434,38 @@ def build_preflight_result(settings: Settings | None = None) -> PreflightResult:
         market_reader,
         lambda: _read_unresolved_orders(resolved.audit_db_path),
     )
+
+
+def _build_soak_preflight_result(
+    settings: SoakSettings, campaign_id: str
+) -> PreflightResult:
+    """Build the D-11 checks with the authenticated, mock-only calendar witness."""
+
+    selected = tuple(
+        profile
+        for profile in MOCK_TR_PROFILE_CANDIDATES
+        if profile.version == settings.kis_mock.tr_id_profile
+    )
+    if len(selected) != 1:
+        raise ValueError("MOCK_ISOLATION_BLOCKED: selected profile is not unique")
+    receipt = build_soak_identity_receipt(settings, campaign_id, selected[0])
+    adapter = _build_soak_adapter(settings)
+    policy = MarketCyclePolicy(
+        ObservedKRXCalendar(
+            PykrxOhlcvAdapter(adjusted=True, request_timeout_seconds=10.0),
+            calendar_witness=adapter.fetch_trading_day,
+        )
+    )
+
+    return evaluate_preflight(
+        lambda: MockTargetEvidence(receipt.target == "mock", receipt.target),
+        lambda: _read_audit_health(settings.primary_audit_db_path),
+        lambda: policy.classify(datetime.now(ZoneInfo("Asia/Seoul"))),
+        lambda: _read_unresolved_orders(settings.primary_audit_db_path),
+    )
+
+
+_soak_preflight_factory = _build_soak_preflight_result
 
 
 def _outcome_from_result(
@@ -1740,8 +2068,6 @@ def run_cycle(
         kind=NotificationKind.FINAL_SUMMARY,
         summary=summary,
     )
-    if lease_owned:
-        mutation_lease.release()
     return {
         "run_id": resolved_run_id,
         "dry_run": dry_run,
@@ -1927,6 +2253,21 @@ def soak_run_command(
     finally:
         if runtime is not None:
             runtime.close()
+
+
+@soak_app.command("preflight")
+def soak_preflight_command(
+    campaign_id: str = typer.Option(..., "--campaign-id"),
+) -> None:
+    """Render mock-only D-11 checks with authenticated KIS calendar evidence."""
+
+    try:
+        settings = _soak_settings_factory()
+        result = _soak_preflight_factory(settings, campaign_id)
+        typer.echo(render_preflight(result))
+    except (ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+        typer.echo(str(exc)[:200], err=True)
+        raise typer.Exit(2) from None
 
 
 @soak_app.command("resume")

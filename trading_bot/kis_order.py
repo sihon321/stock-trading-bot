@@ -9,10 +9,12 @@ is never decorated with tenacity retry.
 from __future__ import annotations
 
 import math
+import re
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Mapping, Optional, Union
+from zoneinfo import ZoneInfo
 
 from tenacity import (
     retry,
@@ -33,8 +35,7 @@ _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 _CHK_HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"
 _HASHKEY_PATH = "/uapi/hashkey"
 _ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
-_MARKET_DIV_CODE = "J"
-_CHK_HOLIDAY_TR_ID = "CTCA0903R"
+_CHK_HOLIDAY_TR_ID = "VTCA0903R"
 
 _TICK_BANDS = (
     (2_000, 1),
@@ -51,9 +52,124 @@ _TICK_BANDS = (
 class _TransientOrderQueryError(Exception):
     """Internal marker for retryable KIS account-query failures."""
 
+    _ALLOWED_REASON_CODES = frozenset(
+        {
+            "QUERY_TIMEOUT",
+            "QUERY_TRANSPORT_ERROR",
+            "QUERY_HTTP_AUTH_ERROR",
+            "QUERY_HTTP_ERROR",
+        }
+    )
+
+    def __init__(self, reason_code: str) -> None:
+        safe_reason = (
+            reason_code
+            if reason_code in self._ALLOWED_REASON_CODES
+            else "QUERY_TRANSPORT_ERROR"
+        )
+        super().__init__(safe_reason)
+        self.reason_code = safe_reason
+
+
+def _query_transport_reason(exc: Exception) -> str:
+    type_names = {base.__name__.lower() for base in type(exc).__mro__}
+    if isinstance(exc, TimeoutError) or any("timeout" in name for name in type_names):
+        return "QUERY_TIMEOUT"
+    return "QUERY_TRANSPORT_ERROR"
+
+
+def _query_http_reason(status: Any) -> str:
+    try:
+        numeric_status = int(status)
+    except (TypeError, ValueError, OverflowError):
+        return "QUERY_HTTP_ERROR"
+    if numeric_status in {401, 403}:
+        return "QUERY_HTTP_AUTH_ERROR"
+    return "QUERY_HTTP_ERROR"
+
+
+def _query_http_failed(status: Any) -> bool:
+    try:
+        return status is None or int(status) >= 400
+    except (TypeError, ValueError, OverflowError):
+        return True
+
 
 class KisOrderError(RuntimeError):
-    """Raised when a single-shot KIS order operation fails safe."""
+    """Raised when a single-shot KIS order operation fails safe.
+
+    ``safe_diagnostics`` is deliberately limited to bounded classification
+    fields.  Provider prose, response bodies, request data, credentials, and
+    exception messages must never cross into durable order evidence.
+    """
+
+    _ALLOWED_CATEGORIES = frozenset(
+        {
+            "TIMEOUT",
+            "TRANSPORT_ERROR",
+            "HTTP_ERROR",
+            "PARSE_ERROR",
+            "PROVIDER_ERROR",
+            "RESPONSE_SCHEMA_ERROR",
+            "MISSING_HASHKEY",
+            "MISSING_ORDER_ID",
+            "ORDER_ERROR",
+        }
+    )
+    _ALLOWED_STAGES = frozenset({"HASHKEY", "ORDER_POST", "QUERY", "UNKNOWN"})
+    _SAFE_CODE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_category: str = "ORDER_ERROR",
+        failure_stage: str = "UNKNOWN",
+        http_status: int | None = None,
+        rt_cd: object = None,
+        msg_cd: object = None,
+    ) -> None:
+        super().__init__(message)
+        self._failure_category = (
+            failure_category
+            if failure_category in self._ALLOWED_CATEGORIES
+            else "ORDER_ERROR"
+        )
+        self._failure_stage = (
+            failure_stage if failure_stage in self._ALLOWED_STAGES else "UNKNOWN"
+        )
+        self._http_status = self._normalize_http_status(http_status)
+        self._rt_cd = self._normalize_code(rt_cd)
+        self._msg_cd = self._normalize_code(msg_cd)
+
+    @classmethod
+    def _normalize_code(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        candidate = str(value).strip()
+        return candidate if cls._SAFE_CODE.fullmatch(candidate) else None
+
+    @staticmethod
+    def _normalize_http_status(value: object) -> int | None:
+        try:
+            status = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return status if 100 <= status <= 599 else None
+
+    @property
+    def safe_diagnostics(self) -> dict[str, str | int]:
+        detail: dict[str, str | int] = {
+            "failure_category": self._failure_category,
+            "failure_stage": self._failure_stage,
+        }
+        if self._http_status is not None:
+            detail["http_status"] = self._http_status
+        if self._rt_cd is not None:
+            detail["rt_cd"] = self._rt_cd
+        if self._msg_cd is not None:
+            detail["msg_cd"] = self._msg_cd
+        return detail
 
 
 @dataclass(frozen=True)
@@ -174,14 +290,14 @@ def _derive_tr_ids(tr_id_profile: str) -> KisOrderTrIds:
         return KisOrderTrIds(
             buy="VTTC0802U",
             sell="VTTC0801U",
-            daily_fills="VTTC8001R",
+            daily_fills="VTTC0081R",
             balance="VTTC8434R",
         )
     if profile == "real":
         return KisOrderTrIds(
             buy="TTTC0802U",
             sell="TTTC0801U",
-            daily_fills="TTTC8001R",
+            daily_fills="TTTC0081R",
             balance="TTTC8434R",
         )
     raise ValueError(f"unsupported KIS tr_id_profile: {tr_id_profile!r}")
@@ -201,6 +317,7 @@ class KisOrderAdapter:
         max_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
         timeout_seconds: float = 5.0,
+        query_timeout_seconds: float | None = None,
         request_limiter: KisRequestLimiter | None = None,
     ) -> None:
         if client is None:
@@ -216,6 +333,11 @@ class KisOrderAdapter:
         self._max_retries = max(1, int(max_retries))
         self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._timeout_seconds = float(timeout_seconds)
+        self._query_timeout_seconds = float(
+            timeout_seconds if query_timeout_seconds is None else query_timeout_seconds
+        )
+        if self._query_timeout_seconds <= 0:
+            raise ValueError("query_timeout_seconds must be positive")
         self._last_request_at: Optional[float] = None
         self._request_limiter = request_limiter
 
@@ -229,7 +351,8 @@ class KisOrderAdapter:
         return self._tr_ids
 
     def inquire_daily_ccld(
-        self, *, ticker: Optional[str] = None, order_id: Optional[str] = None
+        self, *, account: KisOrderAccount, ticker: Optional[str] = None,
+        order_id: Optional[str] = None,
     ) -> KisOrderQueryResult:
         """Fetch recent same-day KIS executions/orders as untrusted raw output."""
 
@@ -240,16 +363,18 @@ class KisOrderAdapter:
             body = self._fetch_query_body(
                 path=_DAILY_CCLD_PATH,
                 tr_id=self._tr_ids.daily_fills,
-                params=self._daily_params(ticker=ticker, order_id=order_id),
+                params=self._daily_params(
+                    account=account, ticker=ticker, order_id=order_id
+                ),
                 token=token,
             )
         except KisAuthError:
             return _unavailable("KIS auth unavailable for order query")
         except _TransientOrderQueryError as exc:
             return _unavailable(str(exc))
-        return self._parse_query_output(body, expected_shape=list)
+        return self._parse_query_output(body, expected_shape=list, output_key="output1")
 
-    def inquire_balance(self) -> KisOrderQueryResult:
+    def inquire_balance(self, *, account: KisOrderAccount) -> KisOrderQueryResult:
         """Fetch KIS account balance as untrusted raw output."""
 
         try:
@@ -257,40 +382,60 @@ class KisOrderAdapter:
             body = self._fetch_query_body(
                 path=_BALANCE_PATH,
                 tr_id=self._tr_ids.balance,
-                params=self._balance_params(),
+                params=self._balance_params() | {
+                    "CANO": account.cano,
+                    "ACNT_PRDT_CD": account.account_product_code,
+                },
                 token=token,
             )
         except KisAuthError:
             return _unavailable("KIS auth unavailable for order query")
         except _TransientOrderQueryError as exc:
             return _unavailable(str(exc))
-        return self._parse_query_output(body, expected_shape=dict)
+        return self._parse_query_output(
+            body, expected_shape=(dict, list), output_key="output2"
+        )
 
     def fetch_trading_day(self, day: date) -> bool | None:
         """Return explicit mock KIS calendar evidence for one KST date.
 
         This witness is intentionally unavailable outside the soak adapter's
         mock profile.  It only makes the authenticated GET calendar request;
-        it cannot use hashkey or order-cash capability.
+        it cannot use hashkey or order-cash capability.  KIS can occasionally
+        return a successful HTTP response whose calendar payload is incomplete,
+        so both transport failures and semantically unavailable payloads are
+        retried within the adapter's existing bounded query budget.
         """
 
         if self._tr_id_profile != "mock" or not isinstance(day, date):
             return None
         try:
             token = self._token_manager.get_token()
-            body = self._fetch_query_body(
-                path=_CHK_HOLIDAY_PATH,
-                tr_id=_CHK_HOLIDAY_TR_ID,
-                params={
-                    "BASS_DT": day.strftime("%Y%m%d"),
-                    "CTX_AREA_NK": "",
-                    "CTX_AREA_FK": "",
-                },
-                token=token,
-            )
-        except (KisAuthError, _TransientOrderQueryError):
+        except KisAuthError:
             return None
-        return self._normalize_trading_day(body, day)
+
+        params = {
+            "BASS_DT": day.strftime("%Y%m%d"),
+            "CTX_AREA_NK": "",
+            "CTX_AREA_FK": "",
+        }
+        for attempt in range(self._max_retries):
+            try:
+                body = self._query_request(
+                    path=_CHK_HOLIDAY_PATH,
+                    tr_id=_CHK_HOLIDAY_TR_ID,
+                    params=params,
+                    token=token,
+                )
+            except _TransientOrderQueryError:
+                witness = None
+            else:
+                witness = self._normalize_trading_day(body, day)
+            if type(witness) is bool:
+                return witness
+            if attempt + 1 < self._max_retries:
+                time.sleep(self._retry_backoff_seconds)
+        return None
 
     @staticmethod
     def _normalize_trading_day(body: Any, requested_day: date) -> bool | None:
@@ -349,6 +494,7 @@ class KisOrderAdapter:
             "INQR_DVSN_1": "",
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
         }
         return self._query_pages(
             path=_DAILY_CCLD_PATH,
@@ -410,8 +556,8 @@ class KisOrderAdapter:
         seen_tokens: set[tuple[str, str]] = set()
         try:
             token = self._token_manager.get_token()
-        except KisAuthError:
-            return self._incomplete_envelope("AUTH_UNAVAILABLE")
+        except KisAuthError as exc:
+            return self._incomplete_envelope(exc.reason_code)
 
         for page_number in range(1, page_cap + 1):
             try:
@@ -446,8 +592,10 @@ class KisOrderAdapter:
                     )
                 seen_tokens.add(continuation)
                 params = params | {"CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk}
-            except _TransientOrderQueryError:
-                return self._incomplete_envelope("QUERY_UNAVAILABLE", rows, summary, page_number)
+            except _TransientOrderQueryError as exc:
+                return self._incomplete_envelope(
+                    exc.reason_code, rows, summary, page_number
+                )
         return self._incomplete_envelope("PAGE_CAP_REACHED", rows, summary, page_cap)
 
     @staticmethod
@@ -499,21 +647,45 @@ class KisOrderAdapter:
                 url, json=body, headers=headers, timeout=self._timeout_seconds
             )
         except Exception as exc:  # noqa: BLE001 - never retry a real order POST.
-            raise KisOrderError(f"order POST failed: {type(exc).__name__}") from exc
+            category = (
+                "TIMEOUT"
+                if _query_transport_reason(exc) == "QUERY_TIMEOUT"
+                else "TRANSPORT_ERROR"
+            )
+            raise KisOrderError(
+                f"order POST failed: {type(exc).__name__}",
+                failure_category=category,
+                failure_stage="ORDER_POST",
+            ) from exc
 
         status = getattr(response, "status_code", None)
         if status is None or int(status) >= 400:
-            raise KisOrderError(f"order POST returned HTTP {status}")
+            raise KisOrderError(
+                f"order POST returned HTTP {status}",
+                failure_category="HTTP_ERROR",
+                failure_stage="ORDER_POST",
+                http_status=status,
+            )
 
         try:
             payload = response.json()
         except Exception as exc:  # noqa: BLE001 - malformed body is terminal.
-            raise KisOrderError("order POST response was not valid JSON") from exc
+            raise KisOrderError(
+                "order POST response was not valid JSON",
+                failure_category="PARSE_ERROR",
+                failure_stage="ORDER_POST",
+            ) from exc
 
-        output = self._validated_response_output(payload, expected_shape=dict)
+        output = self._validated_response_output(
+            payload, expected_shape=dict, failure_stage="ORDER_POST"
+        )
         order_id = str(output.get("ODNO") or output.get("odno") or "").strip()
         if not order_id:
-            raise KisOrderError("order POST response missing ODNO")
+            raise KisOrderError(
+                "order POST response missing ODNO",
+                failure_category="MISSING_ORDER_ID",
+                failure_stage="ORDER_POST",
+            )
         krx_orgno = str(output.get("KRX_FWDG_ORD_ORGNO") or "").strip()
         return KisOrderPostResult(
             order_id=order_id,
@@ -550,10 +722,14 @@ class KisOrderAdapter:
             remaining_qty=remaining_qty,
         )
 
-    def read_fill_status(self, *, ticker: str, order_id: str) -> FillStatus:
+    def read_fill_status(
+        self, *, account: KisOrderAccount, ticker: str, order_id: str
+    ) -> FillStatus:
         """Query recent executions and parse the confirmed fill-status fields."""
 
-        result = self.inquire_daily_ccld(ticker=ticker, order_id=order_id)
+        result = self.inquire_daily_ccld(
+            account=account, ticker=ticker, order_id=order_id
+        )
         if result.health.status is not SourceStatus.AVAILABLE or result.output is None:
             raise KisOrderError(f"fill readback unavailable: {result.health.reason}")
         return self.parse_fill_status(result.output, order_id=order_id, ticker=ticker)
@@ -610,15 +786,13 @@ class KisOrderAdapter:
                     url,
                     params=params,
                     headers=self._headers(token=token, tr_id=tr_id),
-                    timeout=self._timeout_seconds,
+                    timeout=self._query_timeout_seconds,
                 )
             except Exception as exc:  # noqa: BLE001
-                raise _TransientOrderQueryError(
-                    f"order query failed: {type(exc).__name__}"
-                ) from None
+                raise _TransientOrderQueryError(_query_transport_reason(exc)) from None
             status = getattr(response, "status_code", None)
-            if status is None or int(status) >= 400:
-                raise _TransientOrderQueryError(f"order query returned HTTP {status}")
+            if _query_http_failed(status):
+                raise _TransientOrderQueryError(_query_http_reason(status))
             try:
                 return response.json(), response.headers
             except Exception:
@@ -634,25 +808,28 @@ class KisOrderAdapter:
 
         try:
             response = self._client.get(
-                url, params=params, headers=headers, timeout=self._timeout_seconds
+                url, params=params, headers=headers,
+                timeout=self._query_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 - transient transport failure.
-            raise _TransientOrderQueryError(
-                f"order query failed: {type(exc).__name__}"
-            ) from None
+            raise _TransientOrderQueryError(_query_transport_reason(exc)) from None
 
         status = getattr(response, "status_code", None)
-        if status is None or int(status) >= 400:
-            raise _TransientOrderQueryError(f"order query returned HTTP {status}")
+        if _query_http_failed(status):
+            raise _TransientOrderQueryError(_query_http_reason(status))
 
         try:
             return response.json()
         except Exception:  # noqa: BLE001 - malformed body is terminal.
             return {"__nonjson__": True}
 
-    def _parse_query_output(self, body: Any, *, expected_shape: type) -> KisOrderQueryResult:
+    def _parse_query_output(
+        self, body: Any, *, expected_shape: type | tuple[type, ...], output_key: str = "output"
+    ) -> KisOrderQueryResult:
         try:
-            output = self._validated_response_output(body, expected_shape=expected_shape)
+            output = self._validated_response_output(
+                body, expected_shape=expected_shape, output_key=output_key
+            )
         except KisOrderError as exc:
             return _unavailable(str(exc))
         return _available(output)
@@ -669,17 +846,39 @@ class KisOrderAdapter:
                 url, json=body, headers=headers, timeout=self._timeout_seconds
             )
         except Exception as exc:  # noqa: BLE001 - fail before placing any order.
-            raise KisOrderError(f"hashkey request failed: {type(exc).__name__}") from exc
+            category = (
+                "TIMEOUT"
+                if _query_transport_reason(exc) == "QUERY_TIMEOUT"
+                else "TRANSPORT_ERROR"
+            )
+            raise KisOrderError(
+                f"hashkey request failed: {type(exc).__name__}",
+                failure_category=category,
+                failure_stage="HASHKEY",
+            ) from exc
         status = getattr(response, "status_code", None)
         if status is None or int(status) >= 400:
-            raise KisOrderError(f"hashkey request returned HTTP {status}")
+            raise KisOrderError(
+                f"hashkey request returned HTTP {status}",
+                failure_category="HTTP_ERROR",
+                failure_stage="HASHKEY",
+                http_status=status,
+            )
         try:
             payload = response.json()
         except Exception as exc:  # noqa: BLE001
-            raise KisOrderError("hashkey response was not valid JSON") from exc
+            raise KisOrderError(
+                "hashkey response was not valid JSON",
+                failure_category="PARSE_ERROR",
+                failure_stage="HASHKEY",
+            ) from exc
         hashkey = str(payload.get("HASH") or payload.get("hashkey") or "").strip()
         if not hashkey:
-            raise KisOrderError("hashkey response missing HASH")
+            raise KisOrderError(
+                "hashkey response missing HASH",
+                failure_category="MISSING_HASHKEY",
+                failure_stage="HASHKEY",
+            )
         return hashkey
 
     def _headers(
@@ -697,19 +896,44 @@ class KisOrderAdapter:
             headers["hashkey"] = hashkey
         return headers
 
-    def _validated_response_output(self, body: Any, *, expected_shape: type) -> Any:
+    def _validated_response_output(
+        self,
+        body: Any,
+        *,
+        expected_shape: type | tuple[type, ...],
+        output_key: str = "output",
+        failure_stage: str = "QUERY",
+    ) -> Any:
         if not isinstance(body, dict) or body.get("__nonjson__"):
-            raise KisOrderError("order response was not valid JSON")
+            raise KisOrderError(
+                "order response was not valid JSON",
+                failure_category="PARSE_ERROR",
+                failure_stage=failure_stage,
+            )
 
         rt_cd = body.get("rt_cd")
         if rt_cd is not None and str(rt_cd) != "0":
-            raise KisOrderError(f"order response rt_cd={rt_cd}")
+            raise KisOrderError(
+                f"order response rt_cd={rt_cd}",
+                failure_category="PROVIDER_ERROR",
+                failure_stage=failure_stage,
+                rt_cd=rt_cd,
+                msg_cd=body.get("msg_cd"),
+            )
 
-        output = body.get("output")
+        output = body.get(output_key)
         if not isinstance(output, expected_shape):
-            raise KisOrderError("order response missing output")
+            raise KisOrderError(
+                "order response missing output",
+                failure_category="RESPONSE_SCHEMA_ERROR",
+                failure_stage=failure_stage,
+            )
         if not self._numeric_fields_are_valid(output):
-            raise KisOrderError("order response numeric field is invalid")
+            raise KisOrderError(
+                "order response numeric field is invalid",
+                failure_category="RESPONSE_SCHEMA_ERROR",
+                failure_stage=failure_stage,
+            )
 
         return output
 
@@ -745,6 +969,11 @@ class KisOrderAdapter:
     @staticmethod
     def _looks_numeric_field(key: str) -> bool:
         lowered = key.lower()
+        non_numeric_fragments = (
+            "name", "code", "dvsn", "stat", "type", "yn", "orgno",
+        )
+        if any(fragment in lowered for fragment in non_numeric_fragments):
+            return False
         numeric_fragments = (
             "amt",
             "qty",
@@ -760,14 +989,27 @@ class KisOrderAdapter:
         return any(fragment in lowered for fragment in numeric_fragments)
 
     @staticmethod
-    def _daily_params(*, ticker: Optional[str], order_id: Optional[str]) -> dict:
-        params = {
-            "FID_COND_MRKT_DIV_CODE": _MARKET_DIV_CODE,
-            "FID_INPUT_ISCD": ticker or "",
+    def _daily_params(
+        *, account: KisOrderAccount, ticker: Optional[str], order_id: Optional[str]
+    ) -> dict:
+        today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        return {
+            "CANO": account.cano,
+            "ACNT_PRDT_CD": account.account_product_code,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": ticker or "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": order_id or "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
         }
-        if order_id:
-            params["ODNO"] = order_id
-        return params
 
     @staticmethod
     def _balance_params() -> dict:

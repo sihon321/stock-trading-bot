@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     # KIS token/rate controls (DATA-03): refresh margin ahead of the runtime-
     # discovered token expiry, a min inter-request interval, and bounded retries.
     kis_token_refresh_margin_seconds: int = 600
+    kis_token_cache_path: Path = Path("./data/.kis-token-cache/tokens.json")
     kis_min_interval_seconds: float = 0.5
     kis_max_retries: int = 3
     kis_retry_backoff_seconds: float = 1.0

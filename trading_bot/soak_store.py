@@ -357,6 +357,103 @@ def create_campaign(
     return load_campaign_state(conn, campaign_id=campaign_id)
 
 
+def create_or_resume_campaign(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    accepted_profile_fingerprint: str,
+    accepted_profile_version: str,
+    field_contract_version: str,
+    ambiguity_policy_version: str,
+    ambiguity_window_seconds: int,
+    ambiguity_poll_cadence_seconds: int,
+    ambiguity_max_observations: int,
+    target_eligible_days: int = 20,
+    availability_failure_budget: int = 2,
+    campaign_kind: CampaignKind = CampaignKind.SOAK,
+    credit_eligible: bool = True,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Create a soak campaign or admit only its pristine incomplete STARTUP retry."""
+
+    kind = CampaignKind(campaign_kind)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM soak_campaigns WHERE campaign_id=?", (campaign_id,)
+    ).fetchone()
+    if row is None:
+        return create_campaign(
+            conn,
+            campaign_id=campaign_id,
+            accepted_profile_fingerprint=accepted_profile_fingerprint,
+            accepted_profile_version=accepted_profile_version,
+            field_contract_version=field_contract_version,
+            ambiguity_policy_version=ambiguity_policy_version,
+            ambiguity_window_seconds=ambiguity_window_seconds,
+            ambiguity_poll_cadence_seconds=ambiguity_poll_cadence_seconds,
+            ambiguity_max_observations=ambiguity_max_observations,
+            target_eligible_days=target_eligible_days,
+            availability_failure_budget=availability_failure_budget,
+            campaign_kind=kind,
+            credit_eligible=credit_eligible,
+            created_at=created_at,
+        )
+
+    expected = {
+        "campaign_kind": kind.value,
+        "credit_eligible": int(credit_eligible),
+        "target_eligible_days": target_eligible_days,
+        "availability_failure_budget": availability_failure_budget,
+        "accepted_profile_fingerprint": accepted_profile_fingerprint,
+        "accepted_profile_version": accepted_profile_version,
+        "field_contract_version": field_contract_version,
+        "ambiguity_policy_version": ambiguity_policy_version,
+        "ambiguity_window_seconds": ambiguity_window_seconds,
+        "ambiguity_poll_cadence_seconds": ambiguity_poll_cadence_seconds,
+        "ambiguity_max_observations": ambiguity_max_observations,
+    }
+    if any(row[key] != value for key, value in expected.items()):
+        raise ValueError("SOAK_START_RESUME_BLOCKED:POLICY_DRIFT")
+    if row["state"] != CampaignState.ACTIVE.value:
+        raise ValueError("SOAK_START_RESUME_BLOCKED:TERMINAL_STATE")
+    if (
+        int(row["availability_failures_used"]) != 0
+        or row["safety_failure_code"] is not None
+        or row["availability_failure_code"] is not None
+    ):
+        raise ValueError("SOAK_START_RESUME_BLOCKED:MUTABLE_CAMPAIGN_STATE")
+
+    for table in (
+        "soak_days",
+        "soak_events",
+        "soak_comparisons",
+        "soak_ambiguity_observations",
+        "soak_ticker_freezes",
+        "soak_drill_links",
+    ):
+        if conn.execute(
+            f"SELECT 1 FROM {table} WHERE campaign_id=? LIMIT 1", (campaign_id,)
+        ).fetchone() is not None:
+            raise ValueError("SOAK_START_RESUME_BLOCKED:MUTABLE_EVIDENCE")
+
+    snapshots = conn.execute(
+        """SELECT run_id,stage,ticker,completeness FROM soak_snapshots
+           WHERE campaign_id=?""",
+        (campaign_id,),
+    ).fetchall()
+    if not snapshots:
+        raise ValueError("SOAK_START_RESUME_BLOCKED:NO_INCOMPLETE_STARTUP")
+    if any(
+        snapshot["run_id"] != "startup"
+        or snapshot["stage"] != ReconciliationStage.STARTUP.value
+        or snapshot["ticker"] is not None
+        or snapshot["completeness"] != PageCompleteness.INCOMPLETE.value
+        for snapshot in snapshots
+    ):
+        raise ValueError("SOAK_START_RESUME_BLOCKED:NON_STARTUP_EVIDENCE")
+    return load_campaign_state(conn, campaign_id=campaign_id)
+
+
 def create_or_load_proof_campaign(
     conn: sqlite3.Connection,
     *,
@@ -420,6 +517,57 @@ def append_identity_receipt(
          policy_version,detail_json,observed_at) VALUES (?,?,?,?,?,?,?,?,?)""",
         (receipt_id,campaign_id,target,domain_class,account_suffix,profile_version,
          policy_version,_detail(detail),observed_at or _now()))
+
+
+def append_or_validate_identity_receipt(
+    conn: sqlite3.Connection, *, receipt_id: str, campaign_id: str, target: str,
+    domain_class: str, account_suffix: str, profile_version: str,
+    policy_version: str, detail: Mapping[str, Any] | None = None,
+    observed_at: str | None = None,
+) -> int:
+    """Append the initial receipt, or return its id only on an exact retry match."""
+
+    expected_detail = _detail(detail)
+    rows = conn.execute(
+        """SELECT id,receipt_id,target,domain_class,account_suffix,profile_version,
+                  policy_version,detail_json
+           FROM soak_identity_receipts WHERE campaign_id=?""",
+        (campaign_id,),
+    ).fetchall()
+    if not rows:
+        if conn.execute(
+            "SELECT 1 FROM soak_snapshots WHERE campaign_id=? LIMIT 1", (campaign_id,)
+        ).fetchone() is not None:
+            raise ValueError("SOAK_START_RESUME_BLOCKED:IDENTITY_MISSING")
+        conflicting = conn.execute(
+            "SELECT 1 FROM soak_identity_receipts WHERE receipt_id=?", (receipt_id,)
+        ).fetchone()
+        if conflicting is not None:
+            raise ValueError("SOAK_START_RESUME_BLOCKED:IDENTITY_DRIFT")
+        return append_identity_receipt(
+            conn,
+            receipt_id=receipt_id,
+            campaign_id=campaign_id,
+            target=target,
+            domain_class=domain_class,
+            account_suffix=account_suffix,
+            profile_version=profile_version,
+            policy_version=policy_version,
+            detail=detail,
+            observed_at=observed_at,
+        )
+    expected = (
+        receipt_id,
+        target,
+        domain_class,
+        account_suffix,
+        profile_version,
+        policy_version,
+        expected_detail,
+    )
+    if len(rows) != 1 or tuple(rows[0][1:]) != expected:
+        raise ValueError("SOAK_START_RESUME_BLOCKED:IDENTITY_DRIFT")
+    return int(rows[0][0])
 
 
 def designate_day(
@@ -770,7 +918,9 @@ def bind(conn: sqlite3.Connection) -> _BoundStore:
 
 __all__ = [
     "SOAK_SCHEMA_VERSION", "connect_soak_store", "migrate_soak_store",
-    "fingerprint_accepted_profile", "create_campaign", "create_or_load_proof_campaign", "append_identity_receipt",
+    "fingerprint_accepted_profile", "create_campaign", "create_or_resume_campaign",
+    "create_or_load_proof_campaign", "append_identity_receipt",
+    "append_or_validate_identity_receipt",
     "designate_day", "append_campaign_event", "consume_availability_failure",
     "latch_safety_failure", "append_snapshot", "read_snapshot",
     "append_comparison", "append_ambiguity_observation", "append_drill_link",

@@ -246,6 +246,154 @@ def test_snapshot_incomplete_page_blocks_comparison_without_fabricating_disagree
     assert all(dimension.state is ComparisonState.UNKNOWN for dimension in comparison.dimensions)
 
 
+def test_snapshot_preserves_bounded_daily_query_failure_category() -> None:
+    adapter = _PageAdapter(
+        BrokerPageEnvelope(
+            rows=(),
+            page_count=1,
+            completeness=PageCompleteness.INCOMPLETE,
+            reason_code="QUERY_TIMEOUT",
+        ),
+        BrokerPageEnvelope(
+            rows=(),
+            summary={"dnca_tot_amt": "1", "tot_evlu_amt": "1"},
+            page_count=1,
+            completeness=PageCompleteness.COMPLETE,
+            reason_code="COMPLETE",
+        ),
+    )
+
+    snapshot = collect_broker_snapshot(
+        adapter,
+        _campaign(),
+        "PRE_RUN",
+        _window(),
+        {"order_ids": (), "tickers": ()},
+    )
+
+    assert snapshot.completeness is PageCompleteness.INCOMPLETE
+    assert snapshot.reason_code == "DAILY_QUERY_TIMEOUT|BALANCE_COMPLETE"
+
+
+def test_snapshot_preserves_bounded_auth_failure_categories() -> None:
+    adapter = _PageAdapter(
+        BrokerPageEnvelope(
+            rows=(),
+            page_count=0,
+            completeness=PageCompleteness.INCOMPLETE,
+            reason_code="AUTH_HTTP_RATE_LIMITED",
+        ),
+        BrokerPageEnvelope(
+            rows=(),
+            page_count=0,
+            completeness=PageCompleteness.INCOMPLETE,
+            reason_code="AUTH_HTTP_RATE_LIMITED",
+        ),
+    )
+
+    snapshot = collect_broker_snapshot(
+        adapter,
+        _campaign(),
+        "PRE_RUN",
+        _window(),
+        {"order_ids": (), "tickers": ()},
+    )
+
+    assert snapshot.completeness is PageCompleteness.INCOMPLETE
+    assert snapshot.reason_code == (
+        "DAILY_AUTH_HTTP_RATE_LIMITED|BALANCE_AUTH_HTTP_RATE_LIMITED"
+    )
+    assert snapshot.daily_page_count == 0
+    assert snapshot.balance_page_count == 0
+
+
+def test_accepted_order_can_advance_to_complete_filled_broker_truth() -> None:
+    snapshot = BrokerSnapshot.from_normalized(
+        snapshot_id="snapshot-fast-fill",
+        campaign=_campaign(),
+        stage="POST_SUBMISSION",
+        window=_window(),
+        orders=(
+            {
+                "order_id": "ORDER-1",
+                "ticker": "005930",
+                "side": "BUY",
+                "ordered_qty": 5,
+                "filled_qty": 5,
+                "remaining_qty": 0,
+                "snapped_price": 70000,
+                "status": "FILLED",
+            },
+        ),
+        holdings=(
+            {
+                "ticker": "005930",
+                "quantity": 5,
+                "available_quantity": 5,
+                "average_price": 70000,
+            },
+        ),
+        account={
+            "account_suffix": "5678",
+            "available_cash": 650000,
+            "total_value": 1000000,
+        },
+    )
+
+    comparison = compare_broker_truth(
+        {
+            "campaign_id": "campaign-1",
+            "run_id": "run-1",
+            "ticker": "005930",
+            "order_intent_id": "intent-1",
+            "order_id": "ORDER-1",
+            "requested_qty": 5,
+            "filled_qty": None,
+            "remaining_qty": None,
+            "order_state": "ACCEPTED",
+        },
+        snapshot,
+    )
+
+    assert comparison.verdict is ReconciliationVerdict.MATCHED
+    assert comparison.complete is True
+    assert comparison.remaining_order_terminal is True
+    assert {dimension.code for dimension in comparison.dimensions} == {
+        "MATCHED",
+        "BROKER_OBSERVED_AFTER_ACCEPTANCE",
+        "ORDER_STATE_ADVANCED",
+        "BROKER_OBSERVED",
+    }
+
+
+def test_accepted_order_still_mismatches_when_complete_snapshot_lacks_order() -> None:
+    snapshot = BrokerSnapshot.from_normalized(
+        snapshot_id="snapshot-missing-order",
+        campaign=_campaign(),
+        stage="POST_SUBMISSION",
+        window=_window(),
+        account={
+            "account_suffix": "5678",
+            "available_cash": 1000000,
+            "total_value": 1000000,
+        },
+    )
+
+    comparison = compare_broker_truth(
+        {
+            "ticker": "005930",
+            "order_intent_id": "intent-1",
+            "order_id": "ORDER-1",
+            "requested_qty": 5,
+            "order_state": "ACCEPTED",
+        },
+        snapshot,
+    )
+
+    assert comparison.verdict is ReconciliationVerdict.MISMATCHED
+    assert "ORDER_NOT_FOUND" in {dimension.code for dimension in comparison.dimensions}
+
+
 def test_complete_contradiction_is_dimensioned_and_permanently_latches_campaign(tmp_path) -> None:
     snapshot = BrokerSnapshot.from_normalized(
         snapshot_id="snapshot-contradiction",
@@ -269,7 +417,6 @@ def test_complete_contradiction_is_dimensioned_and_permanently_latches_campaign(
     )
     assert comparison.verdict is ReconciliationVerdict.MISMATCHED
     assert {d.code for d in comparison.dimensions if d.state is ComparisonState.MISMATCHED} == {
-        "FILLED_QTY_CONTRADICTION", "REMAINING_QTY_CONTRADICTION",
         "HOLDING_QTY_CONTRADICTION", "AVAILABLE_CASH_CONTRADICTION",
     }
 
@@ -288,6 +435,143 @@ def test_complete_contradiction_is_dimensioned_and_permanently_latches_campaign(
         "SELECT snapshot_id,run_id,ticker,order_intent_id FROM soak_comparisons"
     ).fetchone()
     assert tuple(persisted) == ("snapshot-contradiction", "run-1", "005930", "intent-1")
+
+
+def test_partial_order_can_progress_to_filled_broker_truth() -> None:
+    snapshot = BrokerSnapshot.from_normalized(
+        snapshot_id="snapshot-partial-to-filled",
+        campaign=_campaign(),
+        stage="PRE_FINALIZE",
+        window=_window(),
+        orders=(
+            {
+                "order_id": "ORDER-1",
+                "ticker": "005930",
+                "side": "BUY",
+                "ordered_qty": 5,
+                "filled_qty": 5,
+                "remaining_qty": 0,
+                "snapped_price": 70000,
+                "status": "FILLED",
+            },
+        ),
+        holdings=(
+            {
+                "ticker": "005930",
+                "quantity": 5,
+                "available_quantity": 5,
+                "average_price": 70000,
+            },
+        ),
+        account={"account_suffix": "5678", "available_cash": 650000, "total_value": 1000000},
+    )
+
+    comparison = compare_broker_truth(
+        {
+            "campaign_id": "campaign-1",
+            "run_id": "run-1",
+            "ticker": "005930",
+            "order_intent_id": "intent-1",
+            "order_id": "ORDER-1",
+            "requested_qty": 5,
+            "filled_qty": 2,
+            "remaining_qty": 3,
+            "order_state": "PARTIAL",
+        },
+        snapshot,
+    )
+
+    assert comparison.verdict is ReconciliationVerdict.MATCHED
+    assert comparison.complete is True
+    assert comparison.remaining_order_terminal is True
+    assert {dimension.code for dimension in comparison.dimensions} == {
+        "MATCHED",
+        "BROKER_FILL_PROGRESS",
+        "ORDER_STATE_ADVANCED",
+        "BROKER_OBSERVED",
+    }
+
+
+def test_zero_fill_partial_and_no_fill_states_are_compatible() -> None:
+    snapshot = BrokerSnapshot.from_normalized(
+        snapshot_id="snapshot-zero-fill-alias",
+        campaign=_campaign(),
+        stage="POST_SUBMISSION",
+        window=_window(),
+        orders=(
+            {
+                "order_id": "ORDER-1",
+                "ticker": "005930",
+                "side": "BUY",
+                "ordered_qty": 5,
+                "filled_qty": 0,
+                "remaining_qty": 5,
+                "snapped_price": 70000,
+                "status": "NO_FILL",
+            },
+        ),
+        account={"account_suffix": "5678", "available_cash": 1000000},
+    )
+
+    comparison = compare_broker_truth(
+        {
+            "ticker": "005930",
+            "order_id": "ORDER-1",
+            "requested_qty": 5,
+            "filled_qty": 0,
+            "remaining_qty": 5,
+            "order_state": "PARTIAL",
+        },
+        snapshot,
+    )
+
+    assert comparison.verdict is ReconciliationVerdict.MATCHED
+    assert comparison.remaining_order_terminal is False
+    assert {dimension.code for dimension in comparison.dimensions} == {
+        "MATCHED",
+        "ORDER_STATE_EQUIVALENT",
+        "BROKER_OBSERVED",
+    }
+
+
+def test_partial_order_rejects_regressing_broker_fill_truth() -> None:
+    snapshot = BrokerSnapshot.from_normalized(
+        snapshot_id="snapshot-regressing-fill",
+        campaign=_campaign(),
+        stage="PRE_FINALIZE",
+        window=_window(),
+        orders=(
+            {
+                "order_id": "ORDER-1",
+                "ticker": "005930",
+                "side": "BUY",
+                "ordered_qty": 5,
+                "filled_qty": 1,
+                "remaining_qty": 4,
+                "snapped_price": 70000,
+                "status": "PARTIAL",
+            },
+        ),
+        account={"account_suffix": "5678", "available_cash": 650000, "total_value": 1000000},
+    )
+
+    comparison = compare_broker_truth(
+        {
+            "ticker": "005930",
+            "order_id": "ORDER-1",
+            "requested_qty": 5,
+            "filled_qty": 2,
+            "remaining_qty": 3,
+            "order_state": "PARTIAL",
+        },
+        snapshot,
+    )
+
+    assert comparison.verdict is ReconciliationVerdict.MISMATCHED
+    assert {dimension.code for dimension in comparison.dimensions} >= {
+        "FILLED_QTY_CONTRADICTION",
+        "REMAINING_QTY_CONTRADICTION",
+    }
 
 
 def _intent() -> AmbiguousIntent:

@@ -52,6 +52,11 @@ class ReconciliationStage(StrEnum):
     PRE_FINALIZATION = "PRE_FINALIZATION"
 
 
+# A PRE_RUN check has no primary audit run until execution begins.  It may use this
+# identity only when it has no local order evidence and is therefore campaign-scoped.
+PRE_RUN_PREFLIGHT_RUN_ID = "preflight"
+
+
 class ReconciliationVerdict(StrEnum):
     MATCHED = "MATCHED"
     MISMATCHED = "MISMATCHED"

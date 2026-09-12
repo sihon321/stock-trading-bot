@@ -71,6 +71,16 @@ def _default_data_fresh() -> bool:
     return True
 
 
+def _fill_broker_status(fill: FillStatus) -> str:
+    """Normalize fill quantities to the same states used by soak snapshots."""
+
+    if fill.remaining_qty == 0:
+        return "FILLED"
+    if fill.filled_qty == 0:
+        return "NO_FILL"
+    return "PARTIAL"
+
+
 class KISBroker:
     """Plain structural Broker backed by KIS order/query REST calls."""
 
@@ -297,12 +307,15 @@ class KISBroker:
                 account=self._account, order=order, snapped_price=snapped_price,
             )
         except Exception as exc:
+            detail = {"error_type": type(exc).__name__}
+            if isinstance(exc, KisOrderError):
+                detail.update(exc.safe_diagnostics)
             self._emit(OrderEvent(
                 order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
                 ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_AMBIGUOUS,
                 submission_id=submission_id, side=order.side.value,
                 requested_qty=order.quantity, broker_status="ACK_UNKNOWN",
-                detail={"error_type": type(exc).__name__},
+                detail=detail,
             ))
             self._last_reconciliation = OrderReconciliation(
                 "", order.ticker.value, order.quantity, 0, order.quantity,
@@ -340,7 +353,7 @@ class KISBroker:
             submission_id=submission_id, broker_order_id=result.order_id,
             side=order.side.value, requested_qty=order.quantity,
             filled_qty=fill.filled_qty, unfilled_qty=fill.remaining_qty,
-            broker_status="FILLED" if fill.remaining_qty == 0 else "PARTIAL",
+            broker_status=_fill_broker_status(fill),
         ))
         return result.order_id
 
@@ -392,7 +405,7 @@ class KISBroker:
             event_type=OrderEventType.BROKER_OBSERVED, submission_id=submission_id,
             broker_order_id=broker_order_id, requested_qty=fill.ordered_qty,
             filled_qty=fill.filled_qty, unfilled_qty=fill.remaining_qty,
-            broker_status="FILLED" if fill.remaining_qty == 0 else "PARTIAL",
+            broker_status=_fill_broker_status(fill),
         ))
         return evidence
 
@@ -412,7 +425,9 @@ class KISBroker:
         return f"local:{order.ticker.value}:{order.side.value}:{order.quantity}"
 
     def _find_existing_order(self, order: Order) -> Optional[str]:
-        daily = self._order_adapter.inquire_daily_ccld(ticker=order.ticker.value)
+        daily = self._order_adapter.inquire_daily_ccld(
+            account=self._account, ticker=order.ticker.value
+        )
         if daily.health.status is not SourceStatus.AVAILABLE or daily.output is None:
             raise KisOrderError(f"daily order query unavailable: {daily.health.reason}")
         rows = daily.output if isinstance(daily.output, list) else [daily.output]
@@ -433,13 +448,19 @@ class KISBroker:
                 continue
             if side is None or side == order.side.value:
                 return order_id
-        self._order_adapter.inquire_balance()
+        balance = self._order_adapter.inquire_balance(account=self._account)
+        if balance.health.status is not SourceStatus.AVAILABLE or balance.output is None:
+            raise KisOrderError(f"balance query unavailable: {balance.health.reason}")
         return None
 
     def _read_fill_status(self, *, ticker: str, order_id: str) -> FillStatus:
         if hasattr(self._order_adapter, "read_fill_status"):
-            return self._order_adapter.read_fill_status(ticker=ticker, order_id=order_id)
-        daily = self._order_adapter.inquire_daily_ccld(ticker=ticker, order_id=order_id)
+            return self._order_adapter.read_fill_status(
+                account=self._account, ticker=ticker, order_id=order_id
+            )
+        daily = self._order_adapter.inquire_daily_ccld(
+            account=self._account, ticker=ticker, order_id=order_id
+        )
         if daily.health.status is not SourceStatus.AVAILABLE or daily.output is None:
             raise KisOrderError(f"fill readback unavailable: {daily.health.reason}")
         return self._order_adapter.parse_fill_status(

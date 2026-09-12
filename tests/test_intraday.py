@@ -219,6 +219,33 @@ def test_cli_exposes_check_watch_and_rejects_short_interval_before_runtime(monke
     assert check.exit_code == 0
 
 
+def test_account_resolver_uses_mock_account_for_mock_runtime(monkeypatch) -> None:
+    from trading_bot import cli
+    from trading_bot.config import TradingMode
+
+    monkeypatch.delenv("KIS_ACCOUNT_CANO", raising=False)
+    monkeypatch.setenv("SOAK_KIS_MOCK_ACCOUNT_CANO", "50196356")
+    monkeypatch.setenv("SOAK_KIS_MOCK_ACCOUNT_PRODUCT_CODE", "01")
+    settings = make_settings(trading_mode=TradingMode.MOCK)
+
+    account = cli._account_from_env(settings)
+
+    assert account is not None
+    assert account.cano == "50196356"
+    assert account.account_product_code == "01"
+
+
+def test_account_resolver_does_not_use_mock_account_for_real_runtime(monkeypatch) -> None:
+    from trading_bot import cli
+    from trading_bot.config import TradingMode
+
+    monkeypatch.delenv("KIS_ACCOUNT_CANO", raising=False)
+    monkeypatch.setenv("SOAK_KIS_MOCK_ACCOUNT_CANO", "50196356")
+    settings = make_settings(trading_mode=TradingMode.REAL, confirm_real_trading=True)
+
+    assert cli._account_from_env(settings) is None
+
+
 def test_typed_ownership_loss_terminalizes_reconciles_persists_and_unlocks(
     tmp_path, monkeypatch
 ) -> None:

@@ -242,6 +242,7 @@ class BrokerSnapshot:
 
 class ComparisonState(StrEnum):
     MATCHED = "MATCHED"
+    OBSERVED = "OBSERVED"
     MISMATCHED = "MISMATCHED"
     UNKNOWN = "UNKNOWN"
 
@@ -586,6 +587,40 @@ def compare_broker_truth(
     else:
         holding = next((item for item in snapshot.holdings if item.ticker == ticker), None)
         order_missing = selected is None and order_id is not None
+        local_order_state = _value(local_evidence, "order_state")
+        normalized_local_state = (
+            str(local_order_state).upper() if local_order_state is not None else None
+        )
+        accepted_progression = (
+            selected is not None
+            and normalized_local_state == "ACCEPTED"
+            and selected.status in {"ACCEPTED", "OPEN", "NO_FILL", "PARTIAL"} | _TERMINAL_STATES
+        )
+        local_filled_qty = _integer(_value(local_evidence, "filled_qty"))
+        local_remaining_qty = _integer(_value(local_evidence, "remaining_qty"))
+        zero_fill_state_compatibility = (
+            selected is not None
+            and normalized_local_state in {"NO_FILL", "PARTIAL"}
+            and selected.status in {"NO_FILL", "PARTIAL"}
+            and normalized_local_state != selected.status
+            and local_filled_qty == selected.filled_qty == 0
+            and local_remaining_qty == selected.remaining_qty
+            and selected.remaining_qty > 0
+        )
+        partial_fill_progression = (
+            selected is not None
+            and normalized_local_state == "PARTIAL"
+            and selected.status in {"PARTIAL"} | _TERMINAL_STATES
+            and local_filled_qty is not None
+            and local_remaining_qty is not None
+            and selected.filled_qty >= local_filled_qty
+            and selected.remaining_qty <= local_remaining_qty
+        )
+        fill_progression = (
+            accepted_progression
+            or partial_fill_progression
+            or zero_fill_state_compatibility
+        )
 
         def order_dimension(
             name: str, local_name: str, broker_value: Any, code: str
@@ -597,6 +632,47 @@ def compare_broker_truth(
                 return ComparisonDimension(
                     name, ComparisonState.MISMATCHED, local_value, None, "ORDER_NOT_FOUND"
                 )
+            if (
+                fill_progression
+                and name in {"filled_qty", "remaining_qty"}
+                and broker_value is not None
+                and local_value != broker_value
+            ):
+                return ComparisonDimension(
+                    name,
+                    ComparisonState.OBSERVED,
+                    None,
+                    broker_value,
+                    (
+                        "BROKER_OBSERVED_AFTER_ACCEPTANCE"
+                        if local_value is None
+                        else "BROKER_FILL_PROGRESS"
+                    ),
+                )
+            if (
+                zero_fill_state_compatibility
+                and name == "order_state"
+                and local_value != broker_value
+            ):
+                return ComparisonDimension(
+                    name,
+                    ComparisonState.OBSERVED,
+                    local_value,
+                    broker_value,
+                    "ORDER_STATE_EQUIVALENT",
+                )
+            if (
+                fill_progression
+                and name == "order_state"
+                and local_value != broker_value
+            ):
+                return ComparisonDimension(
+                    name,
+                    ComparisonState.OBSERVED,
+                    local_value,
+                    broker_value,
+                    "ORDER_STATE_ADVANCED",
+                )
             return _dimension(
                 name,
                 local_value,
@@ -605,13 +681,37 @@ def compare_broker_truth(
                 missing_code="ORDER_STATE_UNKNOWN" if name == "order_state" else "ORDER_NOT_FOUND",
             )
 
+        def broker_observation_dimension(
+            name: str,
+            local_name: str,
+            broker_value: Any,
+            contradiction_code: str,
+            missing_code: str,
+        ) -> ComparisonDimension:
+            local_value = _value(local_evidence, local_name)
+            if local_value is None and broker_value is not None and selected is not None:
+                return ComparisonDimension(
+                    name,
+                    ComparisonState.OBSERVED,
+                    None,
+                    broker_value,
+                    "BROKER_OBSERVED",
+                )
+            return _dimension(
+                name,
+                local_value,
+                broker_value,
+                contradiction_code,
+                missing_code=missing_code,
+            )
+
         dimensions = (
             order_dimension("requested_qty", "requested_qty", selected.ordered_qty if selected else None, "REQUESTED_QTY_CONTRADICTION"),
             order_dimension("filled_qty", "filled_qty", selected.filled_qty if selected else None, "FILLED_QTY_CONTRADICTION"),
             order_dimension("remaining_qty", "remaining_qty", selected.remaining_qty if selected else None, "REMAINING_QTY_CONTRADICTION"),
             order_dimension("order_state", "order_state", selected.status if selected else None, "ORDER_STATE_CONTRADICTION"),
-            _dimension("holding_quantity", _value(local_evidence, "holding_quantity"), holding.quantity if holding else 0 if ticker else None, "HOLDING_QTY_CONTRADICTION", missing_code="HOLDING_UNKNOWN"),
-            _dimension("available_cash", _number(_value(local_evidence, "available_cash")), snapshot.account.available_cash, "AVAILABLE_CASH_CONTRADICTION", missing_code="AVAILABLE_CASH_UNKNOWN"),
+            broker_observation_dimension("holding_quantity", "holding_quantity", holding.quantity if holding else 0 if ticker else None, "HOLDING_QTY_CONTRADICTION", "HOLDING_UNKNOWN"),
+            broker_observation_dimension("available_cash", "available_cash", snapshot.account.available_cash, "AVAILABLE_CASH_CONTRADICTION", "AVAILABLE_CASH_UNKNOWN"),
         )
         if any(item.state is ComparisonState.MISMATCHED for item in dimensions):
             verdict = ReconciliationVerdict.MISMATCHED

@@ -11,6 +11,7 @@ from .soak_controller import CONTROLLER_SCHEMA_VERSION
 from .soak_models import (
     CampaignKind,
     CampaignState,
+    PRE_RUN_PREFLIGHT_RUN_ID,
     ReconciliationStage,
     SoakEvidenceClass,
 )
@@ -317,6 +318,23 @@ class ReadOnlySoakRepository:
             "SELECT * FROM soak_snapshots WHERE campaign_id=? ORDER BY observed_at,snapshot_id",
             (campaign_id,),
         ).fetchall()
+        legacy_pre_run_snapshot_ids = {
+            str(row[0])
+            for row in soak.execute(
+                """SELECT s.snapshot_id
+                   FROM soak_snapshots s
+                   WHERE s.campaign_id=? AND s.stage=? AND s.ticker IS NULL
+                     AND EXISTS (SELECT 1 FROM soak_snapshot_accounts a
+                                 WHERE a.snapshot_id=s.snapshot_id)
+                     AND NOT EXISTS (SELECT 1 FROM soak_snapshot_orders o
+                                     WHERE o.snapshot_id=s.snapshot_id)
+                     AND NOT EXISTS (SELECT 1 FROM soak_snapshot_fills f
+                                     WHERE f.snapshot_id=s.snapshot_id)
+                     AND NOT EXISTS (SELECT 1 FROM soak_snapshot_holdings h
+                                     WHERE h.snapshot_id=s.snapshot_id)""",
+                (campaign_id, ReconciliationStage.PRE_RUN.value),
+            )
+        }
         comparisons = soak.execute(
             "SELECT * FROM soak_comparisons WHERE campaign_id=? ORDER BY id", (campaign_id,)
         ).fetchall()
@@ -355,6 +373,7 @@ class ReadOnlySoakRepository:
             "days": days,
             "events": events,
             "snapshots": snapshots,
+            "legacy_pre_run_snapshot_ids": legacy_pre_run_snapshot_ids,
             "comparisons": comparisons,
             "freezes": freezes,
             "links": links,
@@ -388,6 +407,32 @@ def _valid_snapshot_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
     expected_run_id = campaign_scope_run_ids.get(str(row["stage"]))
     if expected_run_id is not None:
         return str(row["run_id"]) == expected_run_id and row["ticker"] is None
+
+    # A PRE_RUN snapshot is campaign-scoped only before any execution identity
+    # exists. All ordinary PRE_RUN snapshots must retain their primary-audit link.
+    if str(row["stage"]) == ReconciliationStage.PRE_RUN.value:
+        if (
+            str(row["run_id"]) == PRE_RUN_PREFLIGHT_RUN_ID
+            and row["ticker"] is None
+        ):
+            return True
+        # Before PRE_RUN snapshots were made campaign-scoped, a no-order
+        # preflight could be persisted with a generated future run ID.  It is
+        # still safely campaign-scoped only when no run was designated and no
+        # comparison ever claimed that ID, and the immutable snapshot carries
+        # account evidence but no order, fill, or holding evidence.
+        if (
+            str(row["snapshot_id"]) in data["legacy_pre_run_snapshot_ids"]
+            and str(row["run_id"]) not in data["primary_runs"]
+            and all(str(day["run_id"]) != str(row["run_id"]) for day in data["days"])
+            and all(
+                str(comparison["run_id"]) != str(row["run_id"])
+                for comparison in data["comparisons"]
+            )
+        ):
+            return True
+        return _valid_primary_reference(data, row)
+
     return _valid_primary_reference(data, row)
 
 

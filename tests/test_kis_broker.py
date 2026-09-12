@@ -10,7 +10,12 @@ import pytest
 from conftest import make_settings
 from trading_bot.data_models import SourceHealth, SourceStatus
 from trading_bot.domain import Money, Order, OrderSide, Position, Ticker
-from trading_bot.kis_order import FillStatus, KisOrderAccount, KisOrderQueryResult
+from trading_bot.kis_order import (
+    FillStatus,
+    KisOrderAccount,
+    KisOrderError,
+    KisOrderQueryResult,
+)
 from trading_bot.ports import Broker
 
 
@@ -37,12 +42,12 @@ class _FakeOrderAdapter:
         self.post_attempts = 0
         self.seen_prices = []
 
-    def inquire_daily_ccld(self, *, ticker=None, order_id=None):
+    def inquire_daily_ccld(self, *, account, ticker=None, order_id=None):
         if self.daily_outputs:
             return _query_result(self.daily_outputs.pop(0))
         return _query_result([])
 
-    def inquire_balance(self):
+    def inquire_balance(self, *, account):
         return _query_result({"dnca_tot_amt": "1000000"})
 
     def place_order_cash(self, *, account, order, snapped_price):
@@ -221,6 +226,30 @@ def test_append_only_evidence_has_stable_intent_and_distinct_submission() -> Non
     assert all("response" not in (event.detail or {}) for event in events)
 
 
+def test_zero_fill_readback_uses_no_fill_status() -> None:
+    from trading_bot.kis_broker import KISBroker
+
+    events = []
+    adapter = _FakeOrderAdapter(
+        fill_statuses=[FillStatus("KIS-POSTED", "005930", 5, 0, 5)]
+    )
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=events.append,
+    )
+
+    broker.place_order(_order(), order_intent_id="intent-no-fill")
+
+    reconciled = next(
+        event for event in events if event.event_type.value == "RECONCILED"
+    )
+    assert reconciled.filled_qty == 0
+    assert reconciled.unfilled_qty == 5
+    assert reconciled.broker_status == "NO_FILL"
+
+
 def test_ambiguous_evidence_is_single_shot_and_later_observation_links_runs() -> None:
     from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker
 
@@ -249,6 +278,39 @@ def test_ambiguous_evidence_is_single_shot_and_later_observation_links_runs() ->
     assert observed.origin_run_id == "origin"
     assert observed.observer_run_id == "observer"
     assert observed.order_intent_id == "intent-a"
+
+
+def test_ambiguous_evidence_preserves_bounded_kis_diagnostics() -> None:
+    events = []
+    adapter = _FakeOrderAdapter(
+        post_exception=KisOrderError(
+            "provider text must not persist",
+            failure_category="PROVIDER_ERROR",
+            failure_stage="ORDER_POST",
+            rt_cd="1",
+            msg_cd="APBK0918",
+        )
+    )
+    from trading_bot.kis_broker import AmbiguousSubmissionError, KISBroker
+
+    broker = KISBroker(
+        order_adapter=adapter,
+        account=KisOrderAccount("12345678", "01"),
+        market_clock=lambda: True,
+        evidence_sink=events.append,
+    )
+
+    with pytest.raises(AmbiguousSubmissionError):
+        broker.place_order(_order(), order_intent_id="intent-safe-diagnostic")
+
+    assert events[-1].detail == {
+        "error_type": "KisOrderError",
+        "failure_category": "PROVIDER_ERROR",
+        "failure_stage": "ORDER_POST",
+        "rt_cd": "1",
+        "msg_cd": "APBK0918",
+    }
+    assert "provider text" not in repr(events[-1].detail)
 
 
 def test_reconcile_skips_duplicate() -> None:

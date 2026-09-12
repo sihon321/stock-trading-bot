@@ -8,6 +8,9 @@ app key/secret or the access token into reprs, health reasons, or exceptions.
 """
 
 import dataclasses
+import json
+import stat
+from pathlib import Path
 
 import httpx
 import pytest
@@ -149,6 +152,7 @@ def test_build_kis_auth_config_uses_active_kis_only(monkeypatch) -> None:
         "KIS_REAL__APP_SECRET",
         "KIS_REAL__TR_ID_PROFILE",
         "KIS_REAL__LABEL",
+        "KIS_TOKEN_CACHE_PATH",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TRADING_MODE", "mock")
@@ -179,6 +183,7 @@ def test_build_kis_auth_config_uses_active_kis_only(monkeypatch) -> None:
     assert config.min_interval_seconds == settings.kis_min_interval_seconds
     assert config.max_retries == settings.kis_max_retries
     assert config.retry_backoff_seconds == settings.kis_retry_backoff_seconds
+    assert config.cache_path == settings.kis_token_cache_path
     assert "real-app-key-secret" not in (config.app_key, config.app_secret)
 
 
@@ -252,6 +257,111 @@ def test_explicit_refresh_forces_new_token() -> None:
     assert len(client.calls) == 2
 
 
+def _persistent_manager(
+    cache_path: Path,
+    responses,
+    *,
+    app_key: str = APP_KEY,
+    app_secret: str = APP_SECRET,
+    monotonic_clock: _FakeClock | None = None,
+    wall_clock: _FakeClock | None = None,
+) -> tuple[KisTokenManager, _FakeClient]:
+    client = _FakeClient(responses)
+    manager = KisTokenManager(
+        _config(
+            app_key=app_key,
+            app_secret=app_secret,
+            cache_path=cache_path,
+        ),
+        client=client,
+        clock=monotonic_clock or _FakeClock(),
+        wall_clock=wall_clock or _FakeClock(start=1_700_000_000.0),
+    )
+    return manager, client
+
+
+def test_separate_managers_reuse_valid_secure_cache_without_second_post(tmp_path) -> None:
+    cache_path = tmp_path / "private-kis-cache" / "tokens.json"
+    wall_clock = _FakeClock(start=1_700_000_000.0)
+    first, first_client = _persistent_manager(
+        cache_path, [_response(expires_in=86_400)], wall_clock=wall_clock
+    )
+    second, second_client = _persistent_manager(
+        cache_path, [], monotonic_clock=_FakeClock(start=10.0), wall_clock=wall_clock
+    )
+
+    assert first.get_token() == ACCESS_TOKEN
+    assert second.get_token() == ACCESS_TOKEN
+    assert len(first_client.calls) == 1
+    assert second_client.calls == []
+    assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(cache_path.parent.stat().st_mode) == 0o700
+
+
+def test_persistent_cache_refreshes_inside_margin(tmp_path) -> None:
+    cache_path = tmp_path / "private-kis-cache" / "tokens.json"
+    wall_clock = _FakeClock(start=1_700_000_000.0)
+    first, _ = _persistent_manager(
+        cache_path, [_response(expires_in=900)], wall_clock=wall_clock
+    )
+    first.get_token()
+    wall_clock.advance(301)
+    second, second_client = _persistent_manager(
+        cache_path,
+        [_response(access_token="second-token-secret-value", expires_in=900)],
+        wall_clock=wall_clock,
+    )
+
+    assert second.get_token() == "second-token-secret-value"
+    assert len(second_client.calls) == 1
+
+
+def test_persistent_cache_isolated_by_credential_identity(tmp_path) -> None:
+    cache_path = tmp_path / "private-kis-cache" / "tokens.json"
+    first, _ = _persistent_manager(cache_path, [_response()])
+    first.get_token()
+    second, second_client = _persistent_manager(
+        cache_path,
+        [_response(access_token="rotated-credential-token", expires_in=86_400)],
+        app_secret="rotated-app-secret",
+    )
+
+    assert second.get_token() == "rotated-credential-token"
+    assert len(second_client.calls) == 1
+
+
+def test_tampered_signed_cache_is_not_reused(tmp_path) -> None:
+    cache_path = tmp_path / "private-kis-cache" / "tokens.json"
+    first, _ = _persistent_manager(cache_path, [_response()])
+    first.get_token()
+    document = json.loads(cache_path.read_text(encoding="utf-8"))
+    entry = next(iter(document["entries"].values()))
+    entry["access_token"] = "attacker-controlled-token"
+    cache_path.write_text(json.dumps(document), encoding="utf-8")
+    second, second_client = _persistent_manager(
+        cache_path,
+        [_response(access_token="fresh-after-tamper", expires_in=86_400)],
+    )
+
+    assert second.get_token() == "fresh-after-tamper"
+    assert len(second_client.calls) == 1
+
+
+@pytest.mark.parametrize("unsafe_mode", [False, True])
+def test_corrupt_or_permission_unsafe_cache_is_not_reused(
+    tmp_path, unsafe_mode: bool
+) -> None:
+    cache_path = tmp_path / "private-kis-cache" / "tokens.json"
+    cache_path.parent.mkdir(mode=0o700)
+    cache_path.write_text("not valid cache JSON", encoding="utf-8")
+    cache_path.chmod(0o644 if unsafe_mode else 0o600)
+    manager, client = _persistent_manager(cache_path, [_response()])
+
+    assert manager.get_token() == ACCESS_TOKEN
+    assert len(client.calls) == 1
+    assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
+
+
 # --- Bounded retry and failure normalization --------------------------------
 
 
@@ -289,23 +399,38 @@ def test_exhausted_retries_raise_kis_auth_error_with_health() -> None:
     assert health.source == "kis_auth"
     assert health.status is SourceStatus.UNAVAILABLE
     assert health.reason
+    assert excinfo.value.reason_code == "AUTH_TRANSPORT_ERROR"
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "expected_reason_code"),
     [
-        _response(status_code=403),
-        _response(status_code=429),
-        _response(status_code=500),
+        (_response(status_code=403), "AUTH_HTTP_AUTH_ERROR"),
+        (_response(status_code=429), "AUTH_HTTP_RATE_LIMITED"),
+        (_response(status_code=500), "AUTH_HTTP_ERROR"),
     ],
 )
-def test_http_error_status_normalizes_to_unavailable(response) -> None:
+def test_http_error_status_normalizes_to_unavailable(
+    response, expected_reason_code: str
+) -> None:
     manager = _manager([response, response, response])
 
     with pytest.raises(KisAuthError) as excinfo:
         manager.get_token()
 
     assert excinfo.value.health.status is SourceStatus.UNAVAILABLE
+    assert excinfo.value.reason_code == expected_reason_code
+
+
+def test_token_timeout_preserves_bounded_reason_code() -> None:
+    error = httpx.ReadTimeout("secret provider detail", request=httpx.Request("POST", DOMAIN))
+    manager = _manager([error, error, error])
+
+    with pytest.raises(KisAuthError) as excinfo:
+        manager.get_token()
+
+    assert excinfo.value.reason_code == "AUTH_TIMEOUT"
+    assert "secret provider detail" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -324,6 +449,7 @@ def test_malformed_token_body_normalizes_to_unavailable(body) -> None:
         manager.get_token()
 
     assert excinfo.value.health.status is SourceStatus.UNAVAILABLE
+    assert excinfo.value.reason_code == "AUTH_RESPONSE_INVALID"
 
 
 def test_non_json_body_normalizes_to_unavailable() -> None:
@@ -338,6 +464,7 @@ def test_non_json_body_normalizes_to_unavailable() -> None:
         manager.get_token()
 
     assert excinfo.value.health.status is SourceStatus.UNAVAILABLE
+    assert excinfo.value.reason_code == "AUTH_RESPONSE_INVALID"
 
 
 # --- Secret redaction (threat T-03-04-I) ------------------------------------
