@@ -165,6 +165,59 @@ class PortfolioLedger:
         return rows, self.settled_cash+self.pending_cash+market_value, unrealized
 
 
+    def apply_corporate_action(self, action, session: date, cutoff):
+        """Apply known actions before the opening opportunity, with explicit terms."""
+        if action.known_at > cutoff or action.effective > session:
+            return
+        lot = self.holdings.get(action.ticker)
+        if action.kind == 'DIVIDEND':
+            if action.action_id not in self.dividend_entitlements:
+                if session != action.effective:
+                    self.unknowns.add('DIVIDEND_ENTITLEMENT_UNKNOWN:'+action.action_id)
+                    return
+                self.dividend_entitlements[action.action_id] = lot.quantity if lot else 0
+            if action.action_id not in self.applied_actions and action.payable_session <= session:
+                cash = Decimal(self.dividend_entitlements[action.action_id])*action.cash_per_share
+                self.settled_cash += cash
+                self.action_cash += cash
+                self.applied_actions.add(action.action_id)
+        elif action.action_id not in self.applied_actions:
+            for id, intent in tuple(self.intents.items()):
+                if intent.ticker == action.ticker:
+                    self.expire(id)
+            if lot and action.kind == 'SPLIT':
+                shares = Decimal(lot.quantity)*action.ratio
+                integer = int(shares)
+                fraction = shares-integer
+                if fraction and action.fractional_cash_price is None:
+                    self.unknowns.add('FRACTIONAL_ACTION_TERMS_UNKNOWN:'+action.action_id)
+                    return
+                adjusted_basis = lot.average_price/action.ratio
+                if integer:
+                    self.holdings[action.ticker] = Lot(integer, adjusted_basis)
+                else:
+                    self.holdings.pop(action.ticker)
+                if fraction:
+                    cash = fraction*action.fractional_cash_price
+                    self.settled_cash += cash
+                    self.action_cash += cash
+                    self.realized_pnl += cash-fraction*adjusted_basis
+            elif lot and action.kind == 'DELIST':
+                if action.disposition_price is None or action.payable_session is None:
+                    self.unknowns.add('DELIST_DISPOSITION_UNKNOWN:'+action.ticker)
+                    return
+                proceeds = Decimal(lot.quantity)*action.disposition_price
+                self.holdings.pop(action.ticker)
+                self.pending.append(PendingSettlement(action.action_id,proceeds,action.payable_session))
+                # Disposition is a liquidation cash flow, not a dividend contribution.
+                self.cash_flow += proceeds
+                realized = proceeds-lot.quantity*lot.average_price
+                self.realized_pnl += realized
+                self.daily_realized_loss += max(ZERO,-realized)
+            self.applied_actions.add(action.action_id)
+        self.reconcile()
+
+
 class SimulatedPortfolioBroker:
     """Explicit offline capability; production submission is intentionally absent."""
     def __init__(self, ledger: PortfolioLedger):
@@ -172,3 +225,4 @@ class SimulatedPortfolioBroker:
 
     def submit_order(self, order):
         raise BacktestInputError('SIMULATOR_REQUIRES_RESERVED_INTENT')
+
