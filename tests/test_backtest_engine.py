@@ -109,3 +109,10 @@ def test_low_confidence_signals_cannot_buy():
     raw=raw_bundle()
     for signal in raw['signals']:signal['raw']='{"decision":"BUY","confidence":0.79,"reason":"fixture"}'
     assert not any(d.action=='BUY' for d in run(raw).decisions)
+
+
+def test_value_observer_is_frozen_and_does_not_mutate_ledger():
+    from pydantic import ValidationError
+    b=BacktestBundle.model_validate(raw_bundle());seen=[]
+    run_backtest(b,b.calendar[5].session,decision_observer=seen.append)
+    with pytest.raises(ValidationError): seen[0].available_cash=D('0')
