@@ -266,3 +266,110 @@ def load_shadow_manifest(path: str | Path) -> ShadowManifest:
         raise
     except (ValidationError, ValueError, TypeError):
         raise ShadowInputError('INVALID_SHADOW_MANIFEST') from None
+
+
+class ShadowUsage(Frozen):
+    input_tokens: Count | None = None
+    output_tokens: Count | None = None
+    total_tokens: Count | None = None
+    cached_input_tokens: Count | None = None
+    cache_creation_tokens: Count | None = None
+    reasoning_tokens: Count | None = None
+    billed_cost: Nonnegative | None = None
+    billed_currency: str | None = None
+    billing_reference: str | None = None
+
+    @model_validator(mode='after')
+    def valid_usage(self):
+        if self.billed_cost is not None and (not self.billed_currency or not self.billing_reference):
+            raise ValueError('bill attribution required')
+        if self.known and self.reasoning_tokens is not None and self.reasoning_tokens > self.output_tokens:
+            raise ValueError('reasoning is an output subdivision')
+        return self
+
+    @property
+    def known(self):
+        return self.input_tokens is not None and self.output_tokens is not None and self.total_tokens is not None and self.total_tokens == self.input_tokens + self.output_tokens
+
+
+Outcome = Literal['SUCCESS', 'MALFORMED', 'REFUSAL', 'PROVIDER_ERROR', 'TIMEOUT_UNKNOWN', 'EXCLUDED', 'NOT_DISPATCHED']
+
+
+def strict_trade_signal(raw: str):
+    from .signal_parser import parse_signal, SignalParseError
+    value = strict_json(raw, TEXT_LIMIT)
+    if not isinstance(value, dict) or set(value) != {'decision', 'confidence', 'reason'}:
+        raise ShadowInputError('INVALID_SIGNAL_SCHEMA')
+    try:
+        return parse_signal(raw).signal
+    except SignalParseError:
+        raise ShadowInputError('INVALID_SIGNAL_VALUES') from None
+
+
+class ShadowObservation(Frozen):
+    provider: Literal['openai', 'claude', 'codex_cli']
+    requested_model: Name
+    returned_model: Name | None = None
+    status: Outcome
+    validation_code: Name
+    raw_output: Text = ''
+    output_complete: StrictBool = True
+    output_hash: str | None = None
+    observed_prefix_hash: str = ''
+    signal_json: Text | None = None
+    usage: ShadowUsage = ShadowUsage()
+    request_id: Name | None = None
+    spec_id: str = ''
+    run_id: str = ''
+    attempt_id: str = ''
+    unit_id: str = ''
+    variant_id: str = ''
+    snapshot_id: str = ''
+    repetition: Count = 0
+    retry_of: str | None = None
+
+    @model_validator(mode='after')
+    def validate_outcome(self):
+        hashed = hashlib.sha256(self.raw_output.encode()).hexdigest()
+        if self.observed_prefix_hash and self.observed_prefix_hash != hashed:
+            raise ValueError('output hash mismatch')
+        if self.output_hash is not None and (not self.output_complete or self.output_hash != hashed):
+            raise ValueError('full hash mismatch')
+        object.__setattr__(self, 'observed_prefix_hash', hashed)
+        object.__setattr__(self, 'output_hash', hashed if self.output_complete else None)
+        if self.status == 'SUCCESS':
+            signal = strict_trade_signal(self.raw_output)
+            signal_json = canonical_json({'decision':signal.decision.value,'confidence':signal.confidence,'reason':signal.reason})
+            if self.signal_json is not None and canonical_json(strict_json(self.signal_json)) != signal_json:
+                raise ValueError('signal mismatch')
+            if not self.output_complete:
+                raise ValueError('successful output must be complete')
+            object.__setattr__(self, 'signal_json', signal_json)
+        elif self.signal_json is not None:
+            raise ValueError('failed observation cannot carry successful signal')
+        return self
+
+
+RunStatus = Literal['COMPLETE','PARTIAL','BUDGET_EXHAUSTED','INTERRUPTED','ACCOUNTING_BREACH']
+
+
+class ShadowRunResult(Frozen):
+    schema_version: Literal[1] = 1
+    manifest: ShadowManifest
+    run_id: Name
+    status: RunStatus
+    observations: tuple[ShadowObservation, ...]
+    events_document_json: str
+    metrics_document_json: str
+    result_id: str = ''
+
+    @model_validator(mode='after')
+    def identity(self):
+        ids = [o.attempt_id for o in self.observations]
+        if len(set(ids)) != len(ids) or any(not o.attempt_id or o.spec_id != self.manifest.spec_id or o.run_id != self.run_id for o in self.observations):
+            raise ValueError('observation attribution mismatch')
+        expected = shadow_content_hash(self.model_dump(mode='json',exclude={'result_id'}))
+        if self.result_id and self.result_id != expected:
+            raise ValueError('result hash mismatch')
+        object.__setattr__(self, 'result_id', expected)
+        return self

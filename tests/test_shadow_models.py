@@ -56,3 +56,41 @@ def test_utf8_bound_and_synthetic_fixture():
     fixture=Path('tests/fixtures/shadow/minimal_manifest.json')
     m=load_shadow_manifest(fixture)
     assert m.pricing[0].synthetic and 'api_key' not in fixture.read_text()
+
+
+def observation(**updates):
+    args=dict(provider='openai',requested_model='fixture-model',status='SUCCESS',validation_code='VALID_SIGNAL',raw_output='{"decision":"HOLD","confidence":0.4,"reason":"fixture"}')
+    args.update(updates)
+    return ShadowObservation(**args)
+
+
+@pytest.mark.parametrize('status',['MALFORMED','REFUSAL','PROVIDER_ERROR','TIMEOUT_UNKNOWN'])
+def test_failed_output_never_synthetic_success(status):
+    o=observation(status=status,raw_output='invalid')
+    assert o.signal_json is None and not o.usage.known
+    with pytest.raises(ValidationError):observation(status=status,signal_json='{"decision":"HOLD","confidence":0.4,"reason":"x"}')
+
+
+def test_billing_attribution_and_reasoning_subdivision():
+    with pytest.raises(ValidationError):ShadowUsage(billed_cost='1')
+    with pytest.raises(ValidationError):ShadowUsage(input_tokens=1,output_tokens=1,total_tokens=2,reasoning_tokens=2)
+    assert not ShadowUsage().known
+    assert ShadowUsage(input_tokens=2,output_tokens=3,total_tokens=5,reasoning_tokens=2).known
+
+
+@pytest.mark.parametrize('raw',['{"decision":"HOLD","confidence":0.5,"reason":"x","extra":1}', '{"decision":"HOLD","confidence":true,"reason":"x"}', '{"decision":"HOLD","decision":"BUY","confidence":0.5,"reason":"x"}'])
+def test_exact_signal_contract(raw):
+    with pytest.raises((ValidationError,ShadowInputError)):observation(raw_output=raw)
+
+
+def test_partial_output_has_prefix_hash_only_and_no_signal():
+    o=observation(status='MALFORMED',raw_output='prefix',output_complete=False)
+    assert o.output_hash is None and o.observed_prefix_hash
+    with pytest.raises(ValidationError):observation(status='MALFORMED',raw_output='prefix',output_complete=False,output_hash='a'*64)
+
+
+def test_observation_identity_vs_repeated_run():
+    o=observation(spec_id=manifest().spec_id,run_id='run1',attempt_id='a1')
+    r=ShadowRunResult(manifest=manifest(),run_id='run1',status='COMPLETE',observations=(o,),events_document_json='[]',metrics_document_json='{}')
+    assert ShadowRunResult.model_validate(r.model_dump(mode='json'))==r
+    with pytest.raises(ValidationError):ShadowRunResult(manifest=manifest(),run_id='other',status='COMPLETE',observations=(o,),events_document_json='[]',metrics_document_json='{}')
