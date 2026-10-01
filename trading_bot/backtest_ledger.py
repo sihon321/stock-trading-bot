@@ -28,7 +28,9 @@ class PendingSettlement:
 class PortfolioLedger:
     """settled_cash includes reservations; only available_cash may fund a BUY."""
 
-    def __init__(self, policy: BacktestPolicy, sessions: tuple[date, ...]):
+    def __init__(self, policy: BacktestPolicy, sessions: tuple[date, ...], initial_session: date | None = None):
+        self.initial_session = initial_session
+        self.initial_tickers = {p.ticker for p in policy.initial_positions}
         self.initial_cash = policy.initial_cash
         self.settled_cash = policy.initial_cash
         self.sessions = sessions
@@ -140,6 +142,9 @@ class PortfolioLedger:
 
     def start_session(self, session: date):
         self.daily_realized_loss = ZERO
+        self.settle_pending(session)
+
+    def settle_pending(self, session: date):
         due = [p for p in self.pending if p.due_session is not None and p.due_session <= session]
         self.settled_cash += sum((p.amount for p in due),ZERO)
         self.pending = [p for p in self.pending if p not in due]
@@ -168,6 +173,12 @@ class PortfolioLedger:
     def apply_corporate_action(self, action, session: date, cutoff):
         """Apply known actions before the opening opportunity, with explicit terms."""
         if action.known_at > cutoff or action.effective > session:
+            return
+        if self.initial_session is not None and action.effective < self.initial_session:
+            if action.kind == 'DIVIDEND' and action.payable_session >= self.initial_session and action.ticker in self.initial_tickers:
+                self.unknowns.add('INITIAL_DIVIDEND_ENTITLEMENT_UNKNOWN:'+action.action_id)
+            if action.kind == 'DELIST' and action.ticker in self.initial_tickers:
+                self.unknowns.add('INITIAL_DELIST_STATE_UNKNOWN:'+action.ticker)
             return
         lot = self.holdings.get(action.ticker)
         if action.kind == 'DIVIDEND':

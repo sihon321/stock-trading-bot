@@ -78,3 +78,34 @@ def test_canonical_decimal_spelling_is_normalized():
     raw=raw_bundle();a=BacktestBundle.model_validate(raw)
     raw['policy']['initial_cash']='10000.00'
     assert content_hash(a)==content_hash(BacktestBundle.model_validate(raw))
+
+
+def test_future_retroactive_action_does_not_leak_into_prior_decisions():
+    raw=raw_bundle();first=run(raw)
+    raw['corporate_actions'].append({'action_id':'future-discovery','ticker':'005930','kind':'SPLIT','effective':raw['calendar'][5]['session'],'known_at':'2025-01-01T00:00:00+00:00','ratio':'2'})
+    second=run(raw)
+    assert first.decisions==second.decisions
+    assert first.sessions==second.sessions
+
+
+def test_historical_gap_is_visible_and_blocks_new_buy():
+    raw=raw_bundle();s=raw['calendar'][2]['session']
+    raw['bars']=[b for b in raw['bars'] if not(b['ticker']=='000660' and b['session']==s)]
+    r=run(raw)
+    assert 'HISTORY_GAP:000660' in r.sessions[0].unknowns
+    assert not any(d.action=='BUY' for d in r.decisions)
+
+
+def test_malformed_held_signal_does_not_bypass_shipped_parse_failure_order():
+    raw=raw_bundle();raw['policy']['initial_positions']=[{'ticker':'005930','quantity':10,'average_price':'90','known_at':'2022-01-01T00:00:00+00:00'}]
+    raw['signals'][0]['raw']='malformed'
+    result=run(raw)
+    first=next(d for d in result.decisions if d.session.isoformat()==raw['calendar'][5]['session'] and d.ticker=='005930')
+    assert first.action=='HOLD' and not first.risk_override
+    assert first.reason=='MISSING_OR_MALFORMED_SIGNAL'
+
+
+def test_low_confidence_signals_cannot_buy():
+    raw=raw_bundle()
+    for signal in raw['signals']:signal['raw']='{"decision":"BUY","confidence":0.79,"reason":"fixture"}'
+    assert not any(d.action=='BUY' for d in run(raw).decisions)

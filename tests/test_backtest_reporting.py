@@ -57,3 +57,37 @@ def test_unknown_valuation_invalidates_return_and_drawdown():
     r=run();first=r.sessions[0].model_copy(update={'net_equity':None,'gross_equity':None})
     metrics=calculate_metrics(r.model_copy(update={'sessions':(first,*r.sessions[1:])}))
     assert metrics.net_return is None and metrics.max_drawdown is None and metrics.exposure[0] is None
+
+
+def test_rehashed_false_initial_equity_is_rejected(tmp_path):
+    raw=build_backtest_result(run()).model_dump(mode='json');raw['run']['initial_equity']='20000'
+    raw['result_id']=content_hash({k:v for k,v in raw.items() if k!='result_id'})
+    f=tmp_path/'forged.json';f.write_text(json.dumps(raw))
+    with pytest.raises(BacktestInputError,match='INVALID_INITIAL_EQUITY'):load_backtest_result(f)
+
+
+def test_zero_terminal_equity_reports_total_loss_not_unknown():
+    r=run();last=r.sessions[-1].model_copy(update={'net_equity':D('0'),'gross_equity':D('0'),'holdings':()})
+    m=calculate_metrics(r.model_copy(update={'sessions':(*r.sessions[:-1],last)}))
+    assert m.net_return==D('-1') and m.max_drawdown==D('1')
+    assert m.exposure[-1] is None
+
+
+def test_report_output_uses_atomic_conflict_safe_publish(tmp_path):
+    from trading_bot.backtest_reporting import write_backtest_report
+    path=tmp_path/'report.txt'
+    write_backtest_report('모의 결과\r\n',path)
+    write_backtest_report('모의 결과\n',path)
+    with pytest.raises(BacktestInputError):write_backtest_report('다른 결과\n',path)
+    assert path.read_bytes()=='모의 결과\n'.encode()
+
+
+def test_frozen_same_period_benchmark_and_future_benchmark_rejection(tmp_path):
+    from trading_bot.backtest_models import BenchmarkPoint
+    r=run();points=tuple(BenchmarkPoint(session=s.session,known_at=next(c.close_at for c in r.calendar if c.session==s.session),close=D(100+i)) for i,s in enumerate(r.sessions))
+    r=r.model_copy(update={'benchmark':points})
+    result=build_backtest_result(r)
+    assert result.metrics.benchmark_return==points[-1].close/points[0].close-1
+    raw=result.model_dump(mode='json');raw['run']['benchmark'][0]['known_at']='2030-01-01T00:00:00+00:00'
+    f=tmp_path/'future.json';f.write_text(json.dumps(raw))
+    with pytest.raises(BacktestInputError,match='INVALID_BENCHMARK_AVAILABILITY'):load_backtest_result(f)

@@ -36,7 +36,7 @@ def cost_profile(name: str) -> CostProfile:
 
 
 def effective_rule(rules, market: str, session: date, cutoff: datetime):
-    found = [r for r in rules if r.market == market and r.effective_start <= session < r.effective_end and r.known_at <= cutoff and r.reviewed_at <= cutoff]
+    found = [r for r in rules if r.market == market and r.effective_start <= session < r.effective_end and r.known_at <= cutoff]
     if len(found) != 1:
         raise BacktestInputError('MARKET_RULE_COVERAGE_MISSING')
     return found[0]

@@ -77,6 +77,8 @@ def _validate_run(run: BacktestRun):
         raise BacktestInputError('INVALID_SCENARIO_LINK')
     if not m['source_hashes'] or any(not isinstance(h,str) or re.fullmatch(r'[0-9a-f]{64}',h) is None for h in m['source_hashes']):
         raise BacktestInputError('INVALID_SOURCE_HASHES')
+    if m['market_rule_ids'] != [r.rule_id for r in (*run.cost_rules,*run.tick_rules)] or len(set(m['market_rule_ids'])) != len(m['market_rule_ids']):
+        raise BacktestInputError('INVALID_MARKET_RULE_IDENTITIES')
     if len(run.sessions)>20000 or len(run.fills)>250000 or len(run.decisions)>250000 or len(run.intents)>250000:
         raise BacktestInputError('EXCESS_EVIDENCE_ROWS')
     calendar = tuple(s.session for s in run.calendar if s.completed)
@@ -89,7 +91,24 @@ def _validate_run(run: BacktestRun):
         raise BacktestInputError('INVALID_COVERAGE_RANGE')
     if len(set(i.intent_id for i in run.intents)) != len(run.intents):
         raise BacktestInputError('DUPLICATE_EVIDENCE_INTENT')
-    ledger = PortfolioLedger(policy,calendar); profile = cost_profile(m['profile']['name'])
+    closes={s.session:s.close_at for s in run.calendar}
+    if len(set(b.session for b in run.benchmark))!=len(run.benchmark) or any(b.session not in {s.session for s in run.sessions} or b.known_at>closes[b.session] for b in run.benchmark):
+        raise BacktestInputError('INVALID_BENCHMARK_AVAILABILITY')
+    marks={b.ticker:b for b in run.initial_marks}
+    prior=[s for s in calendar if s<start]
+    if len(marks)!=len(run.initial_marks) or any(not prior or b.session!=prior[-1] or b.known_at>closes[b.session] for b in run.initial_marks):
+        raise BacktestInputError('INVALID_INITIAL_MARKS')
+    expected_initial=policy.initial_cash
+    if policy.initial_positions:
+        if set(marks)=={p.ticker for p in policy.initial_positions}:
+            expected_initial+=sum((marks[p.ticker].close*p.quantity for p in policy.initial_positions),ZERO)
+        else:
+            expected_initial=None
+    elif marks:
+        raise BacktestInputError('UNEXPECTED_INITIAL_MARKS')
+    if expected_initial!=run.initial_equity:
+        raise BacktestInputError('INVALID_INITIAL_EQUITY')
+    ledger = PortfolioLedger(policy,calendar,start); profile = cost_profile(m['profile']['name'])
     intent_map = {i.intent_id:i for i in run.intents}
     linked = set()
     for sequence,d in enumerate(run.decisions):
@@ -111,6 +130,7 @@ def _validate_run(run: BacktestRun):
             ledger.apply_corporate_action(action,s.session,opening_cutoff(s.session))
             if ledger.action_cash != old_action or ledger.cash_flow != old_flow:
                 expected_cash_events.append({'action_id':action.action_id,'session':s.session.isoformat(),'kind':action.kind,'cash_delta':str(ledger.action_cash-old_action),'liquidation_delta':str(ledger.cash_flow-old_flow)})
+        ledger.settle_pending(s.session)
         eligible = {i.intent_id for i in ledger.intents.values() if i.eligible_session <= s.session}
         supplied = [f for f in run.fills if f.session == s.session]
         if {f.intent_id for f in supplied} != eligible or len(supplied) != len(eligible):
@@ -169,13 +189,13 @@ def calculate_metrics(run: BacktestRun) -> BacktestMetrics:
     with localcontext() as context:
         context.prec=28
         net=[s.net_equity for s in run.sessions];gross=[s.gross_equity for s in run.sessions]
-        valid=bool(net) and all(v is not None and v>0 for v in net) and run.initial_equity is not None and run.initial_equity>0
+        valid=bool(net) and all(v is not None and v>=0 for v in net) and run.initial_equity is not None and run.initial_equity>0
         exposure=tuple(sum((h.quantity*h.mark_price for h in s.holdings),ZERO)/s.net_equity if s.net_equity is not None and s.net_equity>0 and all(h.mark_price is not None for h in s.holdings) else None for s in run.sessions)
         notional=sum((f.quantity*f.executed_price for f in run.fills),ZERO)
         benchmark=None
         if run.sessions and tuple(b.session for b in run.benchmark)==tuple(s.session for s in run.sessions):
             benchmark=run.benchmark[-1].close/run.benchmark[0].close-1
-        return BacktestMetrics(net_return=net[-1]/run.initial_equity-1 if valid else None,gross_return=gross[-1]/run.initial_equity-1 if valid else None,max_drawdown=_drawdown(net,run.initial_equity),gross_max_drawdown=_drawdown(gross,run.initial_equity),exposure=exposure,turnover=notional/(sum(net,ZERO)/len(net)) if valid else None,realized_pnl=run.sessions[-1].realized_pnl if run.sessions else ZERO,unrealized_pnl=run.sessions[-1].unrealized_pnl if run.sessions else None,commission=sum((f.commission for f in run.fills),ZERO),sell_tax=sum((f.sell_tax for f in run.fills),ZERO),surtax=sum((f.surtax for f in run.fills),ZERO),slippage_drag=sum((f.slippage_drag for f in run.fills),ZERO),fill_count=sum(f.quantity>0 for f in run.fills),partial_count=sum(f.reason=='PARTIAL' for f in run.fills),nonfill_count=sum(f.quantity==0 for f in run.fills),expired_quantity=sum(e['remaining_quantity'] for e in run.expiries),benchmark_return=benchmark,decision_reasons=dict(sorted(Counter(d.reason for d in run.decisions).items())),nonfill_reasons=dict(sorted(Counter(f.reason for f in run.fills if not f.quantity).items())))
+        return BacktestMetrics(net_return=net[-1]/run.initial_equity-1 if valid else None,gross_return=gross[-1]/run.initial_equity-1 if valid else None,max_drawdown=_drawdown(net,run.initial_equity),gross_max_drawdown=_drawdown(gross,run.initial_equity),exposure=exposure,turnover=notional/(sum(net,ZERO)/len(net)) if valid and sum(net,ZERO)>0 else None,realized_pnl=run.sessions[-1].realized_pnl if run.sessions else ZERO,unrealized_pnl=run.sessions[-1].unrealized_pnl if run.sessions else None,commission=sum((f.commission for f in run.fills),ZERO),sell_tax=sum((f.sell_tax for f in run.fills),ZERO),surtax=sum((f.surtax for f in run.fills),ZERO),slippage_drag=sum((f.slippage_drag for f in run.fills),ZERO),fill_count=sum(f.quantity>0 for f in run.fills),partial_count=sum(f.reason=='PARTIAL' for f in run.fills),nonfill_count=sum(f.quantity==0 for f in run.fills),expired_quantity=sum(e['remaining_quantity'] for e in run.expiries),benchmark_return=benchmark,decision_reasons=dict(sorted(Counter(d.reason for d in run.decisions).items())),nonfill_reasons=dict(sorted(Counter(f.reason for f in run.fills if not f.quantity).items())))
 
 
 def build_backtest_result(run: BacktestRun) -> BacktestResult:
@@ -202,14 +222,22 @@ def load_backtest_result(path: str | Path) -> BacktestResult:
 
 def write_backtest_result(result: BacktestResult, output: str | Path) -> Path:
     """No-overwrite atomic publish; another writer cannot replace conflicting bytes."""
-    from .report_cli import _validated_output_parent
     if build_backtest_result(result.run) != result:
         raise BacktestInputError('INVALID_RESULT_FOR_OUTPUT')
+    return _write_evidence_bytes(canonical_bytes(result)+b'\n', output)
+
+
+def write_backtest_report(text: str, output: str | Path) -> Path:
+    from .report_cli import _normalized_text_bytes
+    return _write_evidence_bytes(_normalized_text_bytes(text), output)
+
+
+def _write_evidence_bytes(payload: bytes, output: str | Path) -> Path:
+    from .report_cli import _validated_output_parent
     try:
         root,target=_validated_output_parent(Path(output))
         if target.is_symlink():
             raise BacktestInputError('UNSAFE_OUTPUT')
-        payload=canonical_bytes(result)+b'\n'
         if target.exists():
             if not target.is_file() or target.read_bytes()!=payload:
                 raise BacktestInputError('OUTPUT_CONFLICT')

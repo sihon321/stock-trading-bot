@@ -85,3 +85,18 @@ def test_fractional_split_requires_terms():
     a=CorporateAction(action_id='fraction',ticker='005930',kind='SPLIT',effective=b.calendar[6].session,known_at=b.calendar[0].close_at,ratio=D('0.5'))
     l.apply_corporate_action(a,a.effective,opening_cutoff(a.effective))
     assert l.holdings['005930']==Lot(1,D('100')) and l.unknowns
+
+
+def test_explicit_same_session_delist_payment_settles_after_action():
+    b,l=ledger_fixture('0');l.holdings['005930']=Lot(10,D('100'))
+    a=CorporateAction(action_id='resolved',ticker='005930',kind='DELIST',effective=b.calendar[6].session,known_at=b.calendar[0].close_at,disposition_price=D('90'),payable_session=b.calendar[6].session)
+    l.start_session(a.effective);l.apply_corporate_action(a,a.effective,opening_cutoff(a.effective));l.settle_pending(a.effective)
+    assert l.settled_cash==900 and l.pending_cash==0 and not l.holdings
+    l.reconcile()
+
+
+def test_actions_before_initial_state_are_not_applied_twice():
+    b,l=ledger_fixture();a=next(a for a in b.corporate_actions if a.kind=='SPLIT')
+    l.initial_session=b.calendar[-1].session;l.holdings['005930']=Lot(20,D('50'))
+    l.apply_corporate_action(a,l.initial_session,opening_cutoff(l.initial_session))
+    assert l.holdings['005930']==Lot(20,D('50'))

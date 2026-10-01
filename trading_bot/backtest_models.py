@@ -28,6 +28,8 @@ def decimal_value(value: object) -> Decimal:
 
 
 def decimal_text(number: Decimal) -> str:
+    if number == 0:
+        return '0'
     return format(number, 'f').rstrip('0').rstrip('.') if '.' in format(number, 'f') else format(number, 'f')
 
 
@@ -39,6 +41,22 @@ Symbol = Annotated[str, Field(pattern=r'^\d{6}$')]
 
 class Frozen(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, allow_inf_nan=False)
+
+    @field_validator('*', mode='before')
+    @classmethod
+    def strict_date_inputs(cls, value, info):
+        timestamps = {'known_at', 'close_at', 'reviewed_at'}
+        dates = {'session', 'effective', 'effective_start', 'effective_end', 'coverage_start', 'coverage_end', 'payable_session', 'decision_session', 'eligible_session'}
+        bools = {'completed', 'ordinary', 'member', 'limit_lock', 'tradability_proof', 'synthetic', 'calendar_complete', 'membership_complete', 'corporate_actions_complete'}
+        if info.field_name in timestamps and not isinstance(value, (str, datetime)):
+            raise ValueError('ISO timestamp required')
+        if info.field_name in dates and value is not None:
+            import re
+            if not (isinstance(value, date) and not isinstance(value, datetime)) and not (isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value)):
+                raise ValueError('ISO date required')
+        if info.field_name in bools and not isinstance(value, bool):
+            raise ValueError('boolean required')
+        return value
 
     @field_validator('*')
     @classmethod

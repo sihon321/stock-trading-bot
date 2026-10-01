@@ -380,9 +380,12 @@ def backtest_report_command(
     output: Path | None = typer.Option(None, "--output", help="한국어 보고서 파일"),
 ) -> None:
     from .backtest_models import BacktestInputError
-    from .backtest_reporting import load_backtest_result, render_backtest_report
+    from .backtest_reporting import load_backtest_result, render_backtest_report, write_backtest_report
     try:
-        _deliver(render_backtest_report(load_backtest_result(result)), output)
+        rendered = render_backtest_report(load_backtest_result(result))
+        if output is not None:
+            write_backtest_report(rendered, output)
+        typer.echo(rendered, nl=False)
     except (BacktestInputError, ValueError, OSError) as exc:
         code = str(exc) if isinstance(exc, BacktestInputError) else "INVALID_REPORT_INPUT"
         typer.echo(f"백테스트 보고 실패: {code[:100]}", err=True)

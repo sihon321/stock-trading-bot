@@ -98,7 +98,9 @@ def resolve_backtest_window(bundle: BacktestBundle, start: date | None = None, e
         reasons.append('SYNTHETIC_MARKET_RULES')
     if sessions:
         first = next(s for s in bundle.calendar if s.session == sessions[0])
-        if any(x.known_at > first.close_at for x in bundle.policy.initial_positions):
+        from zoneinfo import ZoneInfo
+        first_open = datetime.combine(first.session, datetime.min.time().replace(hour=9), ZoneInfo('Asia/Seoul'))
+        if any(x.known_at > first_open for x in bundle.policy.initial_positions):
             raise BacktestInputError('FUTURE_INITIAL_POSITION')
     return BacktestWindow(start, end, sessions, warmup, CoverageStatus.INCOMPLETE if reasons else CoverageStatus.COMPLETE, tuple(reasons))
 
@@ -150,6 +152,11 @@ def decision_view(bundle: BacktestBundle, session: date, held: tuple[str, ...] =
             prices[ticker] = current.close
         else:
             unknowns.append('PRICE_UNKNOWN:'+ticker)
+        if member is not None:
+            expected = {s.session for s in bundle.calendar if s.completed and member.effective <= s.session <= session}
+            observed = {b.session for b in history}
+            if expected-observed:
+                unknowns.append('HISTORY_GAP:'+ticker)
         adjusted = []
         for bar in history:
             ratio = Decimal('1')

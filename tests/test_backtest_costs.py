@@ -16,11 +16,11 @@ def test_cost_components_and_assumptions():
     assert 'not account-specific' in p.document()['assumption']
 
 
-def test_effective_boundary_and_unknown_review():
+def test_effective_boundary_and_future_fact():
     b=BacktestBundle.model_validate(raw_bundle());r=b.cost_rules[0]; dt=datetime(2023,1,1,tzinfo=timezone.utc)
     assert effective_rule(b.cost_rules,r.market,date(2023,1,1),dt)==r
     with pytest.raises(BacktestInputError): effective_rule(b.cost_rules,r.market,r.effective_end,dt)
-    with pytest.raises(BacktestInputError): effective_rule((r.model_copy(update={'reviewed_at':datetime(2024,1,1,tzinfo=timezone.utc)}),),r.market,date(2023,1,1),dt)
+    with pytest.raises(BacktestInputError): effective_rule((r.model_copy(update={'known_at':datetime(2024,1,1,tzinfo=timezone.utc)}),),r.market,date(2023,1,1),dt)
 
 
 def test_tick_cross_band_side_aware_rounding():
@@ -33,3 +33,9 @@ def test_tick_cross_band_side_aware_rounding():
 def test_invalid_cost_input(side,q,p):
     r=BacktestBundle.model_validate(raw_bundle()).cost_rules[0]
     with pytest.raises(BacktestInputError): calculate_fill_costs(side,q,p,cost_profile('baseline'),r)
+
+
+def test_later_curation_review_does_not_rewrite_historical_fact_availability():
+    b=BacktestBundle.model_validate(raw_bundle());r=b.cost_rules[0]
+    curated=r.model_copy(update={'reviewed_at':datetime(2026,10,1,tzinfo=timezone.utc)})
+    assert effective_rule((curated,),curated.market,date(2023,1,1),datetime(2023,1,1,tzinfo=timezone.utc))==curated

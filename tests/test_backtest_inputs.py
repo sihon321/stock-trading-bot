@@ -85,3 +85,27 @@ def test_complete_short_window_needs_reviewed_rules_and_warmup():
     w=resolve_backtest_window(b,b.calendar[5].session,b.calendar[-1].session)
     assert w.coverage_status is CoverageStatus.COMPLETE
     assert resolve_backtest_window(b,b.calendar[0].session).coverage_status is CoverageStatus.INCOMPLETE
+
+@pytest.mark.parametrize('change',[
+    lambda b:b['membership'][0].update(member='true'),
+    lambda b:b['bars'][0].update(known_at=12345),
+    lambda b:b['calendar'][0].update(session='20230102'),
+    lambda b:b['sources'].update(calendar_complete=1),
+])
+def test_no_coercion_of_dates_timestamps_or_truth_claims(change):
+    b=raw_bundle();change(b)
+    with pytest.raises(ValidationError):BacktestBundle.model_validate(b)
+
+
+def test_initial_account_state_must_be_known_before_first_open():
+    raw=raw_bundle();s=raw['calendar'][5]['session']
+    raw['policy']['initial_positions']=[{'ticker':'005930','quantity':1,'average_price':'100','known_at':s+'T15:30:00+09:00'}]
+    b=BacktestBundle.model_validate(raw)
+    with pytest.raises(BacktestInputError,match='FUTURE_INITIAL_POSITION'):resolve_backtest_window(b,b.calendar[5].session)
+
+
+def test_loader_enforces_size_bound_before_parsing(monkeypatch,tmp_path):
+    import trading_bot.backtest_inputs as inputs
+    f=tmp_path/'too-large.json';f.write_text('{"private":"do-not-expose"}')
+    monkeypatch.setattr(inputs,'MAX_INPUT_BYTES',10)
+    with pytest.raises(BacktestInputError,match='OVERSIZE'):load_backtest_bundle(f)
