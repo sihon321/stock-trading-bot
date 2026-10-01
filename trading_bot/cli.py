@@ -152,6 +152,8 @@ from trading_bot.audit_models import (
 
 app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator CLI.")
 app.add_typer(report_app, name="report")
+from .backtest_cli import backtest_app
+app.add_typer(backtest_app, name="backtest")
 soak_app = typer.Typer(no_args_is_help=True, help="KIS mock-only soak compatibility workflow.")
 app.add_typer(soak_app, name="soak")
 intraday_app = typer.Typer(

@@ -372,3 +372,18 @@ def readiness_command(
     except (OSError, KeyError, ValueError, RuntimeError) as exc:
         typer.echo(_diagnostic(exc), err=True)
         raise typer.Exit(2) from None
+
+
+@report_app.command("backtest")
+def backtest_report_command(
+    result: Path = typer.Argument(..., help="검증할 저장 백테스트 JSON"),
+    output: Path | None = typer.Option(None, "--output", help="한국어 보고서 파일"),
+) -> None:
+    from .backtest_models import BacktestInputError
+    from .backtest_reporting import load_backtest_result, render_backtest_report
+    try:
+        _deliver(render_backtest_report(load_backtest_result(result)), output)
+    except (BacktestInputError, ValueError, OSError) as exc:
+        code = str(exc) if isinstance(exc, BacktestInputError) else "INVALID_REPORT_INPUT"
+        typer.echo(f"백테스트 보고 실패: {code[:100]}", err=True)
+        raise typer.Exit(2) from None
