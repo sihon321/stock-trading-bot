@@ -248,7 +248,7 @@ Plans:
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
-| 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
+| 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/14 | Planned    |  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
 
@@ -424,11 +424,43 @@ Plans:
   4. Alerts are severity-based, deduplicated, evidence-linked, and cover failed/stale workers, unresolved orders, safety latches, and broker divergence.
   5. The web process has no KIS order, live LLM execution, policy-write, secret-display, real-mode activation, or safety-gate waiver capability; local/private exposure is the secure default.
 
-**Plans:** 0 plans
+**Plans:** 0/14 plans executed
 
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd-plan-phase 14 to break down)
+- [ ] 14-01-PLAN.md
+- [ ] 14-03-PLAN.md
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 14-02-PLAN.md
+- [ ] 14-04-PLAN.md
+- [ ] 14-13-PLAN.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 14-05-PLAN.md
+- [ ] 14-14-PLAN.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 14-06-PLAN.md
+- [ ] 14-08-PLAN.md
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 14-07-PLAN.md
+- [ ] 14-09-PLAN.md
+- [ ] 14-10-PLAN.md
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 14-11-PLAN.md
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 14-12-PLAN.md
 
 ### Phase 15: Unattended Scheduling & Service Resilience
 
