@@ -244,3 +244,34 @@ watch cadence는 60초 기본값이자 최솟값이다. 더 짧은 값은 KIS �
 - [ ] cancel은 운영자가 KIS 화면에서 수행한 외부 관측으로만 확인한다. bot의 자동 cancel 기능을 만들거나 호출하지 않는다.
 - [ ] 다음 조회에서 partial-fill/cancel 결과가 append-only reconciliation로 남고 로컬 잔여수량 계산이나 재제출이 없음을 확인한다.
 - [ ] artifact 공유 전 account 값, credential, raw payload, exception 본문이 없는 sanitized evidence인지 다시 검사한다.
+
+## Phase 12 오프라인 포트폴리오 백테스트
+
+`bot backtest run BUNDLE`은 동결된 JSON만 읽으며 KIS·LLM·pykrx·네이버 연결, live 감사/soak DB 변경, 주문 전송, 설정 변경을 하지 않는다. 세션 간 하나의 원장을 유지하며, 종가 신호는 다음 거래일의 시가 체결 기회부터 평가한다. 장중 리스크 워커의 재현이나 실거래 승인이 아니다.
+
+```bash
+bot backtest run ./historical-bundle.json --start 2023-01-02 --end 2025-12-30 --profile baseline --output ./results/baseline.json
+bot backtest run ./historical-bundle.json --start 2023-01-02 --end 2025-12-30 --profile stress --output ./results/stress.json
+bot report backtest ./results/baseline.json --output ./results/baseline.txt
+```
+
+날짜를 생략하면 묶음의 마지막 완료 KRX 세션을 끝으로 최근 3개 달력년을 요청한다. 윤년 날짜는 2월 28일로 보정한다. 실제 자료 기간·워밍업·요청 기간을 별도로 표시하며 부족한 기간을 조용히 줄여 완전한 결과라고 표시하지 않는다. 기본 시작 현금은 **모델 가정 10,000,000 KRW**, 초기 보유는 없음이며 묶음 policy로 지정한다. 출력 기본값은 `data/backtests/<result_id>.json`. 동일 바이트의 재출력은 성공하고 충돌·심볼릭 링크는 거부한다. 성공한 모델 계산은 불완전 자료라도 종료 코드 0, 잘못된 입력·지원하지 않는 프로필/날짜·출력 충돌은 2다. 자동 운영 판단은 종료 코드 대신 `run.final_coverage`와 `run.limitations`를 확인한다.
+
+묶음 schema_version은 1이며 정확한 계약은 `trading_bot/backtest_models.py`다. 필수 필드는 `calendar`, `bars`, `membership`, `trading_status`, `corporate_actions`, `signals`, `policy`, `cost_rules`, `tick_rules`, `sources`; `benchmark`는 선택이다. 각 일봉은 ticker/session/known_at 및 조정되지 않은 open/high/low/close/volume이다. 날짜는 YYYY-MM-DD, 시각은 시간대가 있는 ISO 8601, 금액·비율은 유한한 Decimal 문자열, 수량은 정수다. 달력 close_at은 그 세션의 한국 날짜와 일치해야 한다. sources는 요청 구간의 달력·종목 구성·기업행사 완전성 선언과 source_hashes를 기록한다. 이 선언은 데이터 수집자가 검토하며 수집·검토를 이 명령이 대신 수행하지 않는다.
+
+과거 KOSPI/KOSDAQ 보통주 구성·거래 상태·기업행사는 effective와 known_at을 함께 기록한다. 신호는 당시 알려진 strict JSON 문자열이어야 한다. 누락·파싱 실패는 HOLD, 유효한 신호는 기존 confidence·사이징·리스크 규칙을 통과해야 한다. 조정 주가는 지표 입력에만 당시 알려진 분할 정보를 적용하며 실제 체결 가격은 raw 일봉을 사용한다. 배당은 입력된 순액과 지급 세션이 있어야 지급하며, 상장폐지는 처분 가격·지급 세션을 확인할 수 없으면 보유량을 유지하고 평가 미확정을 표시한다. 고정 allowlist는 생존 편향 경고와 불완전 판정을 포함한다.
+
+수수료·슬리피지·유동성 가정:
+
+| 프로필 | 매수·매도 수수료 | 불리한 시가 슬리피지 | 종목별 당일 합산 거래량 참여 |
+|---|---|---|---|
+| baseline | 각 1.5 bps | 10 bps | 1% |
+| stress | 각 3 bps | 25 bps | 0.5% |
+
+위 값은 실제 계좌 요금이 아닌 모델 가정이다. 거래세·추가 세목·호가 단위는 시장별 날짜 유효 구간 `[effective_start, effective_end)`과 known_at/source/reviewed_at/rule_id를 가진 검토 입력을 사용한다. 합성 규칙은 `synthetic: true`로 표시하며 완전한 실제 시장 증거로 취급하지 않는다. 현재 세율을 과거 전체에 대입하지 않으며 규칙 누락·중첩·지원하지 않는 시장/거래일은 실패한다. 거래세·추가 세목은 매도에만 적용한다. 비용은 Decimal로 계산한 뒤 KRW 1 단위 올림하는 **명시적인 보수적 모델 반올림**이다. 실제 증권사 정산 반올림을 보장하지 않는다. 틱은 가격 구간별 규칙을 사용하며 매수 한도는 내림, 매도 한도는 올림한다. 슬리피지 시가는 반대 방향으로 불리하게 틱 정렬하고 한도·일봉 범위를 다시 검증한다.
+
+시가에서 한도를 만족하지 않으면 일봉 고저가가 한도를 건드려도 체결을 만들지 않는다. 거래량 0·거래 정지·단일가 잠김은 명시적인 거래 가능 증거 없이 체결하지 않는다. 거래량 한도는 주문마다 중복 부여하지 않고 종목·세션 전체가 공유한다. 부분 체결 뒤 잔량은 그 세션 끝에 만료하며 다음 주문은 새 신호를 요구한다. BUY 현금과 SELL 보유수량을 예약한다. 매도 순대금은 동결된 KRX 달력의 T+2 거래일에 현금으로 전환하며 당일 BUY 자금으로 재사용하지 않는다. 실제 증권사 buying power와 다를 수 있다. 거래량은 그 날 전체의 **사후 체결 근사 자료**이며 이전 날의 신호 판단에는 들어가지 않는다.
+
+순자산은 정산 현금(예약분 포함) + 결제 대기금 + 보유 평가액이다. 노출은 보유 평가액/순자산, 회전율은 총 체결 금액/일별 순자산 평균, 최대 낙폭은 초기 순자산을 포함한 누적 최고점 대비 최대 하락 비율이다. 수익률은 종료 순자산/초기 순자산−1이다. gross는 **같은 net 체결 수량·시점**에 수수료·거래세·추가 세목·가격 슬리피지 귀속을 더한 값이며 비용 없는 별도 전략 결과가 아니다. 매입 비용은 원가에 포함하고 실현 손익과 미실현 손익을 분리한다. 배당·분할 현금은 거래 비용과 구분한다. 평가액 누락은 null이며 기간 수익률·낙폭·회전율을 산출하지 않는다. benchmark는 같은 계산 세션의 동결 지수 종가가 모두 있을 때만 매수 후 보유 수익률을 표시한다.
+
+저장 증거에는 원래 입력/소스 해시, 정책/체결/비용/결제 버전, 관련 코드 내용 식별자, 의사결정·주문·체결·기업행사·일별 원장이 들어간다. 보고 명령은 해시와 비용·현금·수량·gross/net 계산을 재검증하며 원장 전이를 다시 계산한다. 식별자에 현재 시각·출력 위치·절대 로컬 경로는 들어가지 않는다. baseline/stress는 독립 실행하되 같은 입력·기간·코드의 scenario_group으로 연결된다. 테스트 fixture는 재현성·안전 계약을 확인할 뿐 3년 실측 수익률이나 수익 보장을 증명하지 않는다.
