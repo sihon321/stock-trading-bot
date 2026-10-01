@@ -38,3 +38,30 @@ def test_confidence_gate_and_risk_share_canonical_projection(tmp_path):
     assert c.shadow_action=='SELL' and c.risk_override
     malformed=compare_shadow_action(held,observation(status='MALFORMED',raw_output='invalid'))
     assert malformed.shadow_action=='HOLD' and not malformed.risk_override
+
+
+def test_saved_result_recomputed_and_outputs_are_idempotent(tmp_path):
+    r=result(tmp_path);path=tmp_path/'result.json'
+    write_shadow_result(r,path);assert load_shadow_result(path)==r
+    text=render_shadow_report(r);out=tmp_path/'report.md'
+    assert write_shadow_report(text,out)==write_shadow_report(text,out)
+    assert '수동 결정' in text and 'UNKNOWN' in text and 'HINDSIGHT' in text
+    raw=r.model_dump(mode='json');raw['result_id']='';metrics=strict_json(raw['metrics_document_json']);metrics['attempted']=999
+    raw['metrics_document_json']=canonical_json(metrics);path2=tmp_path/'tampered.json';path2.write_text(canonical_json(raw))
+    with pytest.raises(ValueError,match='METRICS'):load_shadow_result(path2)
+    with pytest.raises(ValueError,match='CONFLICT'):write_shadow_report('different',out)
+    sym=tmp_path/'symlink';sym.symlink_to(out)
+    with pytest.raises(ValueError):write_shadow_report(text,sym)
+
+
+def test_unknown_usage_is_not_zero_and_controls_removed(tmp_path):
+    m=manifest()
+    class Unknown(Fake):
+        def observe(self,s,v):
+            return ShadowObservation(provider=v.provider,requested_model=v.model,status='PROVIDER_ERROR',validation_code='FIXTURE',raw_output='\u001b[31msecret terminal')
+    r=build_shadow_result(run_shadow(m,tmp_path/'s.db',provider_factory=lambda v,p:Unknown([])))
+    v=strict_json(r.metrics_document_json)['variants'][0]
+    assert v['estimated_cost_usd'] is None and v['retained_reservations']==3
+    text=render_shadow_report(r);assert '추정 비용 (ESTIMATED): UNKNOWN' in text
+    out=tmp_path/'clean.md';write_shadow_report('title\x1b[31m\x00hello',out)
+    assert '\x1b' not in out.read_text() and '\x00' not in out.read_text()
