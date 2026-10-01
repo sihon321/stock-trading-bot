@@ -57,7 +57,7 @@ real-money promotion gates.
 
 ### Extended Validation
 
-- [ ] **FUT-01**: Operator can run a full chronological portfolio backtest with modeled fills, fees, Korean-market taxes, and slippage.
+- [x] **FUT-01**: Operator can run a full chronological portfolio backtest with modeled fills, fees, Korean-market taxes, and slippage.
 - [ ] **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled, non-executable workflow.
 - [ ] **GOV-01**: Every shadow LLM result is attributable to provider, model, prompt, schema, input snapshot, cost, and code revision and cannot mutate trading policy.
 - [ ] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.

@@ -22,6 +22,7 @@ coverage:
         ref: ".venv/bin/python -m pytest -q tests/test_backtest_cli.py tests/test_backtest_e2e.py"
         status: pass
     human_judgment: false
+duration: 13min
 metrics:
   tasks: 2
   files: 6
@@ -56,3 +57,11 @@ All declared implementation and test artifacts exist. Focused tests pass; commit
 ## Next Phase Readiness
 
 Ready for final phase verification.
+
+## Performance
+
+Observed task-commit window: 2026-10-01T15:46:58+09:00 to 2026-10-01T15:59:02+09:00; 13 minutes rounded up. Actual work start was not separately instrumented. Two tasks completed. Final integration/verification: 77 backtest cases and 905 total tests passed.
+
+## Integration Fix Details
+
+Auto-fixed historical rule review/cutoff distinction, initial-action timing, settlement, canonical decimal precision, saved-evidence reconciliation and no-overwrite text publication under bug/missing-critical deviation rules. These improve the accepted contracts without changing architecture. Targeted assertions are recorded in 12-VERIFICATION.md.

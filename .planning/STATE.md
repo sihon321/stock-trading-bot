@@ -4,11 +4,11 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 12
 current_phase_name: full-portfolio-backtesting-market-friction-modeling
-status: executing
-stopped_at: Phase 12 planned with recommended defaults
-last_updated: "2026-10-01T04:22:06.506Z"
+status: verifying
+stopped_at: Phase 12 executed and verified; next Phase 13 discussion
+last_updated: "2026-10-01T07:03:10.663Z"
 last_activity: 2026-10-01
-last_activity_desc: Phase 12 planning complete; recommended defaults; 6 plans ready
+last_activity_desc: Phase 12 verified; 6/6 plans; 77 backtest and 905 total tests passed
 progress:
   total_phases: 5
   completed_phases: 4
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 12 — full-portfolio-backtesting-market-friction-modeling
+**Current focus:** Phase 12 verified complete — next: Phase 13 discussion; Phase 9 external acceptance continues
 
 ## Current Position
 
-Phase: 12 (full-portfolio-backtesting-market-friction-modeling) — PLANNED
-Plan: 0 of 6
-Status: Ready to execute
-Last activity: 2026-10-01 — Phase 12 planning complete; recommended defaults; 6 plans ready
+Phase: 12 (full-portfolio-backtesting-market-friction-modeling) — COMPLETE
+Plan: 6 of 6
+Status: Phase complete — ready for verification
+Last activity: 2026-10-01 — Phase 12 verified; 6/6 plans; 77 backtest and 905 total tests passed
 
 Progress: [██████████] 96%
 
@@ -184,11 +184,11 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-01T04:21:27.311Z
-Stopped at: Phase 12 planned with recommended defaults
-Resume file: .planning/phases/12-full-portfolio-backtesting-market-friction-modeling/12-01-PLAN.md
+Last session: 2026-10-01T07:03:10.656Z
+Stopped at: Phase 12 executed and verified; next Phase 13 discussion
+Resume file: .planning/phases/12-full-portfolio-backtesting-market-friction-modeling/12-VERIFICATION.md
 
 ## Operator Next Steps
 
 - Continue Phase 9 Plan 09-08 elapsed-day KIS mock evidence collection without weakening its acceptance gate.
-- Run `$gsd-discuss-phase 11` to define broker portfolio synchronization and intraday exit behavior, then `$gsd-plan-phase 11`.
+- Phase 12 is verified complete (6/6 plans; 77 backtest cases and 905 total tests passed). Run `$gsd-discuss-phase 13` to define historical LLM shadow evaluation and governance before planning it.

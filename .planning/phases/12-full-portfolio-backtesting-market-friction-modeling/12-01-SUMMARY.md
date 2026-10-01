@@ -22,6 +22,7 @@ coverage:
         ref: ".venv/bin/python -m pytest -q tests/test_backtest_inputs.py"
         status: pass
     human_judgment: false
+duration: 1min
 metrics:
   tasks: 2
   files: 4
@@ -55,3 +56,7 @@ All declared implementation and test artifacts exist. Focused tests pass; commit
 ## Next Phase Readiness
 
 Ready for 12-02
+
+## Performance
+
+Observed task-commit window: 2026-10-01T15:27:31+09:00 to 2026-10-01T15:28:23+09:00; 1 minutes rounded up. Actual work start was not separately instrumented. Two tasks completed. Final integration/verification: 77 backtest cases and 905 total tests passed.

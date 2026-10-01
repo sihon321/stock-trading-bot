@@ -37,7 +37,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 **Milestone Goal:** Complete the broker-backed buy-hold-sell lifecycle and produce realistic, attributable strategy evidence without granting analysis tools execution authority.
 
 - [x] **Phase 11: KIS Portfolio Synchronization & Intraday Exit Management** — Synchronize broker-held positions and safely operate daily and intraday exit paths while Phase 9 elapsed-day evidence continues collecting. (completed 2026-09-04)
-- [ ] **Phase 12: Full Portfolio Backtesting & Market Friction Modeling** — Evaluate the strategy chronologically across a portfolio with realistic fills, Korean fees and taxes, slippage, and no look-ahead.
+- [x] **Phase 12: Full Portfolio Backtesting & Market Friction Modeling** — Evaluate the strategy chronologically across a portfolio with realistic fills, Korean fees and taxes, slippage, and no look-ahead. (completed 2026-10-01)
 - [ ] **Phase 13: Historical LLM Shadow Evaluation & Model Governance** — Compare optional historical LLM signals under a cost-controlled, fully attributable, non-executable shadow workflow.
 
 ### 📋 v1.3 Safe Automation & Controlled Production (Planned)
@@ -246,7 +246,7 @@ Plans:
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete | 2026-10-01 |
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
-| 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/6 | Planned    |  |
+| 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
@@ -312,32 +312,32 @@ Plans:
   3. Repeating identical inputs produces identical trades, equity curves, drawdowns, exposures, and result identity with no look-ahead.
   4. Reports separate gross and net results and carry an explicit modeling/forecast limitation rather than a profitability guarantee.
 
-**Plans:** 0/6 plans executed
+**Plans:** 6/6 plans complete
 
 Plans:
 **Wave 1**
 
-- [ ] 12-01-PLAN.md
+- [x] 12-01-PLAN.md
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 12-02-PLAN.md
+- [x] 12-02-PLAN.md
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 12-03-PLAN.md
+- [x] 12-03-PLAN.md
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 12-04-PLAN.md
+- [x] 12-04-PLAN.md
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 12-05-PLAN.md
+- [x] 12-05-PLAN.md
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 12-06-PLAN.md
+- [x] 12-06-PLAN.md
 
 **Cross-cutting constraints:**
 

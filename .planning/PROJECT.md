@@ -141,4 +141,8 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-14 after completing Phase 8 — Decision Reports & Operator Runbook*
+*Last updated: 2026-10-01 after completing Phase 12 — Full Portfolio Backtesting & Market Friction Modeling*
+
+## Phase 12 Validated Capability
+
+Validated in Phase 12: FUT-01 offline chronological multi-ticker portfolio simulation with shared Decimal cash/holdings, reviewed date-effective market rules, modeled fills/costs, deterministic gross/net evidence and Korean reporting. 77 backtest cases and 905 total tests pass. Actual three-year historical data curation remains separate; synthetic fixtures provide no profitability guarantee or promotion authority. Phase 9 external acceptance continues independently.
