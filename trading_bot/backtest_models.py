@@ -22,7 +22,7 @@ def decimal_value(value: object) -> Decimal:
         number = Decimal(value)
     except Exception as exc:
         raise ValueError("invalid decimal") from exc
-    if not number.is_finite() or abs(number) > Decimal('1e20') or number.as_tuple().exponent < -12:
+    if not number.is_finite() or abs(number) > Decimal('1e20') or number.as_tuple().exponent < -40:
         raise ValueError("decimal outside bounds")
     return number
 
@@ -201,7 +201,7 @@ class BacktestPolicy(Frozen):
     take_profit_pct: Annotated[Positive, Field(le=1)] = Decimal('.1')
     daily_loss_threshold: Nonnegative = Decimal('100000')
     max_candidates: Annotated[StrictInt, Field(ge=1, le=1000)] = 10
-    min_trading_value: Nonnegative = Decimal('100000000')
+    min_trading_value: Positive = Decimal('100000000')
     min_volume_ratio: Positive = Decimal('1.5')
 
     @model_validator(mode='after')
