@@ -64,27 +64,10 @@ class PortfolioLedger:
     def reserve(self, intent: OpenIntent, profile: CostProfile) -> OpenIntent | None:
         if intent.intent_id in self.seen_intents or intent.remaining_quantity != intent.quantity or intent.eligible_session <= intent.decision_session:
             raise BacktestInputError('INVALID_OR_DUPLICATE_INTENT')
-        quantity = intent.quantity
-        if intent.side == 'BUY':
-            # Binary search exact principal + rounded commission affordability.
-            lo, hi = 0, quantity
-            while lo < hi:
-                mid = (lo+hi+1)//2
-                budget = mid*intent.limit_price + ceil_krw(mid*intent.limit_price*profile.commission_bps/BPS)
-                if budget <= self.available_cash:
-                    lo = mid
-                else:
-                    hi = mid-1
-            quantity = lo
-            if not quantity:
-                return None
-            reservation = quantity*intent.limit_price + ceil_krw(quantity*intent.limit_price*profile.commission_bps/BPS)
-            intent = intent.model_copy(update={'quantity': quantity, 'remaining_quantity': quantity, 'reserved_cash': reservation, 'reserved_quantity': 0})
-        else:
-            available = self.holdings.get(intent.ticker, Lot(0,ZERO)).quantity - sum(x.reserved_quantity for x in self.intents.values() if x.ticker == intent.ticker)
-            if quantity > available:
-                raise BacktestInputError('OVERSELL_RESERVATION')
-            intent = intent.model_copy(update={'reserved_cash': ZERO, 'reserved_quantity': quantity})
+        orderable = self.holdings.get(intent.ticker, Lot(0,ZERO)).quantity - sum(x.reserved_quantity for x in self.intents.values() if x.ticker == intent.ticker)
+        intent = project_reservation(intent, profile, self.available_cash, orderable)
+        if intent is None:
+            return None
         self.intents[intent.intent_id] = intent
         self.seen_intents.add(intent.intent_id)
         self.reconcile()
@@ -237,3 +220,28 @@ class SimulatedPortfolioBroker:
     def submit_order(self, order):
         raise BacktestInputError('SIMULATOR_REQUIRES_RESERVED_INTENT')
 
+
+
+def project_reservation(intent: OpenIntent, profile: CostProfile, available_cash: Decimal, orderable_quantity: int) -> OpenIntent | None:
+    quantity = intent.quantity
+    if intent.side == 'BUY':
+        # Binary search exact principal + rounded commission affordability.
+        lo, hi = 0, quantity
+        while lo < hi:
+            mid = (lo+hi+1)//2
+            budget = mid*intent.limit_price + ceil_krw(mid*intent.limit_price*profile.commission_bps/BPS)
+            if budget <= available_cash:
+                lo = mid
+            else:
+                hi = mid-1
+        quantity = lo
+        if not quantity:
+            return None
+        reservation = quantity*intent.limit_price + ceil_krw(quantity*intent.limit_price*profile.commission_bps/BPS)
+        intent = intent.model_copy(update={'quantity': quantity, 'remaining_quantity': quantity, 'reserved_cash': reservation, 'reserved_quantity': 0})
+    else:
+        available = orderable_quantity
+        if quantity > available:
+            raise BacktestInputError('OVERSELL_RESERVATION')
+        intent = intent.model_copy(update={'reserved_cash': ZERO, 'reserved_quantity': quantity})
+    return intent

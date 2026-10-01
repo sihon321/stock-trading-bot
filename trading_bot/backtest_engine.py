@@ -12,13 +12,14 @@ import pandas as pd
 from .backtest_costs import cost_profile, effective_rule, round_tick
 from .backtest_fills import FILL_VERSION, model_session_fills, opening_cutoff
 from .backtest_inputs import decision_view, resolve_backtest_window
-from .backtest_ledger import PortfolioLedger, SETTLEMENT_VERSION
+from .backtest_ledger import PortfolioLedger, SETTLEMENT_VERSION, project_reservation
 from .backtest_models import Amount, Bar, BenchmarkPoint, CorporateAction, CostRule, TickRule, Session, BacktestBundle, BacktestInputError, CoverageStatus, FillEvidence, Frozen, OpenIntent, SessionEvidence, content_hash
 from .data_models import IndicatorConfig
 from .domain import Money, Position, Ticker
 from .execution import ExecutionConfig, execute_signal_cycle
 from .indicators import calculate_technicals
 from .risk import DailyLossState, RiskConfig
+from .shadow_models import ShadowSnapshot, canonical_json, strict_json
 from .screener import ScreenerConfig, screen_candidates
 
 
@@ -81,13 +82,13 @@ def code_identity() -> str:
     return digest.hexdigest()
 
 
-def run_backtest(bundle: BacktestBundle, start: date | None = None, end: date | None = None, profile: str = 'baseline') -> BacktestRun:
+def run_backtest(bundle: BacktestBundle, start: date | None = None, end: date | None = None, profile: str = 'baseline', *, decision_observer=None) -> BacktestRun:
     with localcontext() as context:
         context.prec = 28
-        return _run_backtest(bundle, start, end, profile)
+        return _run_backtest(bundle, start, end, profile, decision_observer)
 
 
-def _run_backtest(bundle, start, end, profile):
+def _run_backtest(bundle, start, end, profile, decision_observer):
     window = resolve_backtest_window(bundle,start,end)
     cost = cost_profile(profile); policy = bundle.policy
     calendar = tuple(s.session for s in bundle.calendar if s.completed)
@@ -130,11 +131,13 @@ def _run_backtest(bundle, start, end, profile):
         for action in bundle.corporate_actions:
             if action.effective <= session and opening < action.known_at <= view.cutoff:
                 unknowns.add('LATE_ACTION_UNKNOWN:'+action.action_id)
-        rows = []
+        rows = []; technical_map = {}; healthy = set()
         for ticker in view.universe:
             history = view.history[ticker]
             frame = pd.DataFrame([{'고가':checked_float(b.high),'저가':checked_float(b.low),'종가':checked_float(b.close),'거래량':b.volume} for b in history])
             technicals = calculate_technicals(frame,indicator)
+            technical_map[ticker] = technicals.technicals
+            if technicals.health.status.value == 'AVAILABLE': healthy.add(ticker)
             member = view.membership.get(ticker); status = view.statuses.get(ticker)
             if not history or ticker not in view.prices or member is None or status is None:
                 continue
@@ -148,38 +151,38 @@ def _run_backtest(bundle, start, end, profile):
         for event in screening.audit_events:
             decisions.append(DecisionEvidence(session=session,ticker=event.ticker,action='HOLD',reason='SCREENER_EXCLUDED',selected=False,risk_override=False))
         order = list(sorted(ledger.holdings)) + [c.ticker for c in screening.candidates if c.ticker not in ledger.holdings]
+        def capture(ticker, evaluated):
+            lot = ledger.holdings.get(ticker)
+            qty = lot.quantity if lot else 0
+            sell = sum(i.reserved_quantity for i in ledger.intents.values() if i.ticker == ticker)
+            member = view.membership.get(ticker); status = view.statuses.get(ticker)
+            available = ticker in view.prices and member is not None and status is not None and status.state == 'NORMAL'
+            critical = bool(unknowns or not bundle.sources.calendar_complete or not bundle.sources.membership_complete or not bundle.sources.corporate_actions_complete)
+            rules = [r for r in bundle.tick_rules if member and r.market == member.market and r.effective_start <= session and (r.effective_end is None or session < r.effective_end) and r.known_at <= view.cutoff]
+            costs = [r for r in bundle.cost_rules if member and r.market == member.market and r.effective_start <= session and (r.effective_end is None or session < r.effective_end) and r.known_at <= view.cutoff]
+            next_sessions = [day for day in calendar if day > session]
+            tech = technical_map.get(ticker, {})
+            tech = {k:v for k,v in tech.items() if v is None or not isinstance(v,float) or math.isfinite(v)}
+            reasons = (() if evaluated else ('SCREENER_EXCLUDED',)) + (() if available else ('OBSERVATION_UNAVAILABLE',)) + (() if ticker in healthy else ('INDICATORS_UNAVAILABLE',))
+            return ShadowSnapshot(session=session,ticker=ticker,cutoff=view.cutoff,price=view.prices.get(ticker),technicals_json=canonical_json(tech),quantity=qty,average_price=lot.average_price if lot else Decimal('0'),orderable_quantity=qty-sell,open_sell_quantity=sell,available_cash=ledger.available_cash,settled_cash=ledger.settled_cash,reserved_cash=ledger.reserved_cash,pending_cash=ledger.pending_cash,daily_realized_loss=ledger.daily_realized_loss,selected=ticker in selected,held=bool(qty),eligible=not reasons,exclusions=reasons,unknowns=tuple(sorted(unknowns)),fixture_raw=view.signals.get(ticker,''),baseline_action='HOLD',baseline_reason='UNPROJECTED',policy=policy,profile=profile,market=member.market if member else None,tick_rule_json=canonical_json(rules[0]) if len(rules)==1 and len(costs)==1 else 'null',next_session=next_sessions[0] if next_sessions else None,critical_unknown=critical,observation_available=available)
+        if decision_observer:
+            for event in screening.audit_events:
+                if event.ticker not in order:
+                    snapshot=capture(event.ticker,False)
+                    decision_observer(ShadowSnapshot.model_validate({**snapshot.model_dump(), 'baseline_reason':'SCREENER_EXCLUDED','snapshot_id':''}))
         for ticker in order:
-            price = view.prices.get(ticker)
-            status = view.statuses.get(ticker)
-            if price is None or status is None or status.state != 'NORMAL' or ticker not in view.membership:
-                decisions.append(DecisionEvidence(session=session,ticker=ticker,action='HOLD',reason='OBSERVATION_UNAVAILABLE',selected=ticker in selected,risk_override=False))
-                continue
-            result = execute_signal_cycle(view.signals.get(ticker,''),Ticker(ticker),Money(checked_float(price)),checked_float(ledger.available_cash),broker,execution,risk,DailyLossState(checked_float(ledger.daily_realized_loss),checked_float(policy.daily_loss_threshold)),dry_run=True)
-            reason = 'MISSING_OR_MALFORMED_SIGNAL' if result.audit and result.audit.parse_error else result.reason
-            action = result.action.value; intent_id = None; quantity = 0
-            # Evidence gaps block new BUY capital, but observable valid held exits stay eligible.
-            critical = unknowns or not bundle.sources.calendar_complete or not bundle.sources.membership_complete or not bundle.sources.corporate_actions_complete
-            if action == 'BUY' and critical:
-                action = 'HOLD'; reason = 'NEW_BUY_BLOCKED_DATA_UNKNOWN'
-            if action != 'HOLD' and result.order is not None:
-                next_sessions = [s for s in calendar if s > session]
-                if not next_sessions:
-                    action = 'HOLD';reason = 'NO_NEXT_EXECUTION_SESSION'
-                else:
-                    market = view.membership[ticker].market
-                    tick = effective_rule(bundle.tick_rules,market,session,view.cutoff)
-                    effective_rule(bundle.cost_rules,market,session,view.cutoff)
-                    limit = round_tick(price,tick,'floor' if action=='BUY' else 'ceil')
-                    identity = {'session':session.isoformat(),'ticker':ticker,'side':action,'sequence':len(decisions),'policy':policy.version}
-                    intent_id = content_hash(identity)
-                    intent = OpenIntent(intent_id=intent_id,ticker=ticker,side=action,quantity=result.order.quantity,remaining_quantity=result.order.quantity,limit_price=limit,decision_session=session,eligible_session=next_sessions[0])
-                    reserved = ledger.reserve(intent,cost)
-                    if reserved is None:
-                        action = 'HOLD';reason = 'INSUFFICIENT_RESERVED_CASH';intent_id = None
-                    else:
-                        quantity = reserved.quantity
-                        intents.append(reserved)
-            decisions.append(DecisionEvidence(session=session,ticker=ticker,action=action,reason=reason,selected=ticker in selected,risk_override=bool(result.audit and result.audit.risk_override),intent_id=intent_id,quantity=quantity))
+            snapshot = capture(ticker, True)
+            proposal = project_backtest_action(snapshot, snapshot.fixture_raw)
+            if decision_observer:
+                decision_observer(ShadowSnapshot.model_validate({**snapshot.model_dump(), 'baseline_action':proposal.action,'baseline_reason':proposal.reason,'baseline_quantity':proposal.quantity,'baseline_risk_override':proposal.risk_override,'snapshot_id':''}))
+            intent_id = None
+            if proposal.quantity:
+                intent_id = content_hash({'session':session.isoformat(),'ticker':ticker,'side':proposal.action,'sequence':len(decisions),'policy':policy.version})
+                intent = OpenIntent(intent_id=intent_id,ticker=ticker,side=proposal.action,quantity=proposal.quantity,remaining_quantity=proposal.quantity,limit_price=proposal.limit_price,decision_session=session,eligible_session=snapshot.next_session)
+                reserved = ledger.reserve(intent,cost)
+                if reserved is None or reserved.quantity != proposal.quantity: raise BacktestInputError('PROJECTION_RESERVATION_MISMATCH')
+                intents.append(reserved)
+            decisions.append(DecisionEvidence(session=session,ticker=ticker,action=proposal.action,reason=proposal.reason,selected=ticker in selected,risk_override=proposal.risk_override,intent_id=intent_id,quantity=proposal.quantity))
         marks = dict(view.prices)
         for action in bundle.corporate_actions:
             if action.effective <= session and opening < action.known_at <= view.cutoff:
@@ -197,3 +200,38 @@ def _run_backtest(bundle, start, end, profile):
     limitations = ['SIMULATED_NOT_PROMOTION_AUTHORITY','DAILY_CLOSE_NOT_INTRADAY_RECONSTRUCTION','OPENING_FILLS_NOT_QUEUE_PROOF','EX_POST_VOLUME_EXECUTION_ONLY','SYNTHETIC_FEES_SLIPPAGE_NOT_ACTUAL_TARIFF','SALE_PROCEEDS_T_PLUS_2_NOT_BROKER_BUYING_POWER',*sorted(all_unknowns)]
     manifest = {'schema_version':1,'input_hash':content_hash(bundle),'code_identity':code_identity(),'window':window.document(),'policy':policy.model_dump(mode='json'),'profile':cost.document(),'fill_version':FILL_VERSION,'settlement_version':SETTLEMENT_VERSION,'source_hashes':list(bundle.sources.source_hashes),'market_rule_ids':[r.rule_id for r in (*bundle.cost_rules,*bundle.tick_rules)],'scenario_group':content_hash({'input':content_hash(bundle),'window':window.document(),'code':code_identity()})}
     return BacktestRun(manifest=manifest,calendar=bundle.calendar,corporate_actions=bundle.corporate_actions,cost_rules=bundle.cost_rules,tick_rules=bundle.tick_rules,benchmark=tuple(b for b in bundle.benchmark if b.session in window.sessions and b.known_at <= next(s.close_at for s in bundle.calendar if s.session==b.session)),intents=tuple(intents),sessions=tuple(sessions),fills=tuple(fills),decisions=tuple(decisions),expiries=tuple(expiries),cash_events=tuple(cash_events),open_intents=tuple(ledger.intents.values()),initial_marks=tuple(initial_marks),initial_equity=initial_equity,final_coverage=CoverageStatus.INCOMPLETE if all_unknowns else CoverageStatus.COMPLETE,limitations=tuple(limitations))
+
+
+class ActionProjection(Frozen):
+    action: str
+    reason: str
+    quantity: int = 0
+    risk_override: bool = False
+    limit_price: Amount | None = None
+
+
+class _SnapshotBroker:
+    def __init__(self, snapshot): self.snapshot = snapshot
+    def get_position(self, ticker):
+        s = self.snapshot
+        return Position(ticker,s.quantity,Money(checked_float(s.average_price))) if s.quantity else None
+    def place_order(self, order): raise BacktestInputError('LIVE_SUBMISSION_FORBIDDEN')
+
+
+def project_backtest_action(snapshot: ShadowSnapshot, raw_signal: str) -> ActionProjection:
+    """Same shipped policy and reservation gates, without any account mutation."""
+    s=snapshot; p=s.policy
+    if not s.observation_available: return ActionProjection(action='HOLD',reason='OBSERVATION_UNAVAILABLE')
+    config=ExecutionConfig(*(checked_float(getattr(p,k)) for k in ('buy_confidence_threshold','sell_confidence_threshold','buy_cash_fraction','max_position_value')))
+    result=execute_signal_cycle(raw_signal,Ticker(s.ticker),Money(checked_float(s.price)),checked_float(s.available_cash),_SnapshotBroker(s),config,RiskConfig(checked_float(p.stop_loss_pct),checked_float(p.take_profit_pct)),DailyLossState(checked_float(s.daily_realized_loss),checked_float(p.daily_loss_threshold)),dry_run=True)
+    action=result.action.value; reason='MISSING_OR_MALFORMED_SIGNAL' if result.audit and result.audit.parse_error else result.reason
+    risk=bool(result.audit and result.audit.risk_override)
+    if action=='BUY' and s.critical_unknown: action='HOLD'; reason='NEW_BUY_BLOCKED_DATA_UNKNOWN'
+    if action=='HOLD' or result.order is None: return ActionProjection(action=action,reason=reason,risk_override=risk)
+    if s.next_session is None: return ActionProjection(action='HOLD',reason='NO_NEXT_EXECUTION_SESSION',risk_override=risk)
+    if s.tick_rule_json=='null': raise BacktestInputError('MARKET_RULE_COVERAGE_MISSING')
+    tick=TickRule.model_validate(strict_json(s.tick_rule_json)); limit=round_tick(s.price,tick,'floor' if action=='BUY' else 'ceil')
+    intent=OpenIntent(intent_id='projection',ticker=s.ticker,side=action,quantity=result.order.quantity,remaining_quantity=result.order.quantity,limit_price=limit,decision_session=s.session,eligible_session=s.next_session)
+    reserved=project_reservation(intent,cost_profile(s.profile),s.available_cash,s.orderable_quantity)
+    if reserved is None: return ActionProjection(action='HOLD',reason='INSUFFICIENT_RESERVED_CASH',risk_override=risk)
+    return ActionProjection(action=action,reason=reason,quantity=reserved.quantity,risk_override=risk,limit_price=limit)
