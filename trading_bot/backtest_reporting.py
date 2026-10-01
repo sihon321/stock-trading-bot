@@ -230,3 +230,44 @@ def write_backtest_result(result: BacktestResult, output: str | Path) -> Path:
         raise
     except (OSError,ValueError) as exc:
         raise BacktestInputError('INVALID_OUTPUT_PATH') from exc
+
+
+def render_backtest_report(result: BacktestResult) -> str:
+    """One deterministic Korean report with explicit modeled-data limitations."""
+    if build_backtest_result(result.run) != result:
+        raise BacktestInputError('INVALID_REPORT_EVIDENCE')
+    run=result.run;metrics=result.metrics;window=run.manifest['window'];profile=run.manifest['profile']
+    def value(number, percent=False):
+        if number is None:return '자료 부족으로 산출 불가'
+        if percent:return f'{number*100:.4f}%'
+        return f'{number:.4f}'
+    lines=['포트폴리오 백테스트 보고서 — 모의 계산',f'결과 ID: {result.result_id}',f'시나리오 그룹: {run.manifest["scenario_group"]}',
+           f'프로필: {profile["name"]} / 비용 버전: {profile["version"]}',
+           f'요청 기간: {window["requested_start"]} ~ {window["requested_end"]}',
+           f'실제 계산 기간: {window["actual_start"]} ~ {window["actual_end"]}',
+           f'워밍업 거래일: {window["warmup_sessions"]}',
+           f'자료 충족 상태: {"완전" if run.final_coverage==CoverageStatus.COMPLETE else "불완전"}',
+           f'수수료 가정: 양방향 {profile["commission_bps"]} bps / 슬리피지: {profile["slippage_bps"]} bps',
+           f'거래량 참여 한도: {profile["participation"]} / 반올림: {profile["rounding"]}',
+           f'결제 가정: {run.manifest["settlement_version"]}',
+           f'순수익률(net): {value(metrics.net_return,True)}',f'비용 전 귀속 수익률(gross): {value(metrics.gross_return,True)}',
+           f'최대 낙폭(net): {value(metrics.max_drawdown,True)} / gross: {value(metrics.gross_max_drawdown,True)}',
+           f'회전율: {value(metrics.turnover)}',f'실현 손익: {value(metrics.realized_pnl)} KRW / 미실현 손익: {value(metrics.unrealized_pnl)} KRW',
+           f'체결: {metrics.fill_count} / 부분 체결: {metrics.partial_count} / 미체결: {metrics.nonfill_count} / 만료 수량: {metrics.expired_quantity}',
+           f'수수료: {value(metrics.commission)} / 매도 거래세: {value(metrics.sell_tax)} / 부가세목: {value(metrics.surtax)} / 슬리피지 귀속: {value(metrics.slippage_drag)} KRW',
+           f'비교 지수 매수 후 보유 수익률: {value(metrics.benchmark_return,True)}',
+           '일별 자산 및 노출:']
+    for s,exposure in zip(run.sessions,metrics.exposure):
+        lines.append(f'{s.session} | net {value(s.net_equity)} | gross {value(s.gross_equity)} | 노출 {value(exposure,True)} | 정산 현금 {value(s.settled_cash)} | 예약 {value(s.reserved_cash)} | 결제 대기 {value(s.pending_cash)}')
+    lines.extend(['의사결정·제외 사유:']+[f'{reason}: {count}' for reason,count in metrics.decision_reasons.items()])
+    lines.extend(['미체결 사유:']+[f'{reason}: {count}' for reason,count in metrics.nonfill_reasons.items()])
+    lines.extend(['한계 및 자료 누락:','모델 결과이며 수익 보장이나 실거래 승인이 아닙니다.',
+                  '일봉 종가 판단·다음 거래일 시가 체결 가정입니다. 장중 경로·호가 대기열은 재현하지 않습니다.',
+                  'gross는 net과 같은 체결 수량·시점에서 비용과 가격 마찰을 되돌린 귀속값입니다.',
+                  '수수료·슬리피지는 모델 가정이며 실제 계좌 요금이 아닙니다. 거래세·호가는 날짜별 입력 규칙을 사용합니다.',
+                  '매도대금은 KRX 거래일 T+2에 가용합니다. 실제 증권사 주문 가능 금액과 다를 수 있습니다.',
+                  '누락 평가액은 0으로 대체하지 않습니다. 비교 지수가 없으면 산출하지 않습니다.'])
+    if 'FIXED_UNIVERSE_SURVIVORSHIP' in run.limitations:
+        lines.append('고정 종목 목록은 생존 편향이 있으며 시장 전체의 과거 구성 검증이 아닙니다.')
+    lines.extend('- '+limitation for limitation in run.limitations)
+    return '\n'.join(lines)+'\n'
