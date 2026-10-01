@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer, StrictInt, field_validator, model_validator
 
 
 class BacktestInputError(ValueError):
@@ -16,7 +16,7 @@ class BacktestInputError(ValueError):
 
 
 def decimal_value(value: object) -> Decimal:
-    if not isinstance(value, (str, Decimal)):
+    if not isinstance(value, (str, Decimal)) or (isinstance(value, str) and len(value) > 128):
         raise ValueError("decimal string required")
     try:
         number = Decimal(value)
@@ -27,7 +27,11 @@ def decimal_value(value: object) -> Decimal:
     return number
 
 
-Amount = Annotated[Decimal, BeforeValidator(decimal_value)]
+def decimal_text(number: Decimal) -> str:
+    return format(number, 'f').rstrip('0').rstrip('.') if '.' in format(number, 'f') else format(number, 'f')
+
+
+Amount = Annotated[Decimal, BeforeValidator(decimal_value), PlainSerializer(decimal_text, return_type=str, when_used='json')]
 Positive = Annotated[Amount, Field(gt=0)]
 Nonnegative = Annotated[Amount, Field(ge=0)]
 Symbol = Annotated[str, Field(pattern=r'^\d{6}$')]

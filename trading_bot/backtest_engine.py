@@ -13,7 +13,7 @@ from .backtest_costs import cost_profile, effective_rule, round_tick
 from .backtest_fills import FILL_VERSION, model_session_fills, opening_cutoff
 from .backtest_inputs import decision_view, resolve_backtest_window
 from .backtest_ledger import PortfolioLedger, SETTLEMENT_VERSION
-from .backtest_models import BacktestBundle, BacktestInputError, CoverageStatus, FillEvidence, Frozen, OpenIntent, SessionEvidence, content_hash
+from .backtest_models import Amount, BacktestBundle, BacktestInputError, CoverageStatus, FillEvidence, Frozen, OpenIntent, SessionEvidence, content_hash
 from .data_models import IndicatorConfig
 from .domain import Money, Position, Ticker
 from .execution import ExecutionConfig, execute_signal_cycle
@@ -39,7 +39,9 @@ class BacktestRun(Frozen):
     fills: tuple[FillEvidence, ...]
     decisions: tuple[DecisionEvidence, ...]
     expiries: tuple[dict, ...]
-    initial_equity: Decimal | None
+    cash_events: tuple[dict, ...]
+    open_intents: tuple[OpenIntent, ...]
+    initial_equity: Amount | None
     final_coverage: CoverageStatus
     limitations: tuple[str, ...]
 
@@ -65,7 +67,7 @@ class _PolicyBroker:
 
 def code_identity() -> str:
     root = Path(__file__).parent
-    names = ('backtest_models','backtest_inputs','backtest_costs','backtest_fills','backtest_ledger','backtest_engine','domain','execution','risk','signal_parser','screener','indicators','data_models')
+    names = ('backtest_models','backtest_inputs','backtest_costs','backtest_fills','backtest_ledger','backtest_engine','domain','execution','risk','signal_parser','trade_signal','screener','indicators','data_models')
     digest = hashlib.sha256()
     for name in names:
         digest.update(name.encode()); digest.update((root/(name+'.py')).read_bytes())
@@ -88,7 +90,7 @@ def _run_backtest(bundle, start, end, profile):
     execution = ExecutionConfig(*(checked_float(getattr(policy,k)) for k in ('buy_confidence_threshold','sell_confidence_threshold','buy_cash_fraction','max_position_value')))
     risk = RiskConfig(checked_float(policy.stop_loss_pct),checked_float(policy.take_profit_pct))
     screener = ScreenerConfig(policy.max_candidates,('KOSPI','KOSDAQ'),checked_float(policy.min_trading_value),checked_float(policy.min_volume_ratio),('SUSPENDED','HALTED','DELISTING','ADMIN_ISSUE'))
-    sessions = []; fills = []; decisions = []; expiries = []; all_unknowns = set(window.reasons)
+    sessions = []; fills = []; decisions = []; expiries = []; cash_events = []; all_unknowns = set(window.reasons)
     initial_equity = policy.initial_cash
     if policy.initial_positions:
         prior = decision_view(bundle,window.warmup_sessions[-1],tuple(ledger.holdings)) if window.warmup_sessions else None
@@ -102,7 +104,11 @@ def _run_backtest(bundle, start, end, profile):
         opening = opening_cutoff(session)
         # Known, effective actions precede old orders; dividend entitlement is frozen on ex-session.
         for action in sorted(bundle.corporate_actions,key=lambda a:(a.effective,{'SPLIT':0,'DIVIDEND':1,'DELIST':2}[a.kind],a.action_id)):
+            before_action = ledger.action_cash
+            before_flow = ledger.cash_flow
             ledger.apply_corporate_action(action,session,opening)
+            if ledger.action_cash != before_action or ledger.cash_flow != before_flow:
+                cash_events.append({'action_id':action.action_id,'session':session.isoformat(),'kind':action.kind,'cash_delta':str(ledger.action_cash-before_action),'liquidation_delta':str(ledger.cash_flow-before_flow)})
         eligible = tuple(i for i in ledger.intents.values() if i.eligible_session <= session)
         for fill in model_session_fills(bundle,session,eligible,profile):
             ledger.apply_fill(fill)
@@ -172,8 +178,8 @@ def _run_backtest(bundle, start, end, profile):
             equity = None; unrealized = None
         all_unknowns.update(unknowns)
         sessions.append(SessionEvidence(session=session,settled_cash=ledger.settled_cash,reserved_cash=ledger.reserved_cash,pending_cash=ledger.pending_cash,holdings=holdings,net_equity=equity,gross_equity=equity+ledger.cost_drag if equity is not None else None,coverage_status=CoverageStatus.INCOMPLETE if unknowns or window.reasons else CoverageStatus.COMPLETE,unknowns=tuple(sorted(unknowns)),realized_pnl=ledger.realized_pnl,unrealized_pnl=unrealized,action_cash=ledger.action_cash))
-    if ledger.pending_cash:
-        all_unknowns.add('PENDING_SETTLEMENT_AT_END')
+    if any(p.due_session is None for p in ledger.pending):
+        all_unknowns.add('SETTLEMENT_CALENDAR_MISSING')
     limitations = ['SIMULATED_NOT_PROMOTION_AUTHORITY','DAILY_CLOSE_NOT_INTRADAY_RECONSTRUCTION','OPENING_FILLS_NOT_QUEUE_PROOF','EX_POST_VOLUME_EXECUTION_ONLY','SYNTHETIC_FEES_SLIPPAGE_NOT_ACTUAL_TARIFF','SALE_PROCEEDS_T_PLUS_2_NOT_BROKER_BUYING_POWER',*sorted(all_unknowns)]
     manifest = {'schema_version':1,'input_hash':content_hash(bundle),'code_identity':code_identity(),'window':window.document(),'policy':policy.model_dump(mode='json'),'profile':cost.document(),'fill_version':FILL_VERSION,'settlement_version':SETTLEMENT_VERSION,'source_hashes':list(bundle.sources.source_hashes),'market_rule_ids':[r.rule_id for r in (*bundle.cost_rules,*bundle.tick_rules)],'scenario_group':content_hash({'input':content_hash(bundle),'window':window.document(),'code':code_identity()})}
-    return BacktestRun(manifest=manifest,sessions=tuple(sessions),fills=tuple(fills),decisions=tuple(decisions),expiries=tuple(expiries),initial_equity=initial_equity,final_coverage=CoverageStatus.INCOMPLETE if all_unknowns else CoverageStatus.COMPLETE,limitations=tuple(limitations))
+    return BacktestRun(manifest=manifest,sessions=tuple(sessions),fills=tuple(fills),decisions=tuple(decisions),expiries=tuple(expiries),cash_events=tuple(cash_events),open_intents=tuple(ledger.intents.values()),initial_equity=initial_equity,final_coverage=CoverageStatus.INCOMPLETE if all_unknowns else CoverageStatus.COMPLETE,limitations=tuple(limitations))

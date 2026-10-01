@@ -40,3 +40,41 @@ def test_future_execution_volume_cannot_change_prior_decision():
 
 def test_money_bridge_is_finite():
     assert checked_float(D('123.25'))==123.25
+
+from trading_bot.backtest_models import CoverageStatus, content_hash
+
+
+def test_equivalent_ordered_inputs_and_independent_profiles():
+    raw=raw_bundle();a=run(raw)
+    raw['bars'].reverse(); raw['membership'].reverse()
+    b=run(raw)
+    assert content_hash(a)==content_hash(b)
+    stress=run(raw,'stress')
+    assert stress.manifest['scenario_group']==a.manifest['scenario_group']
+    assert content_hash(stress)!=content_hash(a)
+    assert sum(f.quantity for f in stress.fills)<=sum(f.quantity for f in a.fills)
+
+
+def test_unknown_held_mark_is_null_not_zero_and_blocks_new_buy():
+    raw=raw_bundle();raw['policy']['initial_positions']=[{'ticker':'005930','quantity':10,'average_price':'90','known_at':'2022-01-01T00:00:00+00:00'}]
+    s=raw['calendar'][5]['session'];raw['bars']=[b for b in raw['bars'] if not (b['ticker']=='005930' and b['session']==s)]
+    r=run(raw)
+    assert r.sessions[0].net_equity is None and r.sessions[0].holdings
+    assert r.final_coverage is CoverageStatus.INCOMPLETE
+    assert not any(d.action=='BUY' for d in r.decisions if d.session.isoformat()==s)
+
+
+def test_gross_attribution_reconciles_same_fill_path():
+    r=run();drag=D('0')
+    for session in r.sessions:
+        for f in r.fills:
+            if f.session==session.session:drag+=f.commission+f.sell_tax+f.surtax+f.slippage_drag
+        if session.net_equity is not None: assert session.gross_equity-session.net_equity==drag
+    assert r.final_coverage is CoverageStatus.INCOMPLETE
+    assert 'SYNTHETIC_MARKET_RULES' in r.limitations
+
+
+def test_canonical_decimal_spelling_is_normalized():
+    raw=raw_bundle();a=BacktestBundle.model_validate(raw)
+    raw['policy']['initial_cash']='10000.00'
+    assert content_hash(a)==content_hash(BacktestBundle.model_validate(raw))
