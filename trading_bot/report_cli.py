@@ -390,3 +390,21 @@ def backtest_report_command(
         code = str(exc) if isinstance(exc, BacktestInputError) else "INVALID_REPORT_INPUT"
         typer.echo(f"백테스트 보고 실패: {code[:100]}", err=True)
         raise typer.Exit(2) from None
+
+
+@report_app.command("shadow")
+def shadow_report_command(
+    result: Path = typer.Argument(..., help="검증할 저장 Shadow 결과 JSON"),
+    output: Path | None = typer.Option(None, "--output", help="한국어 보고서 파일"),
+):
+    from .shadow_models import ShadowInputError
+    from .shadow_reporting import load_shadow_result, render_shadow_report, write_shadow_report
+    try:
+        rendered = render_shadow_report(load_shadow_result(result))
+        if output is not None:
+            write_shadow_report(rendered, output)
+        typer.echo(rendered, nl=False)
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        code = str(exc) if isinstance(exc, ShadowInputError) else "INVALID_SHADOW_REPORT"
+        typer.echo(f"Shadow 보고 실패: {code[:100]}", err=True)
+        raise typer.Exit(2) from None

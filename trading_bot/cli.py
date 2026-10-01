@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dotenv
-dotenv.load_dotenv()
 
 import os
 import json
@@ -154,6 +153,16 @@ app = typer.Typer(no_args_is_help=True, help="Manual stock-trading bot operator 
 app.add_typer(report_app, name="report")
 from .backtest_cli import backtest_app
 app.add_typer(backtest_app, name="backtest")
+from trading_bot.shadow_cli import shadow_app
+app.add_typer(shadow_app, name="shadow")
+
+
+@app.callback()
+def load_operator_environment(ctx: typer.Context):
+    # Historical/report commands never load credential-bearing dotenv files.
+    if ctx.invoked_subcommand not in {"shadow", "report", "backtest"}:
+        dotenv.load_dotenv()
+
 soak_app = typer.Typer(no_args_is_help=True, help="KIS mock-only soak compatibility workflow.")
 app.add_typer(soak_app, name="soak")
 intraday_app = typer.Typer(
