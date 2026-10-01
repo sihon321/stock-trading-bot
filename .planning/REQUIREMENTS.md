@@ -58,8 +58,8 @@ real-money promotion gates.
 ### Extended Validation
 
 - [x] **FUT-01**: Operator can run a full chronological portfolio backtest with modeled fills, fees, Korean-market taxes, and slippage.
-- [ ] **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled, non-executable workflow.
-- [ ] **GOV-01**: Every shadow LLM result is attributable to provider, model, prompt, schema, input snapshot, cost, and code revision and cannot mutate trading policy.
+- [x] **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled, non-executable workflow.
+- [x] **GOV-01**: Every shadow LLM result is attributable to provider, model, prompt, schema, input snapshot, cost, and code revision and cannot mutate trading policy.
 - [ ] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.
 - [ ] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
 - [ ] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
@@ -125,8 +125,8 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | EXIT-01 | Phase 11 | Planned |
 | EXIT-02 | Phase 11 | Planned |
 | FUT-01 | Phase 12 | Planned |
-| FUT-02 | Phase 13 | Planned |
-| GOV-01 | Phase 13 | Planned |
+| FUT-02 | Phase 13 | Complete |
+| GOV-01 | Phase 13 | Complete |
 | FUT-03 | Phase 14 | Planned |
 | UI-01 | Phase 14 | Planned |
 | UI-02 | Phase 14 | Planned |

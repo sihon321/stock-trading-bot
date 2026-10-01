@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Cutoff-safe snapshots and deterministic paired sampling"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_inputs.py", "tests/test_shadow_inputs.py", "tests/test_backtest_engine.py"], "modified": ["trading_bot/backtest_engine.py", "trading_bot/backtest_ledger.py", "trading_bot/shadow_inputs.py", "tests/test_shadow_inputs.py", "tests/test_backtest_engine.py"]}
+key-files: {"created": ["trading_bot/shadow_inputs.py", "tests/test_shadow_inputs.py"], "modified": ["trading_bot/backtest_engine.py", "trading_bot/backtest_ledger.py", "tests/test_backtest_engine.py"]}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Observe canonical pre-decision state without changing replay", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_inputs.py tests/test_backtest_engine.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Prepare bounded time-visible inputs and reproducible sample", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_inputs.py tests/test_backtest_engine.py", "status": "pass"}], "human_judgment": false}]

@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Validated paired action reports and manual governance evidence"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_reporting.py", "tests/test_shadow_reporting.py"], "modified": ["trading_bot/shadow_reporting.py", "tests/test_shadow_reporting.py"]}
+key-files: {"created": ["trading_bot/shadow_reporting.py", "tests/test_shadow_reporting.py"], "modified": []}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Compare raw signals and hypothetical shipped gate effects", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_reporting.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Validate saved evidence and render truthful Korean governance report", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_reporting.py", "status": "pass"}], "human_judgment": false}]

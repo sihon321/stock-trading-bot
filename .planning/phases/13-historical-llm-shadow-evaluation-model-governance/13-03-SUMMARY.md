@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Conservative budgets and crash-safe dedicated journal"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_budget.py", "trading_bot/shadow_store.py", "tests/test_shadow_budget.py", "tests/test_shadow_store.py"], "modified": ["trading_bot/shadow_budget.py", "trading_bot/shadow_store.py", "tests/test_shadow_budget.py", "tests/test_shadow_store.py"]}
+key-files: {"created": ["trading_bot/shadow_budget.py", "trading_bot/shadow_store.py", "tests/test_shadow_budget.py", "tests/test_shadow_store.py"], "modified": []}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Implement finite reservation and cost facts", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_budget.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Build owned durable journal and resume validation", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_budget.py tests/test_shadow_store.py", "status": "pass"}], "human_judgment": false}]

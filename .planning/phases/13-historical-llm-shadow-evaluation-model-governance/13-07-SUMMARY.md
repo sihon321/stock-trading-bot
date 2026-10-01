@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Operator CLI, runbook and full offline verification"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_cli.py", "trading_bot/cli.py", "trading_bot/report_cli.py", "tests/test_shadow_cli.py", "docs/shadow-evaluation-runbook.md", "README.md"], "modified": ["trading_bot/shadow_cli.py", "trading_bot/cli.py", "trading_bot/report_cli.py", "tests/test_shadow_cli.py", "docs/shadow-evaluation-runbook.md", "README.md"]}
+key-files: {"created": ["trading_bot/shadow_cli.py", "tests/test_shadow_cli.py", "docs/shadow-evaluation-runbook.md", "README.md"], "modified": ["trading_bot/cli.py", "trading_bot/report_cli.py"]}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Expose offline preparation/report and explicit paid-run handlers", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_cli.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Document operator workflow and verify integration without paid calls", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_cli.py", "status": "pass"}], "human_judgment": false}]

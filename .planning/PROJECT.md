@@ -68,6 +68,9 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 - [x] OPS-02: every cycle's data context, LLM signal (incl. confidence), risk decisions, and order outcome persist to a reviewable audit store — Phase 5
 - [x] OPS-03: each cycle's decision and order outcome pushed to the operator via a notification channel — Phase 5
 
+- [x] FUT-02: optional historical LLM comparisons use a separately bounded, non-executable shadow workflow — validated in Phase 13.
+- [x] GOV-01: shadow provider/model/prompt/schema/input/cost/code facts remain attributable and cannot mutate policy — validated in Phase 13.
+
 ### Active
 
 - [ ] Historical replay can run screener + fixture signal + execution gate without live LLM calls to
@@ -141,8 +144,13 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-01 after completing Phase 12 — Full Portfolio Backtesting & Market Friction Modeling*
+*Last updated: 2026-10-01 after completing Phase 13 — Historical LLM Shadow Evaluation & Model Governance*
 
 ## Phase 12 Validated Capability
 
 Validated in Phase 12: FUT-01 offline chronological multi-ticker portfolio simulation with shared Decimal cash/holdings, reviewed date-effective market rules, modeled fills/costs, deterministic gross/net evidence and Korean reporting. 77 backtest cases and 905 total tests pass. Actual three-year historical data curation remains separate; synthetic fixtures provide no profitability guarantee or promotion authority. Phase 9 external acceptance continues independently.
+
+
+## Phase 13 Validated Capability
+
+Validated in Phase 13: FUT-02 / GOV-01 frozen historical sampling and canonical pre-decision comparison; single-shot isolated OpenAI/Claude API adapters with positive reviewed capabilities, shared conservative budgets, owned durable resume/retry and Korean advisory reports. Seven plans completed; 80 shadow cases, 78 backtest cases and 986 total tests pass. Implementation uses fake providers/HTTP and installed offline CLI smoke; no paid run or KIS call performed. Codex CLI and incompatible forced-tool models stay blocked. Model/prompt adoption remains manual, and Phase 9 elapsed-day acceptance remains independent. Next: Phase 14 discussion for Operator Web UI, Dashboard & Alerting.

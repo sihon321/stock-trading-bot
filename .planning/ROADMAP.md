@@ -38,7 +38,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 
 - [x] **Phase 11: KIS Portfolio Synchronization & Intraday Exit Management** — Synchronize broker-held positions and safely operate daily and intraday exit paths while Phase 9 elapsed-day evidence continues collecting. (completed 2026-09-04)
 - [x] **Phase 12: Full Portfolio Backtesting & Market Friction Modeling** — Evaluate the strategy chronologically across a portfolio with realistic fills, Korean fees and taxes, slippage, and no look-ahead. (completed 2026-10-01)
-- [ ] **Phase 13: Historical LLM Shadow Evaluation & Model Governance** — Compare optional historical LLM signals under a cost-controlled, fully attributable, non-executable shadow workflow.
+- [x] **Phase 13: Historical LLM Shadow Evaluation & Model Governance** — Compare optional historical LLM signals under a cost-controlled, fully attributable, non-executable shadow workflow. (completed 2026-10-01)
 
 ### 📋 v1.3 Safe Automation & Controlled Production (Planned)
 
@@ -247,7 +247,7 @@ Plans:
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete | 2026-10-01 |
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
-| 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/7 | Planned |  |
+| 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
@@ -367,30 +367,30 @@ Plans:
   3. Reports compare agreement, action changes, malformed/refusal rates, cost, and risk-gate effects without replacing the deterministic baseline.
   4. Promotion of a model or prompt remains a separate manual policy decision backed by immutable evidence.
 
-**Plans:** 7 plans in 5 waves
+**Plans:** 7/7 plans complete
 
 Plans:
 **Wave 1**
 
-- [ ] 13-01-PLAN.md — Strict shadow contracts and immutable provenance
+- [x] 13-01-PLAN.md — Strict shadow contracts and immutable provenance
 
-**Wave 2** *(blocked on Wave 1 completion)*
+**Wave 2**
 
-- [ ] 13-02-PLAN.md — Cutoff-safe snapshots and deterministic paired sampling
-- [ ] 13-03-PLAN.md — Conservative budgets and crash-safe dedicated journal
-- [ ] 13-04-PLAN.md — Single-shot isolated API providers with usage envelopes
+- [x] 13-02-PLAN.md — Cutoff-safe snapshots and deterministic paired sampling
+- [x] 13-03-PLAN.md — Conservative budgets and crash-safe dedicated journal
+- [x] 13-04-PLAN.md — Single-shot isolated API providers with usage envelopes
 
-**Wave 3** *(blocked on Wave 2 completion)*
+**Wave 3**
 
-- [ ] 13-05-PLAN.md — Bounded runner, interruption recovery and explicit retries
+- [x] 13-05-PLAN.md — Bounded runner, interruption recovery and explicit retries
 
-**Wave 4** *(blocked on Wave 3 completion)*
+**Wave 4**
 
-- [ ] 13-06-PLAN.md — Validated paired action reports and manual governance evidence
+- [x] 13-06-PLAN.md — Validated paired action reports and manual governance evidence
 
-**Wave 5** *(blocked on Wave 4 completion)*
+**Wave 5**
 
-- [ ] 13-07-PLAN.md — Operator CLI, runbook and full offline verification
+- [x] 13-07-PLAN.md — Operator CLI, runbook and full offline verification
 
 **Cross-cutting constraints:**
 

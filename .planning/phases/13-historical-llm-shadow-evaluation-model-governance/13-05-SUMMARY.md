@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Bounded runner, interruption recovery and explicit retries"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_runner.py", "tests/test_shadow_runner.py"], "modified": ["trading_bot/shadow_runner.py", "tests/test_shadow_runner.py"]}
+key-files: {"created": ["trading_bot/shadow_runner.py", "tests/test_shadow_runner.py"], "modified": []}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Wire schedule, reservation, dispatch and outcomes", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_runner.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Handle crashes, interrupt and resume without duplicate charge", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_runner.py", "status": "pass"}], "human_judgment": false}]

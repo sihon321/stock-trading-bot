@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 13
-current_phase_name: historical-llm-shadow-evaluation-model-governance
+current_phase: 14
+current_phase_name: operator-web-ui-dashboard-alerting
 current_plan: 0
-status: executing
-stopped_at: Phase 13 planned; ready to execute
-last_updated: "2026-10-01T10:16:49.961Z"
+status: planning
+stopped_at: Phase 13 verified complete; discuss Phase 14 next
+last_updated: "2026-10-01T12:11:21.854136+00:00"
 last_activity: 2026-10-01
-last_activity_desc: Phase 13 planned; 7 plans in 5 waves; requirements 2/2 and decisions 16/16 covered
+last_activity_desc: Phase 13 complete — 7/7 plans, 986 tests passed; ready for Phase 14 discussion
 progress:
   total_phases: 5
   completed_phases: 4
@@ -25,20 +25,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 13 planned — ready to execute; Phase 9 external acceptance continues
+**Current focus:** Phase 14 — Operator Web UI, Dashboard & Alerting
 
 ## Current Position
 
-Current Phase: 13
-Current Phase Name: historical-llm-shadow-evaluation-model-governance
+Current Phase: 14
+Current Phase Name: operator-web-ui-dashboard-alerting
 Current Plan: 0
-Total Plans in Phase: 7
-Phase: 13 (historical-llm-shadow-evaluation-model-governance) — PLANNED
-Plan: 0 of 7
-Status: Ready to execute
-Last activity: 2026-10-01 — Phase 13 planned; 7 plans in 5 waves; requirements 2/2 and decisions 16/16 covered
+Total Plans in Phase: 0
+Phase: 14 (Operator Web UI, Dashboard & Alerting) — DISCUSSION PENDING
+Plan: 0 of TBD
+Status: Ready to plan — discuss Phase 14 next
+Last activity: 2026-10-01 — Phase 13 complete: 7/7 plans; 986 tests passed
 
 ## Performance Metrics
+
+**Phase 13:** 7 plans / 14 tasks completed; 80 new shadow tests and one added observer regression; final full suite 986 passed in 36.22s.
+
 
 **Velocity:**
 
@@ -126,6 +129,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 11]: Use a post-held complete KIS snapshot for screened-only cash sizing. — Locally projected SELL proceeds never inflate BUY capacity.
 - [Phase 11]: State-bearing lease loss requires a real terminalizer; recurring risk and broker-truth alerts use durable fact subjects instead of iteration UUIDs. — Preserves ordered shutdown evidence and restart-safe transition deduplication.
 
+- [Phase 13]: Validate snapshots by replaying embedded frozen sources and retain original baseline/code facts; all variants share canonical pre-decision state.
+- [Phase 13]: Single-shot dedicated API calls reserve full documented bounds; uncertain attempts retain reservations and require explicit linked retry.
+- [Phase 13]: Reports remain advisory, with exact denominators and UNKNOWN/ESTIMATED facts; shadow has no trade/configuration/promotion authority.
+
 ### Pending Todos
 
 None yet.
@@ -160,7 +167,7 @@ None yet.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Roadmap | Full portfolio backtest, LLM shadow evaluation, dashboard, and unattended scheduling | Planned in Phases 12-15 | 2026-08-25 roadmap expansion |
+| Roadmap | Full portfolio backtest, LLM shadow evaluation, dashboard, and unattended scheduling | Phases 12–13 verified; Phases 14–15 not planned | 2026-08-25 roadmap expansion |
 | Automation | Automatic policy writes or real-money promotion | Prohibited | v1.1 scoping |
 | Phase 06 P01 | 8min | 3 tasks | 6 files |
 | Phase 06 P02 | 12min | 2 tasks | 4 files |
@@ -187,11 +194,13 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-01T10:16:49.953Z
-Stopped at: Phase 13 planned; ready to execute
-Resume file: .planning/phases/13-historical-llm-shadow-evaluation-model-governance/13-01-PLAN.md
+Last session: 2026-10-01T12:11:21.854136+00:00
+Stopped at: Phase 13 verified complete; next command $gsd-discuss-phase 14
+Resume file: .planning/phases/13-historical-llm-shadow-evaluation-model-governance/13-VERIFICATION.md
 
 ## Operator Next Steps
 
 - Continue Phase 9 Plan 09-08 elapsed-day KIS mock evidence collection without weakening its acceptance gate.
-- Phase 12 is verified complete (6/6 plans; 77 backtest cases and 905 total tests passed). Run `$gsd-discuss-phase 13` to define historical LLM shadow evaluation and governance before planning it.
+- Phase 13 is verified complete (7/7 plans; 80 shadow cases, 78 backtest cases and 986 total tests passed). Run `$gsd-discuss-phase 14` for Operator Web UI, Dashboard & Alerting.
+- Optional paid shadow runs require reviewed model/capability/context/pricing records and dedicated LLM credentials. Codex CLI remains unsupported; no paid acceptance was performed here.
+- Preserve Phase 11 authenticated UAT recorded pass (2026-09-07); Phase 9 elapsed-day acceptance remains independently required.

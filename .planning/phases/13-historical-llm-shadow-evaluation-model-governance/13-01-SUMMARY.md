@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Strict shadow contracts and immutable provenance"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_models.py", "tests/test_shadow_models.py", "tests/fixtures/shadow/minimal_manifest.json"], "modified": ["trading_bot/shadow_models.py", "tests/test_shadow_models.py", "tests/fixtures/shadow/minimal_manifest.json"]}
+key-files: {"created": ["trading_bot/shadow_models.py", "tests/test_shadow_models.py", "tests/fixtures/shadow/minimal_manifest.json"], "modified": []}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Define bounded manifest, snapshot and variant contracts", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_models.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Define observations and validate evidence attribution", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_models.py", "status": "pass"}], "human_judgment": false}]

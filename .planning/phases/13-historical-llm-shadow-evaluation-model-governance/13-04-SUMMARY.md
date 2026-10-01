@@ -7,7 +7,7 @@ requires: [{"phase": "12", "provides": "canonical frozen replay"}]
 provides: ["Single-shot isolated API providers with usage envelopes"]
 affects: ["13", "14"]
 tech-stack: {"added": [], "patterns": ["frozen evidence", "fail-closed capabilities"]}
-key-files: {"created": ["trading_bot/shadow_providers.py", "tests/test_shadow_providers.py"], "modified": ["trading_bot/shadow_providers.py", "tests/test_shadow_providers.py"]}
+key-files: {"created": ["trading_bot/shadow_providers.py", "tests/test_shadow_providers.py"], "modified": []}
 key-decisions: ["Dedicated shadow facts and no broker/configuration-write capability"]
 requirements-completed: ["FUT-02", "GOV-01"]
 coverage: [{"id": "T1", "description": "Task 1: Implement API calls preserving failed output and cost facts", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_providers.py", "status": "pass"}], "human_judgment": false}, {"id": "T2", "description": "Task 2: Enforce provider capability boundary and explicit unsupported CLI", "requirement": "FUT-02", "verification": [{"kind": "unit", "ref": "PYTHONUSERBASE=\"$PWD/.python-userbase\" python3 -m pytest -q tests/test_shadow_providers.py", "status": "pass"}], "human_judgment": false}]
