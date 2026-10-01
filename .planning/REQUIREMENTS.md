@@ -37,9 +37,9 @@ Requirements for the Mock Soak & Replay Validation milestone. Each requirement m
 
 ### Risk Calibration & Promotion
 
-- [x] **CAL-01**: Operator can compare policy variants for confidence threshold, position cap, stop-loss, and take-profit through advisory reports only.
-- [x] **CAL-02**: Operator can see sample counts, uncertainty warnings, exposure changes, risk triggers, and insufficient-evidence warnings before considering policy changes.
-- [x] **CAL-03**: Operator can complete a real-money promotion checklist tied to replay, soak, and report evidence, unresolved-order checks, policy freeze, rollback and kill procedures, and explicit manual approval.
+- [ ] **CAL-01**: Operator can compare policy variants for confidence threshold, position cap, stop-loss, and take-profit through advisory reports only.
+- [ ] **CAL-02**: Operator can see sample counts, uncertainty warnings, exposure changes, risk triggers, and insufficient-evidence warnings before considering policy changes.
+- [ ] **CAL-03**: Operator can complete a real-money promotion checklist tied to replay, soak, and report evidence, unresolved-order checks, policy freeze, rollback and kill procedures, and explicit manual approval.
 - [x] **CAL-04**: No replay, report, soak, or calibration command can automatically mutate live settings or enable real-money trading.
 
 ## Future Requirements
@@ -105,9 +105,9 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | SOAK-02 | Phase 9 | Complete |
 | SOAK-03 | Phase 9 | Complete |
 | SOAK-04 | Phase 9 | Complete |
-| CAL-01 | Phase 10 | Complete |
-| CAL-02 | Phase 10 | Complete |
-| CAL-03 | Phase 10 | Complete |
+| CAL-01 | Phase 10 | Partial — runtime schema gap |
+| CAL-02 | Phase 10 | Partial — runtime schema gap |
+| CAL-03 | Phase 10 | Partial — schema and historical-warning gaps |
 | CAL-04 | Phase 10 | Complete |
 
 **Coverage:**
