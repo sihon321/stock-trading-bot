@@ -39,7 +39,7 @@ An offline chronological Korean equity portfolio backtest using frozen market/un
 
 ### Agent Discretion
 
-Choose class/module/reason-code names, strict bundle schema, documentation details, test fixtures and bounded input sizes consistent with the existing frozen dataclass/Pydantic, decimal money, deterministic JSON, Typer and safe report writer patterns. Recommendations are defaults, not a claim that a complete three-year historical bundle already exists.
+Choose class/module/reason-code names, strict bundle schema, documentation details, test fixtures and bounded input sizes consistent with existing frozen dataclass/Pydantic, deterministic JSON, Typer and safe report writer patterns. Simulation money uses Decimal; existing production Money uses float and requires a checked narrow adapter. Recommendations are defaults, not a claim that a complete three-year historical bundle already exists.
 </decisions>
 
 <canonical_refs>

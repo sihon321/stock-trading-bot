@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 11
-current_phase_name: kis-portfolio-synchronization-intraday-exit-management
-status: verifying
-stopped_at: Phase 12 context gathered
-last_updated: "2026-10-01T04:13:39.194Z"
-last_activity: 2026-09-04
-last_activity_desc: Phase 11 execution started
+current_phase: 12
+current_phase_name: full-portfolio-backtesting-market-friction-modeling
+status: executing
+stopped_at: Phase 12 planned with recommended defaults
+last_updated: "2026-10-01T04:22:06.506Z"
+last_activity: 2026-10-01
+last_activity_desc: Phase 12 planning complete; recommended defaults; 6 plans ready
 progress:
   total_phases: 5
   completed_phases: 4
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 11 — kis-portfolio-synchronization-intraday-exit-management
+**Current focus:** Phase 12 — full-portfolio-backtesting-market-friction-modeling
 
 ## Current Position
 
-Phase: 11 (kis-portfolio-synchronization-intraday-exit-management) — EXECUTING
-Plan: 6 of 6
-Status: Phase complete — ready for verification
-Last activity: 2026-09-04 — Phase 11 execution started
+Phase: 12 (full-portfolio-backtesting-market-friction-modeling) — PLANNED
+Plan: 0 of 6
+Status: Ready to execute
+Last activity: 2026-10-01 — Phase 12 planning complete; recommended defaults; 6 plans ready
 
 Progress: [██████████] 96%
 
@@ -184,9 +184,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-01T04:13:39.187Z
-Stopped at: Phase 12 context gathered
-Resume file: .planning/phases/12-full-portfolio-backtesting-market-friction-modeling/12-CONTEXT.md
+Last session: 2026-10-01T04:21:27.311Z
+Stopped at: Phase 12 planned with recommended defaults
+Resume file: .planning/phases/12-full-portfolio-backtesting-market-friction-modeling/12-01-PLAN.md
 
 ## Operator Next Steps
 

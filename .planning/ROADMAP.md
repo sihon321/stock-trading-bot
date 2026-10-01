@@ -246,7 +246,7 @@ Plans:
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete | 2026-10-01 |
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
-| 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/TBD | Not Planned |  |
+| 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/6 | Planned    |  |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
@@ -312,11 +312,48 @@ Plans:
   3. Repeating identical inputs produces identical trades, equity curves, drawdowns, exposures, and result identity with no look-ahead.
   4. Reports separate gross and net results and carry an explicit modeling/forecast limitation rather than a profitability guarantee.
 
-**Plans:** 0 plans
+**Plans:** 0/6 plans executed
 
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd-plan-phase 12 to break down)
+- [ ] 12-01-PLAN.md
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 12-02-PLAN.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 12-03-PLAN.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 12-04-PLAN.md
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 12-05-PLAN.md
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 12-06-PLAN.md
+
+**Cross-cutting constraints:**
+
+- D-01: Frozen three-year requested window is explicit and incomplete history is visible.
+- D-02: Point-in-time frozen data runs without online capabilities.
+- D-03: Corporate actions and missing valuation preserve accountable holdings.
+- D-04: Shipped signal gates and malformed HOLD behavior remain attributable.
+- D-15: Identical normalized inputs and code reproduce evidence identity.
+- D-08: Shared volume cap, partial fills and expiry are deterministic.
+- D-11: Reviewed effective rules cover market/date and costs are explicit.
+- D-12: Baseline/stress assumptions and Decimal rounding are recorded.
+- D-06: One reserved ledger prevents capital reuse and oversell.
+- D-09: T+2 exchange-session proceeds are distinct from settled cash.
+- D-13: Gross attribution follows identical net executions.
+- D-14: Korean reports expose coverage, metrics and modeled limitations.
+- D-16: Validated offline commands have no live mutation or promotion authority.
 
 ### Phase 13: Historical LLM Shadow Evaluation & Model Governance
 
