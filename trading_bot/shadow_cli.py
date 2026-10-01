@@ -10,7 +10,7 @@ from .backtest_models import BacktestInputError
 from .backtest_reporting import load_backtest_result, _write_evidence_bytes
 from .shadow_inputs import prepare_shadow_manifest, load_historical_news
 from .shadow_runner import run_shadow, resume_shadow, request_shadow_retry
-from .shadow_reporting import build_shadow_result, write_shadow_result, render_shadow_report
+from .shadow_reporting import load_shadow_result, build_shadow_result, write_shadow_result, render_shadow_report
 
 shadow_app=typer.Typer(no_args_is_help=True,help='비실행 과거 LLM 비교: prepare는 오프라인, run/resume/retry는 명시적 유료 호출')
 
@@ -34,6 +34,7 @@ def prepare_command(
     variants:Path=typer.Option(...,'--variants',help='명시적 모델·프롬프트 변형 배열 JSON'),
     pricing:Path=typer.Option(...,'--pricing',help='변형 순서와 일치하는 검토된 요금표 배열 JSON'),
     baseline:Path|None=typer.Option(None,'--baseline'),
+    parent_result:Path|None=typer.Option(None,'--parent-result'),
     news:Path|None=typer.Option(None,'--news'),
     seed:str=typer.Option('shadow-v1','--seed'),
     sample_limit:int=typer.Option(100,'--sample-limit'),
@@ -50,7 +51,7 @@ def prepare_command(
     try:
         from .report_cli import parse_kst_date
         limits=ShadowLimits(sample_limit=sample_limit,max_attempts=max_attempts,max_total_tokens=max_total_tokens,max_cost_usd=Decimal(max_cost_usd),concurrency=concurrency,repetitions=repetitions,variant_limit=variant_limit)
-        manifest=prepare_shadow_manifest(load_backtest_bundle(bundle),[ShadowVariant.model_validate(v) for v in read_shadow_json(variants)],[ShadowPricing.model_validate(p) for p in read_shadow_json(pricing)],baseline=load_backtest_result(baseline) if baseline else None,news=load_historical_news(news) if news else (),limits=limits,seed=seed,start=parse_kst_date(start) if start else None,end=parse_kst_date(end) if end else None)
+        manifest=prepare_shadow_manifest(load_backtest_bundle(bundle),[ShadowVariant.model_validate(v) for v in read_shadow_json(variants)],[ShadowPricing.model_validate(p) for p in read_shadow_json(pricing)],baseline=load_backtest_result(baseline) if baseline else None,news=load_historical_news(news) if news else (),limits=limits,seed=seed,parent_result=load_shadow_result(parent_result) if parent_result else None,start=parse_kst_date(start) if start else None,end=parse_kst_date(end) if end else None)
         destination=_destination(output or Path('data/shadow')/(manifest.spec_id+'.manifest.json'),{'.json'})
         payload=(canonical_json(manifest)+'\n').encode('utf-8')
         if len(payload)>DOCUMENT_LIMIT:raise ShadowInputError('MANIFEST_TOO_LARGE')

@@ -25,7 +25,7 @@ def test_raw_agreement_exact_denominators_and_no_mutation(tmp_path):
 def test_partial_budget_denominators(tmp_path):
     r=result(tmp_path,max_attempts=1);v=strict_json(r.metrics_document_json)['variants'][0]
     assert r.status=='BUDGET_EXHAUSTED' and v['not_dispatched']==2 and v['attempted']==1
-    assert v['failure_denominator']==1 and v['agreement_denominator']==0
+    assert v['failure_denominator']==1 and v['agreement_denominator']==1
 
 
 def test_confidence_gate_and_risk_share_canonical_projection(tmp_path):
@@ -62,6 +62,26 @@ def test_unknown_usage_is_not_zero_and_controls_removed(tmp_path):
     r=build_shadow_result(run_shadow(m,tmp_path/'s.db',provider_factory=lambda v,p:Unknown([])))
     v=strict_json(r.metrics_document_json)['variants'][0]
     assert v['estimated_cost_usd'] is None and v['retained_reservations']==3
+    assert v['agreement_denominator']==0 and v['failure_numerator']==v['failure_denominator']==3
     text=render_shadow_report(r);assert '추정 비용 (ESTIMATED): UNKNOWN' in text
     out=tmp_path/'clean.md';write_shadow_report('title\x1b[31m\x00hello',out)
     assert '\x1b' not in out.read_text() and '\x00' not in out.read_text()
+
+
+def test_rehashed_snapshot_fabrication_is_rejected_before_paid_call(tmp_path):
+    from trading_bot.shadow_runner import run_shadow
+    m=manifest();s=m.snapshots[0]
+    forged=ShadowSnapshot.model_validate({**s.model_dump(),'available_cash':s.available_cash+1,'settled_cash':s.settled_cash+1,'snapshot_id':''})
+    bad=ShadowManifest.model_validate({**m.model_dump(),'snapshots':(forged,*m.snapshots[1:]),'spec_id':''})
+    with pytest.raises(ValueError,match='FROZEN_INPUT_REPLAY_MISMATCH'):
+        run_shadow(bad,tmp_path/'s.db',provider_factory=lambda *a:pytest.fail('forged context must not dispatch'))
+
+
+def test_linked_changed_spec_retains_parent_identity(tmp_path):
+    from trading_bot.shadow_inputs import prepare_shadow_manifest
+    from test_shadow_inputs import bundle
+    from test_shadow_models import variant,pricing
+    previous=result(tmp_path);b=bundle()
+    changed=prepare_shadow_manifest(b,[variant()],[pricing()],start=b.calendar[5].session,seed='different',parent_result=previous)
+    assert changed.spec_id!=previous.manifest.spec_id
+    assert changed.parent_spec_id==previous.manifest.spec_id and changed.parent_run_id==previous.run_id

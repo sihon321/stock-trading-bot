@@ -89,3 +89,10 @@ def test_unsupported_settings_and_invalid_usage():
     with pytest.raises(ValueError,match='UNSUPPORTED'): validate_provider_profile(v,live_price())
     assert not normalize_shadow_usage('openai',{'prompt_tokens':True,'completion_tokens':2,'total_tokens':3}).known
     assert not normalize_shadow_usage('claude',{'input_tokens':-1,'output_tokens':2}).known
+
+
+def test_compressed_response_is_rejected_before_decompression():
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):pytest.fail('compressed body must not be read')
+    transport=BoundedTransport('openai',httpx.MockTransport(lambda req:httpx.Response(200,headers={'content-encoding':'gzip'},stream=Stream())))
+    with pytest.raises(ValueError,match='COMPRESSED'):transport.handle_request(httpx.Request('POST','https://api.openai.com/v1/chat/completions'))

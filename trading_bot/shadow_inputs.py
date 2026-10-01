@@ -2,7 +2,9 @@
 from __future__ import annotations
 import hashlib
 import subprocess
-from datetime import datetime
+import html
+from functools import lru_cache
+from datetime import date, datetime
 from pathlib import Path
 from .shadow_models import *
 from .backtest_engine import run_backtest, checked_float
@@ -18,8 +20,9 @@ def collect_shadow_snapshots(bundle, baseline=None, *, start=None, end=None, pro
         if build_backtest_result(baseline.run) != baseline or baseline.run.manifest['input_hash'] != content_hash(bundle):
             raise ShadowInputError('BASELINE_INPUT_MISMATCH')
         window=baseline.run.manifest['window']
-        start=__import__('datetime').date.fromisoformat(window['requested_start'])
-        end=__import__('datetime').date.fromisoformat(window['requested_end'])
+        if start is not None and start.isoformat()!=window['requested_start'] or end is not None and end.isoformat()!=window['requested_end']: raise ShadowInputError('BASELINE_WINDOW_MISMATCH')
+        start=date.fromisoformat(window['requested_start'])
+        end=date.fromisoformat(window['requested_end'])
         profile=baseline.run.manifest['profile']['name']
     snapshots=[]
     run=run_backtest(bundle,start,end,profile,decision_observer=snapshots.append)
@@ -51,7 +54,7 @@ def render_snapshot(snapshot, news=()):
         held=HeldPositionContext(checked_float(snapshot.average_price),snapshot.quantity,snapshot.orderable_quantity,checked_float(snapshot.price),checked_float(snapshot.price/snapshot.average_price-1),snapshot.open_sell_quantity)
     prompt=''
     if snapshot.eligible:
-        prompt='Historical simulation; held quantities are simulated, not broker authority.\n'+render_prompt(DataContext(Ticker(snapshot.ticker),Money(checked_float(snapshot.price)),strict_json(snapshot.technicals_json),tuple(n.text for n in visible)),held_position=held)
+        prompt='Historical simulation; held quantities are simulated, not broker authority.\n'+render_prompt(DataContext(Ticker(snapshot.ticker),Money(checked_float(snapshot.price)),strict_json(snapshot.technicals_json),tuple(html.escape(n.text,quote=False) for n in visible)),held_position=held)
     return ShadowSnapshot.model_validate({**snapshot.model_dump(),'news':tuple(n.text for n in visible),'news_source_hashes':tuple(n.source_hash for n in visible),'news_available':bool(visible),'rendered_prompt':prompt,'snapshot_id':''})
 
 
@@ -62,14 +65,29 @@ def _stratum(s):
 
 
 def select_shadow_sample(snapshots, limit=100, seed='shadow-v1'):
+    # Period -> signal/provenance/risk -> ticker -> date units. Each layer rotates.
     groups={}
     for s in snapshots:
-        if s.eligible: groups.setdefault(_stratum(s),[]).append(s)
-    for group in groups.values(): group.sort(key=lambda s:hashlib.sha256((seed+s.unit_id).encode()).hexdigest())
+        if not s.eligible:continue
+        label=_stratum(s);period,category=label.split('/',1)
+        groups.setdefault(period,{}).setdefault(category,{}).setdefault(s.ticker,[]).append(s)
+    rank=lambda text:hashlib.sha256((seed+text).encode()).hexdigest()
+    periods=[]
+    for period,categories in sorted(groups.items(),key=lambda item:rank(item[0])):
+        queue=[]
+        for category,tickers in sorted(categories.items()):
+            bucket=[]
+            for ticker,units in sorted(tickers.items(),key=lambda item:rank(item[0])):
+                bucket.append(sorted(units,key=lambda s:rank(s.unit_id)))
+            queue.append(bucket)
+        periods.append(queue)
     selected=[]
-    while len(selected)<limit and any(groups.values()):
-        for key in sorted(groups):
-            if groups[key] and len(selected)<limit: selected.append(groups[key].pop(0))
+    while periods and len(selected)<limit:
+        period=periods.pop(0);category=period.pop(0);ticker=category.pop(0)
+        selected.append(ticker.pop(0))
+        if ticker:category.append(ticker)
+        if category:period.append(category)
+        if period:periods.append(period)
     return tuple(sorted(selected,key=lambda s:(s.session,s.ticker)))
 
 
@@ -80,14 +98,40 @@ def shadow_code_identity():
     return digest.hexdigest()
 
 
-def prepare_shadow_manifest(bundle, variants, pricing, *, baseline=None, limits=None, seed='shadow-v1', news=(), start=None, end=None, profile='baseline'):
+def prepare_shadow_manifest(bundle, variants, pricing, *, baseline=None, limits=None, seed='shadow-v1', news=(), start=None, end=None, profile='baseline', parent_result=None):
     limits=limits or ShadowLimits()
     snapshots,baseline=collect_shadow_snapshots(bundle,baseline,start=start,end=end,profile=profile)
     snapshots=tuple(render_snapshot(s,news) for s in snapshots)
     selected=select_shadow_sample(snapshots,limits.sample_limit,seed)
+    coverage=_coverage(snapshots,selected,baseline)
+    revision=subprocess.run(['git','-C',str(Path(__file__).resolve().parent.parent),'rev-parse','HEAD'],capture_output=True,text=True,check=True,timeout=5).stdout.strip()
+    return ShadowManifest(parent_spec_id=parent_result.manifest.spec_id if parent_result else None,parent_run_id=parent_result.run_id if parent_result else None,baseline_hash=shadow_content_hash(baseline),bundle_hash=content_hash(bundle),bundle_document_json=canonical_json(bundle),news_document_json=canonical_json([n.model_dump(mode='json') for n in news]),baseline_document_json=canonical_json(baseline),snapshots=selected,variants=tuple(variants),pricing=tuple(pricing),limits=limits,seed=seed,coverage_json=canonical_json(coverage),source_hashes=bundle.sources.source_hashes,code_revision=revision,code_content_hash=shadow_code_identity())
+
+
+def _coverage(snapshots, selected, baseline):
     strata={}
     for s in selected: strata[_stratum(s)]=strata.get(_stratum(s),0)+1
     decisions=set(k.split('/')[1] for k in strata)
-    coverage={'observed_units':len(snapshots),'eligible_units':sum(s.eligible for s in snapshots),'selected_units':len(selected),'excluded_units':sum(not s.eligible for s in snapshots),'exclusions':sorted({r for s in snapshots for r in s.exclusions}),'strata':strata,'missing_decision_strata':sorted({'BUY','HOLD','SELL'}-decisions),'missing_news_units':sum(not s.news_available for s in selected),'baseline_limitations':list(baseline.run.limitations),'limitations':['CURRENT_MODEL_HINDSIGHT_CONTAMINATION','AGREEMENT_IS_NOT_QUALITY','CANONICAL_SIMULATED_STATE_NOT_ALTERNATIVE_PORTFOLIO']}
-    revision=subprocess.run(['git','rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
-    return ShadowManifest(baseline_hash=shadow_content_hash(baseline),bundle_hash=content_hash(bundle),baseline_document_json=canonical_json(baseline),snapshots=selected,variants=tuple(variants),pricing=tuple(pricing),limits=limits,seed=seed,coverage_json=canonical_json(coverage),source_hashes=bundle.sources.source_hashes,code_revision=revision,code_content_hash=shadow_code_identity())
+    coverage={'observed_units':len(snapshots),'eligible_units':sum(s.eligible for s in snapshots),'selected_units':len(selected),'excluded_units':sum(not s.eligible for s in snapshots),'exclusions':sorted({r for s in snapshots for r in s.exclusions}),'strata':strata,'missing_decision_strata':sorted({'BUY','HOLD','SELL'}-decisions),'missing_news_units':sum(not s.news_available for s in selected),'missing_position_strata':sorted({'HELD','SCREENED'}-{k.split('/')[2] for k in strata}),'missing_risk_strata':sorted({'NORMAL','RISK'}-{k.split('/')[3] for k in strata}),'missing_period_buckets':sorted({str(s.session.year)+'-'+str((s.session.month-1)//3+1) for s in snapshots}-{k.split('/')[0] for k in strata}),'baseline_limitations':list(baseline.run.limitations),'limitations':['CURRENT_MODEL_HINDSIGHT_CONTAMINATION','AGREEMENT_IS_NOT_QUALITY','CANONICAL_SIMULATED_STATE_NOT_ALTERNATIVE_PORTFOLIO']}
+    return coverage
+
+
+@lru_cache(maxsize=8)
+def _validate_frozen_document(document, current_code_hash):
+    """Replay frozen sources to reject self-consistent fabricated snapshot states."""
+    from .backtest_models import BacktestBundle
+    from .backtest_reporting import BacktestResult
+    m=ShadowManifest.model_validate(strict_json(document));bundle=BacktestBundle.model_validate(strict_json(m.bundle_document_json))
+    baseline=BacktestResult.model_validate(strict_json(m.baseline_document_json))
+    snapshots,baseline=collect_shadow_snapshots(bundle,baseline)
+    news=tuple(FrozenHistoricalNews.model_validate(n) for n in strict_json(m.news_document_json))
+    snapshots=tuple(render_snapshot(s,news) for s in snapshots)
+    expected=select_shadow_sample(snapshots,m.limits.sample_limit,m.seed)
+    if expected!=m.snapshots or canonical_json(_coverage(snapshots,expected,baseline))!=m.coverage_json:raise ShadowInputError('FROZEN_INPUT_REPLAY_MISMATCH')
+    return True
+
+
+def validate_shadow_preparation(manifest):
+    try:return _validate_frozen_document(canonical_json(manifest),shadow_code_identity())
+    except ShadowInputError:raise
+    except (ValueError,TypeError,KeyError):raise ShadowInputError('INVALID_FROZEN_SOURCE_EVIDENCE') from None

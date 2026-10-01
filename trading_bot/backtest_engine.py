@@ -166,10 +166,9 @@ def _run_backtest(bundle, start, end, profile, decision_observer):
             reasons = (() if evaluated else ('SCREENER_EXCLUDED',)) + (() if available else ('OBSERVATION_UNAVAILABLE',)) + (() if ticker in healthy else ('INDICATORS_UNAVAILABLE',))
             return ShadowSnapshot(session=session,ticker=ticker,cutoff=view.cutoff,price=view.prices.get(ticker),technicals_json=canonical_json(tech),quantity=qty,average_price=lot.average_price if lot else Decimal('0'),orderable_quantity=qty-sell,open_sell_quantity=sell,available_cash=ledger.available_cash,settled_cash=ledger.settled_cash,reserved_cash=ledger.reserved_cash,pending_cash=ledger.pending_cash,daily_realized_loss=ledger.daily_realized_loss,selected=ticker in selected,held=bool(qty),eligible=not reasons,exclusions=reasons,unknowns=tuple(sorted(unknowns)),fixture_raw=view.signals.get(ticker,''),baseline_action='HOLD',baseline_reason='UNPROJECTED',policy=policy,profile=profile,market=member.market if member else None,tick_rule_json=canonical_json(rules[0]) if len(rules)==1 and len(costs)==1 else 'null',next_session=next_sessions[0] if next_sessions else None,critical_unknown=critical,observation_available=available)
         if decision_observer:
-            for event in screening.audit_events:
-                if event.ticker not in order:
-                    snapshot=capture(event.ticker,False)
-                    decision_observer(ShadowSnapshot.model_validate({**snapshot.model_dump(), 'baseline_reason':'SCREENER_EXCLUDED','snapshot_id':''}))
+            for excluded in sorted(set(view.universe)-set(order)):
+                snapshot=capture(excluded,False)
+                decision_observer(ShadowSnapshot.model_validate({**snapshot.model_dump(), 'baseline_reason':'SCREENER_EXCLUDED','snapshot_id':''}))
         for ticker in order:
             snapshot = capture(ticker, True)
             proposal = project_backtest_action(snapshot, snapshot.fixture_raw)
@@ -200,6 +199,9 @@ def _run_backtest(bundle, start, end, profile, decision_observer):
     limitations = ['SIMULATED_NOT_PROMOTION_AUTHORITY','DAILY_CLOSE_NOT_INTRADAY_RECONSTRUCTION','OPENING_FILLS_NOT_QUEUE_PROOF','EX_POST_VOLUME_EXECUTION_ONLY','SYNTHETIC_FEES_SLIPPAGE_NOT_ACTUAL_TARIFF','SALE_PROCEEDS_T_PLUS_2_NOT_BROKER_BUYING_POWER',*sorted(all_unknowns)]
     manifest = {'schema_version':1,'input_hash':content_hash(bundle),'code_identity':code_identity(),'window':window.document(),'policy':policy.model_dump(mode='json'),'profile':cost.document(),'fill_version':FILL_VERSION,'settlement_version':SETTLEMENT_VERSION,'source_hashes':list(bundle.sources.source_hashes),'market_rule_ids':[r.rule_id for r in (*bundle.cost_rules,*bundle.tick_rules)],'scenario_group':content_hash({'input':content_hash(bundle),'window':window.document(),'code':code_identity()})}
     return BacktestRun(manifest=manifest,calendar=bundle.calendar,corporate_actions=bundle.corporate_actions,cost_rules=bundle.cost_rules,tick_rules=bundle.tick_rules,benchmark=tuple(b for b in bundle.benchmark if b.session in window.sessions and b.known_at <= next(s.close_at for s in bundle.calendar if s.session==b.session)),intents=tuple(intents),sessions=tuple(sessions),fills=tuple(fills),decisions=tuple(decisions),expiries=tuple(expiries),cash_events=tuple(cash_events),open_intents=tuple(ledger.intents.values()),initial_marks=tuple(initial_marks),initial_equity=initial_equity,final_coverage=CoverageStatus.INCOMPLETE if all_unknowns else CoverageStatus.COMPLETE,limitations=tuple(limitations))
+
+
+BacktestDecisionSnapshot = ShadowSnapshot
 
 
 class ActionProjection(Frozen):

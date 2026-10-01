@@ -146,7 +146,9 @@ class ShadowVariant(Frozen):
     @model_validator(mode='after')
     def identity(self):
         schema = strict_json(self.signal_schema_json, TEXT_LIMIT)
-        if schema.get('additionalProperties') is not False or set(schema.get('required', ())) != {'decision', 'confidence', 'reason'} or set(schema.get('properties', {})) != {'decision', 'confidence', 'reason'}:
+        from .trade_signal import TradeSignal
+        if canonical_json(schema)!=canonical_json(TradeSignal.model_json_schema()):raise ValueError('shipped TradeSignal schema required')
+        if not isinstance(schema,dict) or schema.get('additionalProperties') is not False or set(schema.get('required', ())) != {'decision', 'confidence', 'reason'} or set(schema.get('properties', {})) != {'decision', 'confidence', 'reason'}:
             raise ValueError('strict three-field schema required')
         if not isinstance(strict_json(self.settings_json), dict):
             raise ValueError('settings object required')
@@ -223,6 +225,10 @@ class ShadowSnapshot(Frozen):
 
 
 class ShadowManifest(Frozen):
+    bundle_document_json: str = '{}'
+    news_document_json: str = '[]'
+    parent_spec_id: Hash | None = None
+    parent_run_id: Name | None = None
     schema_version: Literal[1] = 1
     baseline_hash: Hash
     bundle_hash: Hash
@@ -241,6 +247,7 @@ class ShadowManifest(Frozen):
 
     @model_validator(mode='after')
     def identity(self):
+        if (self.parent_spec_id is None)!=(self.parent_run_id is None): raise ValueError('linked run requires both parent identities')
         if not self.variants or len(self.variants) > self.limits.variant_limit or len(self.snapshots) > self.limits.sample_limit:
             raise ValueError('selection bound')
         if len({s.unit_id for s in self.snapshots}) != len(self.snapshots) or len({v.variant_id for v in self.variants}) != len(self.variants):
@@ -250,6 +257,8 @@ class ShadowManifest(Frozen):
         for v, price in zip(self.variants, self.pricing):
             if (v.provider, v.model) != (price.provider, price.model) or v.max_output_tokens > price.max_output_tokens:
                 raise ValueError('price profile mismatch')
+        if shadow_content_hash(strict_json(self.bundle_document_json))!=self.bundle_hash:raise ValueError('bundle hash mismatch')
+        if len(self.news_document_json.encode('utf-8'))>NEWS_LIMIT:raise ValueError('news bound')
         if shadow_content_hash(strict_json(self.baseline_document_json)) != self.baseline_hash:
             raise ValueError('baseline hash mismatch')
         expected = shadow_content_hash(self.model_dump(mode='json', exclude={'spec_id'}))
@@ -276,8 +285,8 @@ class ShadowUsage(Frozen):
     cache_creation_tokens: Count | None = None
     reasoning_tokens: Count | None = None
     billed_cost: Nonnegative | None = None
-    billed_currency: str | None = None
-    billing_reference: str | None = None
+    billed_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+    billing_reference: Name | None = None
 
     @model_validator(mode='after')
     def valid_usage(self):
@@ -354,6 +363,7 @@ RunStatus = Literal['COMPLETE','PARTIAL','BUDGET_EXHAUSTED','INTERRUPTED','ACCOU
 
 
 class ShadowRunResult(Frozen):
+    stop_reason: Name | None = None
     schema_version: Literal[1] = 1
     manifest: ShadowManifest
     run_id: Name

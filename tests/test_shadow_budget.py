@@ -34,3 +34,15 @@ def test_missing_cache_tariff_and_model_mismatch_retain_bound():
     p=pricing();u=ShadowUsage(input_tokens=100,output_tokens=20,total_tokens=120,cached_input_tokens=10)
     assert settle_attempt_usage(p,1024,observation(usage=u))['retained_reservation']
     assert settle_attempt_usage(p,1024,observation(returned_model='other'))['breach']
+
+
+def test_unknown_returned_model_and_native_currency_are_explicit():
+    from trading_bot.shadow_models import ShadowPricing
+    p=ShadowPricing.model_validate({**pricing().model_dump(),'currency':'EUR','usd_per_native':'1.2','fx_source':'https://example.invalid/fx','fx_reviewed_at':pricing().reviewed_at})
+    u=ShadowUsage(input_tokens=100,output_tokens=20,total_tokens=120)
+    c=settle_attempt_usage(p,1024,observation(usage=u))
+    assert c['retained_reservation'] and c['pricing_currency']=='EUR'
+    assert Decimal(c['estimated_cost_usd'])==Decimal(c['estimated_cost_native'])*Decimal('1.2')
+    u=ShadowUsage(input_tokens=10,output_tokens=1,total_tokens=11,billed_cost='10',billed_currency='USD',billing_reference='invoice-fixture')
+    c=settle_attempt_usage(p,1024,observation(usage=u,returned_model=p.model))
+    assert c['breach'] and Decimal(c['charged_cost_usd'])==10

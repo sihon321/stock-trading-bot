@@ -35,10 +35,15 @@ def settle_attempt_usage(price, output_limit, observation):
     estimated=usage_cost(price,usage)
     model_mismatch=observation.returned_model is not None and observation.returned_model!=price.model
     breach=model_mismatch or (usage.known and (usage.input_tokens>price.context_upper_bound or usage.output_tokens>output_limit)) or (estimated is not None and estimated>bound.cost_usd)
-    uncertain=not usage.known or estimated is None or observation.status=='TIMEOUT_UNKNOWN'
+    actual_usd=None
+    if usage.billed_cost is not None:
+        if usage.billed_currency=='USD': actual_usd=usage.billed_cost
+        elif usage.billed_currency==price.currency: actual_usd=usage.billed_cost*(price.usd_per_native or Decimal(1))
+    if actual_usd is not None and actual_usd>bound.cost_usd: breach=True
+    uncertain=not usage.known or estimated is None or observation.returned_model is None or observation.status=='TIMEOUT_UNKNOWN'
     tokens=max(bound.tokens,usage.total_tokens or 0) if uncertain or breach else usage.total_tokens
-    cost=max(bound.cost_usd,estimated or Decimal(0)) if uncertain or breach else estimated
-    return {'charged_tokens':tokens,'charged_cost_usd':str(cost),'estimated_cost_usd':str(estimated) if estimated is not None else None,'retained_reservation':uncertain or breach,'breach':bool(breach),'actual_billed_cost':str(usage.billed_cost) if usage.billed_cost is not None else None,'billing_currency':usage.billed_currency,'billing_reference':usage.billing_reference}
+    cost=max(bound.cost_usd,estimated or Decimal(0),actual_usd or Decimal(0)) if uncertain or breach else max(estimated,actual_usd or Decimal(0))
+    return {'charged_tokens':tokens,'charged_cost_usd':str(cost),'estimated_cost_usd':str(estimated) if estimated is not None else None,'estimated_cost_native':str(estimated/(price.usd_per_native or Decimal(1))) if estimated is not None else None,'pricing_currency':price.currency,'usd_per_native':str(price.usd_per_native or Decimal(1)),'retained_reservation':uncertain or breach,'breach':bool(breach),'actual_billed_cost':str(usage.billed_cost) if usage.billed_cost is not None else None,'billing_currency':usage.billed_currency,'billing_reference':usage.billing_reference}
 
 
 class ShadowBudget:

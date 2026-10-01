@@ -58,7 +58,7 @@ class ShadowJournal:
             existed=self.path.exists()
             if existed:
                 if not self.path.is_file() or self.path.stat().st_size>256*1024*1024: raise ShadowInputError('INVALID_JOURNAL')
-                check=sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True)
+                check=sqlite3.connect(self.path.absolute().as_uri()+'?mode=ro',uri=True)
                 try:
                     if check.execute('PRAGMA application_id').fetchone()[0]!=APPLICATION_ID or {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}!={'shadow_run','shadow_attempt','shadow_event'}: raise ShadowInputError('FOREIGN_JOURNAL')
                 finally: check.close()
@@ -90,6 +90,7 @@ class ShadowJournal:
         event={**body,'hash':shadow_content_hash(body)}
         self.conn.execute('INSERT INTO shadow_event VALUES (?,?)',(body['seq'],canonical_json(event)))
     def read_shadow_evidence(self):
+        if self.conn.execute('SELECT run_id,manifest FROM shadow_run').fetchall()!=[(self.run_id,canonical_json(self.manifest))]:raise ShadowInputError('JOURNAL_MANIFEST_MISMATCH')
         events=[strict_json(r[0]) for r in self.conn.execute('SELECT document FROM shadow_event ORDER BY seq')]
         attempts=validate_events(self.manifest,self.run_id,events)
         cached={r[0]:strict_json(r[1]) for r in self.conn.execute('SELECT attempt_id,document FROM shadow_attempt')}

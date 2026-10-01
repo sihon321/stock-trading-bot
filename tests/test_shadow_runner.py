@@ -96,3 +96,10 @@ def test_owner_conflict_precedes_provider_construction(tmp_path):
     m=manifest();path=tmp_path/'s.db'
     with ShadowJournal(path,m):
         with pytest.raises(ValueError,match='OWNER_ACTIVE'):resume_shadow(m,path,provider_factory=lambda *a:pytest.fail('second owner cannot construct'))
+
+
+def test_evidence_size_guard_stops_before_credentials(monkeypatch,tmp_path):
+    import trading_bot.shadow_runner as runner
+    m=manifest();monkeypatch.setattr(runner,'DOCUMENT_LIMIT',1024)
+    r=run_shadow(m,tmp_path/'s.db',provider_factory=lambda *a:pytest.fail('no credentials before evidence capacity check'))
+    assert r.status=='PARTIAL' and r.stop_reason=='EVIDENCE_SIZE_LIMIT' and not r.observations

@@ -52,3 +52,10 @@ def test_final_observation_reused_and_cache_tamper_rejected(tmp_path):
         j.recover_unknown_attempts();assert next(iter(j.read_shadow_evidence()[0].values()))['observation']==o
     c=sqlite3.connect(path);c.execute('DELETE FROM shadow_attempt');c.commit();c.close()
     with pytest.raises(ValueError,match='CARDINALITY'): ShadowJournal(path,m,resume=True)
+
+
+def test_relative_journal_resume_and_zero_spend_before_intent(monkeypatch,tmp_path):
+    monkeypatch.chdir(tmp_path);m=frozen()
+    with ShadowJournal('shadow.sqlite',m) as j:
+        assert j.read_shadow_evidence()[0]=={}
+    with ShadowJournal('shadow.sqlite',m,resume=True) as j:assert j.read_shadow_evidence()[0]=={}

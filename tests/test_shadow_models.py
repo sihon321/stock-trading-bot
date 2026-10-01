@@ -17,7 +17,7 @@ def pricing(**updates):
 
 
 def manifest():
-    return ShadowManifest(baseline_hash=shadow_content_hash({}),bundle_hash='b'*64,baseline_document_json='{}',snapshots=(),variants=(variant(),),pricing=(pricing(),),code_revision='fixture',code_content_hash='c'*64)
+    return ShadowManifest(baseline_hash=shadow_content_hash({}),bundle_hash=shadow_content_hash({}),baseline_document_json='{}',snapshots=(),variants=(variant(),),pricing=(pricing(),),code_revision='fixture',code_content_hash='c'*64)
 
 
 def test_manifest_roundtrip_and_reordered_keys(tmp_path):
@@ -94,3 +94,8 @@ def test_observation_identity_vs_repeated_run():
     r=ShadowRunResult(manifest=manifest(),run_id='run1',status='COMPLETE',observations=(o,),events_document_json='[]',metrics_document_json='{}')
     assert ShadowRunResult.model_validate(r.model_dump(mode='json'))==r
     with pytest.raises(ValidationError):ShadowRunResult(manifest=manifest(),run_id='other',status='COMPLETE',observations=(o,),events_document_json='[]',metrics_document_json='{}')
+
+@pytest.mark.parametrize('schema',['[]','{}','{"properties":{"decision":{},"confidence":{},"reason":{}},"required":["decision","confidence","reason"],"additionalProperties":false}'])
+def test_weakened_or_nonobject_schema_cannot_reach_provider(schema):
+    raw=variant().model_dump();raw['signal_schema_json']=schema;raw['variant_id']=''
+    with pytest.raises(ValidationError):ShadowVariant.model_validate(raw)

@@ -45,8 +45,11 @@ class BoundedTransport(httpx.BaseTransport):
         self.inner=inner or httpx.HTTPTransport(retries=0,trust_env=False)
     def handle_request(self,request):
         if request.url.scheme!='https' or request.url.host!=self.host or request.url.port not in (None,443): raise ShadowInputError('UNSUPPORTED_PROVIDER_ORIGIN')
+        if len(request.content)>HTTP_LIMIT: raise ShadowInputError('PROVIDER_REQUEST_TOO_LARGE')
+        request.headers['Accept-Encoding']='identity'
         response=self.inner.handle_request(request);buffer=bytearray();start=time.monotonic()
         try:
+            if response.headers.get('content-encoding','identity').lower() not in ('','identity'): raise ShadowInputError('UNSUPPORTED_COMPRESSED_RESPONSE')
             chunks=(response.content,) if response.is_stream_consumed else response.iter_raw(chunk_size=65536)
             for chunk in chunks:
                 if len(buffer)+len(chunk)>HTTP_LIMIT: raise ShadowInputError('PROVIDER_RESPONSE_TOO_LARGE')
@@ -83,6 +86,7 @@ class _APIProvider:
     def observe(self,snapshot,variant):
         validate_provider_profile(variant,self.price,allow_synthetic=self.price.synthetic)
         if not snapshot.eligible or not snapshot.rendered_prompt: raise ShadowInputError('INELIGIBLE_SHADOW_INPUT')
+        validate_shadow_request(snapshot,variant)
         # Frozen text models enforce UTF-8 bounds before any request.
         try:
             response=self._call(snapshot,variant);r=_dict(response)
@@ -112,7 +116,7 @@ class _APIProvider:
 class OpenAIShadowProvider(_APIProvider):
     provider='openai'
     def _call(self,s,v):
-        return self._client.chat.completions.create(model=v.model,messages=[{'role':'system','content':v.system_prompt},{'role':'user','content':s.rendered_prompt}],max_completion_tokens=v.max_output_tokens,response_format={'type':'json_schema','json_schema':{'name':'TradeSignal','strict':True,'schema':strict_json(v.signal_schema_json)}},**strict_json(v.settings_json))
+        return self._client.chat.completions.create(**validate_shadow_request(s,v))
     def _output(self,r):
         c=r['choices'][0];m=c['message']; return m.get('content') or '',bool(m.get('refusal')),c.get('finish_reason')=='stop'
 
@@ -120,7 +124,7 @@ class OpenAIShadowProvider(_APIProvider):
 class ClaudeShadowProvider(_APIProvider):
     provider='claude'
     def _call(self,s,v):
-        return self._client.messages.create(model=v.model,system=v.system_prompt,messages=[{'role':'user','content':s.rendered_prompt}],max_tokens=v.max_output_tokens,tools=[{'name':'emit_signal','description':'Emit one trading signal.','strict':True,'input_schema':strict_json(v.signal_schema_json)}],tool_choice={'type':'tool','name':'emit_signal'},**strict_json(v.settings_json))
+        return self._client.messages.create(**validate_shadow_request(s,v))
     def _output(self,r):
         if r.get('stop_reason')=='refusal': return '',True,True
         tools=[c for c in r.get('content',[]) if c.get('type')=='tool_use']
@@ -139,3 +143,15 @@ def build_shadow_provider(variant,price,*,transport=None):
     from anthropic import Anthropic
     sdk=Anthropic(api_key=credentials.api_key,base_url='https://api.anthropic.com',max_retries=0,timeout=60,http_client=client)
     return ClaudeShadowProvider(sdk,price,secret=credentials.api_key)
+
+
+def validate_shadow_request(s,v):
+    if not s.eligible or not s.rendered_prompt: raise ShadowInputError('INELIGIBLE_SHADOW_INPUT')
+    schema=strict_json(v.signal_schema_json)
+    if v.provider=='openai':
+        payload=dict(model=v.model,messages=[{'role':'system','content':v.system_prompt},{'role':'user','content':s.rendered_prompt}],max_completion_tokens=v.max_output_tokens,response_format={'type':'json_schema','json_schema':{'name':'TradeSignal','strict':True,'schema':schema}},**strict_json(v.settings_json))
+    elif v.provider=='claude':
+        payload=dict(model=v.model,system=v.system_prompt,messages=[{'role':'user','content':s.rendered_prompt}],max_tokens=v.max_output_tokens,tools=[{'name':'emit_signal','description':'Emit one trading signal.','strict':True,'input_schema':schema}],tool_choice={'type':'tool','name':'emit_signal'},**strict_json(v.settings_json))
+    else: raise ShadowInputError('UNSUPPORTED_SHADOW_CAPABILITY')
+    if len(__import__('json').dumps(payload,ensure_ascii=True).encode())>HTTP_LIMIT-4096: raise ShadowInputError('PROVIDER_REQUEST_TOO_LARGE')
+    return payload

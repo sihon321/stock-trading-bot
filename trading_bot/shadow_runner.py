@@ -6,8 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from .shadow_models import *
 from .shadow_store import ShadowJournal
-from .shadow_providers import build_shadow_provider, validate_provider_profile
-from .shadow_inputs import shadow_code_identity
+from .shadow_providers import build_shadow_provider, validate_provider_profile, validate_shadow_request
+from .shadow_inputs import shadow_code_identity, validate_shadow_preparation
+from .shadow_budget import ShadowBudget
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class ShadowExecution:
     status: str
     observations: tuple
     events: tuple
+    stop_reason: str | None = None
 
 
 def _attributed(o,m,run_id,a):
@@ -31,9 +33,13 @@ def _unknown(v,code):
 def _execute(manifest,journal_path,*,resume=False,retry_of=None,provider_factory=build_shadow_provider,cancel_event=None,fault=None):
     m=ShadowManifest.model_validate(manifest.model_dump())
     if m.code_content_hash!=shadow_code_identity(): raise ShadowInputError('SHADOW_CODE_MISMATCH')
+    validate_shadow_preparation(m)
     test_injection=provider_factory is not build_shadow_provider
     for v,p in zip(m.variants,m.pricing): validate_provider_profile(v,p,allow_synthetic=test_injection)
-    providers={};status='COMPLETE'
+    for snapshot in m.snapshots:
+        if snapshot.eligible:
+            for variant in m.variants: validate_shadow_request(snapshot,variant)
+    providers={};status='COMPLETE';stop_reason=None
     with ShadowJournal(journal_path,m,resume=resume) as journal:
         if resume: journal.recover_unknown_attempts()
         attempts,_=journal.read_shadow_evidence()
@@ -63,6 +69,17 @@ def _execute(manifest,journal_path,*,resume=False,retry_of=None,provider_factory
                 for group in schedule:
                     if status!='COMPLETE':break
                     if cancel_event and cancel_event.is_set():status='INTERRUPTED';break
+                    current,current_events=journal.read_shadow_evidence()
+                    from .shadow_reporting import build_shadow_result
+                    preview=build_shadow_result(ShadowExecution(m,journal.run_id,'PARTIAL',tuple(a['observation'] for a in current.values()),tuple(current_events)))
+                    # Leave room for bounded raw output, journal copies and derived facts.
+                    if len(canonical_json(preview).encode())+len(group)*2*1024*1024+16384>DOCUMENT_LIMIT:
+                        status='PARTIAL';stop_reason='EVIDENCE_SIZE_LIMIT';break
+                    profiles=[(variants[a['variant_id']][1],variants[a['variant_id']][0].max_output_tokens) for a in group]
+                    try:ShadowBudget(m.limits,[a['charge'] for a in current.values()]).reserve_attempt_group(profiles)
+                    except ShadowInputError as exc:
+                        if str(exc) not in ('BUDGET_EXHAUSTED','ACCOUNTING_BREACH'):raise
+                        status=str(exc);break
                     # Construction remains lazy; no credential validation on finalized resume.
                     for spec in group:
                         v,p=variants[spec['variant_id']]
@@ -104,7 +121,7 @@ def _execute(manifest,journal_path,*,resume=False,retry_of=None,provider_factory
             if any(a['observation'] is None for a in attempts.values()): raise ShadowInputError('UNFINALIZED_DISPATCH')
             if status=='COMPLETE' and (not m.snapshots or any(a['observation'].status=='TIMEOUT_UNKNOWN' for a in attempts.values())): status='PARTIAL'
             observations=tuple(a['observation'] for a in attempts.values())
-            return ShadowExecution(m,journal.run_id,status,observations,tuple(events))
+            return ShadowExecution(m,journal.run_id,status,observations,tuple(events),stop_reason)
         finally:
             executor.shutdown(wait=False,cancel_futures=True)
             for provider in providers.values():
