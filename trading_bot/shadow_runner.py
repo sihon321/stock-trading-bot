@@ -1,6 +1,7 @@
 """Bounded shadow scheduling. Only this path dispatches provider observations."""
 from __future__ import annotations
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from .shadow_models import *
@@ -49,46 +50,56 @@ def _execute(manifest,journal_path,*,resume=False,retry_of=None,provider_factory
                 group=[dict(unit_id=s.unit_id,variant_id=v.variant_id,snapshot_id=s.snapshot_id,repetition=r,retry_of=None) for r in range(m.limits.repetitions) for v in m.variants if (s.unit_id,v.variant_id,r) not in seen]
                 if group:schedule.append(group)
         snapshots={s.unit_id:s for s in m.snapshots}; variants={v.variant_id:(v,p) for v,p in zip(m.variants,m.pricing)}
+        stop=threading.Event()
+        def invoke(provider,snapshot,variant,price):
+            if stop.is_set() or cancel_event and cancel_event.is_set(): raise KeyboardInterrupt()
+            o=provider.observe(snapshot,variant)
+            from .shadow_budget import settle_attempt_usage
+            if settle_attempt_usage(price,variant.max_output_tokens,o)['breach']: stop.set()
+            return o
         executor=ThreadPoolExecutor(max_workers=m.limits.concurrency)
         try:
-            for group in schedule:
-                if status!='COMPLETE':break
-                if cancel_event and cancel_event.is_set():status='INTERRUPTED';break
-                # Construction remains lazy; no credential validation on finalized resume.
-                for spec in group:
-                    v,p=variants[spec['variant_id']]
-                    if v.variant_id not in providers: providers[v.variant_id]=provider_factory(v,p)
-                if fault:fault('before_intent',journal)
-                try: started=journal.record_dispatch_started(group)
-                except ShadowInputError as exc:
-                    if str(exc) not in ('BUDGET_EXHAUSTED','ACCOUNTING_BREACH'):raise
-                    status=str(exc);break
-                if fault:fault('after_intent',journal)
-                pending={}
-                for a in started:
-                    v,_=variants[a['variant_id']]
-                    pending[executor.submit(providers[v.variant_id].observe,snapshots[a['unit_id']],v)]=a
-                drain_until=None
-                while pending:
-                    try:
-                        if cancel_event and cancel_event.is_set():status='INTERRUPTED'
-                        if status in ('INTERRUPTED','ACCOUNTING_BREACH') and drain_until is None:
-                            drain_until=time.monotonic()+60
-                            for future in pending:future.cancel()
-                        ready,_=wait(pending,timeout=.05,return_when=FIRST_COMPLETED)
-                        if drain_until is not None and time.monotonic()>=drain_until:ready=set(pending)
-                        for future in ready:
-                            a=pending.pop(future);v,_=variants[a['variant_id']]
-                            if future.cancelled() or not future.done(): o=_unknown(v,'CANCELLED_AFTER_INTENT')
-                            else:
-                                try:o=future.result()
-                                except KeyboardInterrupt:status='INTERRUPTED';o=_unknown(v,'INTERRUPTED_PROVIDER')
-                                except Exception:o=ShadowObservation(provider=v.provider,requested_model=v.model,status='PROVIDER_ERROR',validation_code='PROVIDER_OBSERVATION_FAILED',output_complete=False)
-                            journal.record_observation(_attributed(o,m,journal.run_id,a))
-                            if fault:fault('after_observation',journal)
-                            current,_=journal.read_shadow_evidence()
-                            if any(x['charge'].get('breach') for x in current.values()):status='ACCOUNTING_BREACH'
-                    except KeyboardInterrupt:status='INTERRUPTED'
+            try:
+                for group in schedule:
+                    if status!='COMPLETE':break
+                    if cancel_event and cancel_event.is_set():status='INTERRUPTED';break
+                    # Construction remains lazy; no credential validation on finalized resume.
+                    for spec in group:
+                        v,p=variants[spec['variant_id']]
+                        if v.variant_id not in providers: providers[v.variant_id]=provider_factory(v,p)
+                    if fault:fault('before_intent',journal)
+                    try: started=journal.record_dispatch_started(group)
+                    except ShadowInputError as exc:
+                        if str(exc) not in ('BUDGET_EXHAUSTED','ACCOUNTING_BREACH'):raise
+                        status=str(exc);break
+                    if fault:fault('after_intent',journal)
+                    pending={}
+                    for a in started:
+                        v,p=variants[a['variant_id']]
+                        pending[executor.submit(invoke,providers[v.variant_id],snapshots[a['unit_id']],v,p)]=a
+                    drain_until=None
+                    while pending:
+                        try:
+                            if cancel_event and cancel_event.is_set():status='INTERRUPTED'
+                            if status in ('INTERRUPTED','ACCOUNTING_BREACH') and drain_until is None:
+                                drain_until=time.monotonic()+60
+                                for future in pending:future.cancel()
+                            ready,_=wait(pending,timeout=.05,return_when=FIRST_COMPLETED)
+                            if drain_until is not None and time.monotonic()>=drain_until:ready=set(pending)
+                            for future in ready:
+                                a=pending.pop(future);v,_=variants[a['variant_id']]
+                                if future.cancelled() or not future.done(): o=_unknown(v,'CANCELLED_AFTER_INTENT')
+                                else:
+                                    try:o=future.result()
+                                    except KeyboardInterrupt:status='INTERRUPTED';o=_unknown(v,'INTERRUPTED_PROVIDER')
+                                    except Exception:o=ShadowObservation(provider=v.provider,requested_model=v.model,status='PROVIDER_ERROR',validation_code='PROVIDER_OBSERVATION_FAILED',output_complete=False)
+                                journal.record_observation(_attributed(o,m,journal.run_id,a))
+                                if fault:fault('after_observation',journal)
+                                current,_=journal.read_shadow_evidence()
+                                if any(x['charge'].get('breach') for x in current.values()):status='ACCOUNTING_BREACH'
+                        except KeyboardInterrupt:status='INTERRUPTED'
+            except KeyboardInterrupt:
+                status='INTERRUPTED';stop.set();journal.recover_unknown_attempts()
             attempts,events=journal.read_shadow_evidence()
             if any(a['observation'] is None for a in attempts.values()): raise ShadowInputError('UNFINALIZED_DISPATCH')
             if status=='COMPLETE' and (not m.snapshots or any(a['observation'].status=='TIMEOUT_UNKNOWN' for a in attempts.values())): status='PARTIAL'

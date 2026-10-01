@@ -57,3 +57,42 @@ def test_breach_preserves_actual_tokens_and_halts(tmp_path):
             return ShadowObservation.model_validate({**o.model_dump(),'usage':dict(input_tokens=5000,output_tokens=5,total_tokens=5005)})
     r=run_shadow(m,tmp_path/'s.db',provider_factory=lambda v,p:Breach(calls))
     assert r.status=='ACCOUNTING_BREACH' and len(calls)==1 and r.observations[0].usage.total_tokens==5005
+
+
+def test_crash_after_intent_does_not_automatically_repeat(tmp_path):
+    m=manifest();calls=[];factory=lambda v,p:Fake(calls);path=tmp_path/'s.db'
+    def fault(stage,journal):
+        if stage=='after_intent':raise RuntimeError('injected crash')
+    with pytest.raises(RuntimeError):run_shadow(m,path,provider_factory=factory,fault=fault)
+    assert calls==[]
+    r=resume_shadow(m,path,provider_factory=factory)
+    assert r.status=='PARTIAL' and len(calls)==2
+    unknown=next(o for o in r.observations if o.status=='TIMEOUT_UNKNOWN')
+    retried=request_shadow_retry(m,path,unknown.attempt_id,provider_factory=factory)
+    assert len(calls)==3 and len(retried.observations)==4
+    assert retried.observations[-1].retry_of==unknown.attempt_id
+    assert retried.observations[0]==unknown
+
+
+def test_crash_after_observation_retains_finalized_output(tmp_path):
+    m=manifest();calls=[];path=tmp_path/'s.db'
+    def fault(stage,j):
+        if stage=='after_observation':raise RuntimeError('checkpoint failure')
+    with pytest.raises(RuntimeError):run_shadow(m,path,provider_factory=lambda v,p:Fake(calls),fault=fault)
+    r=resume_shadow(m,path,provider_factory=lambda v,p:Fake(calls))
+    assert len(calls)==3 and len(r.observations)==3
+
+
+def test_interrupt_stops_new_units_and_code_mismatch_is_local(tmp_path):
+    m=manifest();calls=[];cancel=threading.Event()
+    r=run_shadow(m,tmp_path/'s.db',provider_factory=lambda v,p:Fake(calls,cancel=cancel),cancel_event=cancel)
+    assert r.status=='INTERRUPTED' and len(calls)==1
+    bad=ShadowManifest.model_validate({**m.model_dump(),'code_content_hash':'0'*64,'spec_id':''})
+    with pytest.raises(ValueError,match='CODE_MISMATCH'):run_shadow(bad,tmp_path/'bad.db',provider_factory=lambda *a:pytest.fail('no provider construction'))
+
+
+def test_owner_conflict_precedes_provider_construction(tmp_path):
+    from trading_bot.shadow_store import ShadowJournal
+    m=manifest();path=tmp_path/'s.db'
+    with ShadowJournal(path,m):
+        with pytest.raises(ValueError,match='OWNER_ACTIVE'):resume_shadow(m,path,provider_factory=lambda *a:pytest.fail('second owner cannot construct'))
