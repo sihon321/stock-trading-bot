@@ -30,6 +30,12 @@ class ShadowCredentials:
 def validate_provider_profile(variant,price,*,allow_synthetic=False):
     if variant.provider=='codex_cli': raise ShadowInputError('UNSUPPORTED_SHADOW_CAPABILITY')
     if (variant.provider,variant.model)!=(price.provider,price.model) or price.synthetic and not allow_synthetic: raise ShadowInputError('UNREVIEWED_PROVIDER_PROFILE')
+    if not (allow_synthetic and price.synthetic):
+        if not all((price.strict_schema_supported,price.output_ceiling_supported,price.usage_envelope_supported)) or variant.provider=='claude' and not price.forced_tool_supported:
+            raise ShadowInputError('UNREVIEWED_PROVIDER_CAPABILITY')
+    # Current official docs explicitly prohibit forced tool_choice on these families.
+    unsupported=('claude-opus-5-5','claude-sonnet-5-5','claude-fable-5-1','claude-mythos-5-1')
+    if variant.provider=='claude' and variant.model.startswith(unsupported): raise ShadowInputError('UNSUPPORTED_SHADOW_CAPABILITY')
     if variant.max_output_tokens>price.max_output_tokens: raise ShadowInputError('UNBOUNDED_OUTPUT')
     settings=strict_json(variant.settings_json); supported=strict_json(price.settings_supported_json)
     allowed={'temperature','top_p','seed'} if variant.provider=='openai' else {'temperature','top_p'}

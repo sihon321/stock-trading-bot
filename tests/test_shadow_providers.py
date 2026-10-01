@@ -12,7 +12,7 @@ def snapshot(): return frozen().snapshots[0]
 
 
 def live_price():
-    return ShadowPricing.model_validate({**pricing().model_dump(),'synthetic':False})
+    return ShadowPricing.model_validate({**pricing().model_dump(),'synthetic':False,'strict_schema_supported':True,'output_ceiling_supported':True,'usage_envelope_supported':True,'forced_tool_supported':True})
 
 @pytest.mark.parametrize('content,finish,refusal,status',[
     ('{"decision":"HOLD","confidence":0.4,"reason":"fixture"}','stop',None,'SUCCESS'),
@@ -96,3 +96,15 @@ def test_compressed_response_is_rejected_before_decompression():
         def __iter__(self):pytest.fail('compressed body must not be read')
     transport=BoundedTransport('openai',httpx.MockTransport(lambda req:httpx.Response(200,headers={'content-encoding':'gzip'},stream=Stream())))
     with pytest.raises(ValueError,match='COMPRESSED'):transport.handle_request(httpx.Request('POST','https://api.openai.com/v1/chat/completions'))
+
+
+def test_paid_profile_requires_positive_contract_review():
+    p=ShadowPricing.model_validate({**pricing().model_dump(),'synthetic':False})
+    with pytest.raises(ValueError,match='UNREVIEWED_PROVIDER_CAPABILITY'):validate_provider_profile(variant(),p)
+
+@pytest.mark.parametrize('model',['claude-opus-5-5','claude-sonnet-5-5'])
+def test_known_forced_tool_incompatibility_stops_before_credentials(model,monkeypatch):
+    monkeypatch.setattr(ShadowCredentials,'load',lambda *a:pytest.fail('unsupported model must not read credentials'))
+    v=ShadowVariant.model_validate({**variant().model_dump(),'provider':'claude','model':model,'variant_id':''})
+    p=ShadowPricing.model_validate({**live_price().model_dump(),'provider':'claude','model':model,'endpoint':'messages'})
+    with pytest.raises(ValueError,match='UNSUPPORTED_SHADOW_CAPABILITY'):build_shadow_provider(v,p)

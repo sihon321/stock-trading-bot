@@ -108,6 +108,10 @@ class ShadowPricing(Frozen):
     source: Annotated[str, Field(min_length=1, max_length=1000)]
     reviewed_at: datetime
     synthetic: StrictBool = False
+    strict_schema_supported: StrictBool = False
+    output_ceiling_supported: StrictBool = False
+    usage_envelope_supported: StrictBool = False
+    forced_tool_supported: StrictBool = False
     context_upper_bound: Annotated[StrictInt, Field(ge=1, le=10000000)]
     max_output_tokens: Annotated[StrictInt, Field(ge=1, le=1000000)] = 1024
     input_per_million: Nonnegative
