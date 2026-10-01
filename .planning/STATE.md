@@ -2,13 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 12
-current_phase_name: full-portfolio-backtesting-market-friction-modeling
-status: verifying
-stopped_at: Phase 13 context gathered
-last_updated: "2026-10-01T09:53:48.269Z"
+current_phase: 13
+current_phase_name: historical-llm-shadow-evaluation-model-governance
+current_plan: 0
+status: executing
+stopped_at: Phase 13 planned; ready to execute
+last_updated: "2026-10-01T10:16:49.961Z"
 last_activity: 2026-10-01
-last_activity_desc: Phase 12 verified; 6/6 plans; 77 backtest and 905 total tests passed
+last_activity_desc: Phase 13 planned; 7 plans in 5 waves; requirements 2/2 and decisions 16/16 covered
 progress:
   total_phases: 5
   completed_phases: 4
@@ -24,16 +25,18 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 12 verified complete — next: Phase 13 discussion; Phase 9 external acceptance continues
+**Current focus:** Phase 13 planned — ready to execute; Phase 9 external acceptance continues
 
 ## Current Position
 
-Phase: 12 (full-portfolio-backtesting-market-friction-modeling) — COMPLETE
-Plan: 6 of 6
-Status: Phase complete — ready for verification
-Last activity: 2026-10-01 — Phase 12 verified; 6/6 plans; 77 backtest and 905 total tests passed
-
-Progress: [██████████] 96%
+Current Phase: 13
+Current Phase Name: historical-llm-shadow-evaluation-model-governance
+Current Plan: 0
+Total Plans in Phase: 7
+Phase: 13 (historical-llm-shadow-evaluation-model-governance) — PLANNED
+Plan: 0 of 7
+Status: Ready to execute
+Last activity: 2026-10-01 — Phase 13 planned; 7 plans in 5 waves; requirements 2/2 and decisions 16/16 covered
 
 ## Performance Metrics
 
@@ -184,9 +187,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-01T09:53:48.256Z
-Stopped at: Phase 13 context gathered
-Resume file: .planning/phases/13-historical-llm-shadow-evaluation-model-governance/13-CONTEXT.md
+Last session: 2026-10-01T10:16:49.953Z
+Stopped at: Phase 13 planned; ready to execute
+Resume file: .planning/phases/13-historical-llm-shadow-evaluation-model-governance/13-01-PLAN.md
 
 ## Operator Next Steps
 

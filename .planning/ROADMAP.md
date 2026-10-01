@@ -247,7 +247,7 @@ Plans:
 | 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete | 2026-10-01 |
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
-| 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
+| 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/7 | Planned |  |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 0/TBD | Not Planned |  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
@@ -367,11 +367,47 @@ Plans:
   3. Reports compare agreement, action changes, malformed/refusal rates, cost, and risk-gate effects without replacing the deterministic baseline.
   4. Promotion of a model or prompt remains a separate manual policy decision backed by immutable evidence.
 
-**Plans:** 0 plans
+**Plans:** 7 plans in 5 waves
 
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd-plan-phase 13 to break down)
+- [ ] 13-01-PLAN.md — Strict shadow contracts and immutable provenance
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 13-02-PLAN.md — Cutoff-safe snapshots and deterministic paired sampling
+- [ ] 13-03-PLAN.md — Conservative budgets and crash-safe dedicated journal
+- [ ] 13-04-PLAN.md — Single-shot isolated API providers with usage envelopes
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 13-05-PLAN.md — Bounded runner, interruption recovery and explicit retries
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 13-06-PLAN.md — Validated paired action reports and manual governance evidence
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 13-07-PLAN.md — Operator CLI, runbook and full offline verification
+
+**Cross-cutting constraints:**
+
+- D-06: Every response is linked to actual frozen prompt/schema/settings and requested/returned model facts.
+- D-07: Malformed, refused, failed and unknown outputs remain distinct from successful HOLD signals.
+- D-09: Shared defaults enforce 100 attempts, 200000 tokens, USD 5 and concurrency 1 across variants/retries.
+- D-16: Immutable output provenance includes input/provider/model/prompt/schema/pricing/code; promotion stays manual.
+- D-01: Default sample is at most 100 reproducible stratified date/ticker units with missing strata visible.
+- D-03: All variants share the same canonical pre-decision portfolio state and immutable fixture baseline.
+- D-04: Coverage, absent news and current-model hindsight contamination remain visible.
+- D-05: One explicit model/prompt variant and one dispatch per unit are defaults; comparisons use paired inputs.
+- D-10: Sound pre-call reservations retain unknown charges and distinguish usage facts from estimated costs.
+- D-11: Dispatched uncertain calls are not repeated automatically; explicit retries preserve original evidence.
+- D-12: Crash-safe owned checkpoints resume only unchanged manifests and reuse finalized observations.
+- D-08: Shadow paths have isolated LLM credentials and no trading/configuration/promotion capability.
+- D-13: Korean reports show paired agreement/action/failure/cost facts with exact denominators.
+- D-15: Agreement is descriptive consistency evidence and cannot imply model correctness/profitability/readiness.
 
 ## v1.3 Safe Automation & Controlled Production (Phase Details)
 
