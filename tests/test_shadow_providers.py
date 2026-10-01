@@ -54,3 +54,38 @@ def test_claude_forced_tool_and_inclusive_usage():
     o=adapter.observe(snapshot(),v)
     assert o.status=='SUCCESS' and o.usage.total_tokens==20 and o.usage.input_tokens==15
     assert len(calls)==1 and len(calls[0]['tools'])==1 and calls[0]['tools'][0]['strict']
+
+
+def test_unsupported_cli_and_synthetic_profile_before_credentials(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess,'run',lambda *a,**k:pytest.fail('process forbidden'))
+    v=ShadowVariant.model_validate({**variant().model_dump(),'provider':'codex_cli','variant_id':''})
+    p=ShadowPricing.model_validate({**pricing().model_dump(),'provider':'codex_cli','endpoint':'codex.exec'})
+    with pytest.raises(ValueError,match='UNSUPPORTED_SHADOW_CAPABILITY'): build_shadow_provider(v,p)
+    with pytest.raises(ValueError,match='UNREVIEWED'): build_shadow_provider(variant(),pricing())
+
+
+def test_origin_redirect_and_oversize_fail_closed(monkeypatch):
+    monkeypatch.setenv('SHADOW_OPENAI_API_KEY','key-test');calls=[]
+    def handle(req): calls.append(req);return httpx.Response(307,headers={'location':'https://evil.example/'})
+    p=build_shadow_provider(variant(),live_price(),transport=httpx.MockTransport(handle))
+    assert p.observe(snapshot(),variant()).status=='PROVIDER_ERROR';p.close();assert len(calls)==1
+    transport=BoundedTransport('openai',httpx.MockTransport(handle))
+    with pytest.raises(ValueError,match='ORIGIN'): transport.handle_request(httpx.Request('POST','https://evil.example/'))
+    p=build_shadow_provider(variant(),live_price(),transport=httpx.MockTransport(lambda req:httpx.Response(200,content=b'x'*(HTTP_LIMIT+1))))
+    assert not p.observe(snapshot(),variant()).usage.known;p.close()
+
+
+def test_only_dedicated_credentials_and_no_live_settings(monkeypatch):
+    from trading_bot import config
+    monkeypatch.setattr(config,'Settings',lambda *a,**k:pytest.fail('live settings forbidden'))
+    monkeypatch.delenv('SHADOW_OPENAI_API_KEY',raising=False);monkeypatch.setenv('OPENAI_API_KEY','live-key')
+    with pytest.raises(ValueError,match='MISSING_SHADOW'): build_shadow_provider(variant(),live_price())
+    assert 'live-key' not in repr(ShadowCredentials('openai','live-key'))
+
+
+def test_unsupported_settings_and_invalid_usage():
+    v=ShadowVariant.model_validate({**variant().model_dump(),'settings_json':'{"tools":1}','variant_id':''})
+    with pytest.raises(ValueError,match='UNSUPPORTED'): validate_provider_profile(v,live_price())
+    assert not normalize_shadow_usage('openai',{'prompt_tokens':True,'completion_tokens':2,'total_tokens':3}).known
+    assert not normalize_shadow_usage('claude',{'input_tokens':-1,'output_tokens':2}).known
