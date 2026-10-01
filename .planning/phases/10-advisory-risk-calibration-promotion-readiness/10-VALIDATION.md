@@ -1,7 +1,7 @@
 ---
 phase: 10
 slug: advisory-risk-calibration-promotion-readiness
-status: gaps_found
+status: passed
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-08-10
@@ -58,9 +58,9 @@ All safety and evidence semantics have automated coverage. Human review of Korea
 - [x] Expected feedback latency is under 40 seconds.
 - [x] `nyquist_compliant: true` is set for the planned coverage.
 
-**Approval:** verification gaps found on 2026-10-01; see `10-VERIFICATION.md`.
+**Approval:** re-verification passed on 2026-10-01; see `10-VERIFICATION.md`.
 
-## Final Verification Results — 2026-10-01
+## Initial Verification Results — 2026-10-01
 
 - Phase 10 focused suite plus CLI/runbook contracts: 86 passed in 2.26s using `.venv/bin/python -m pytest`.
 - Entire workspace suite: 815 passed in 21.00s, with no collection exclusions. The historical soak-campaign collection defect no longer reproduces.
@@ -68,3 +68,11 @@ All safety and evidence semantics have automated coverage. Human review of Korea
 - Current runtime calibration and readiness evidence reads fail with `unsupported primary audit schema tables` because Phase 11 adds independently owned portfolio tables.
 - Readiness CLI does not propagate resolved historical ambiguity; it hardcodes the count to zero. Reducer-only coverage does not verify this operator behavior.
 - Final phase acceptance remains `gaps_found` until both integration gaps are closed. No live request, order, configuration write, or campaign mutation was performed.
+
+## Gap Closure Re-verification — 2026-10-01
+
+- Focused integration/domain/CLI/runbook suite: 116 passed in 3.06s.
+- Full suite: 828 passed, no exclusions.
+- Shared audit schema reads pass without changing runtime database bytes.
+- Readiness CLI displays validated resolved historical ambiguity warnings; invalid release proof remains blocked.
+- Final acceptance: `passed`, 24/24 must-haves verified. Phase 9 acceptance remains separate.

@@ -129,7 +129,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- 2026-10-01 Phase 10 final verification: `gaps_found` despite 86 focused and 815 full-suite tests passing. Current calibration/readiness readers reject Phase 11 portfolio tables; readiness CLI omits resolved historical ambiguity warnings. See `10-VERIFICATION.md`; close through `$gsd-plan-phase 10 --gaps`. Current Phase 11 execution position is retained.
+- 2026-10-01 Phase 10 re-verification passed (24/24) after shared audit schema and historical ambiguity warning fixes. Focused suite: 116 passed; full suite: 828 passed. Phase 9 external acceptance remains required; current Phase 11 position is retained.
 
 - Phase 9 planning must confirm authenticated KIS mock restrictions, inquiry behavior, and fault semantics.
 - Phase 10 planning must define sample sufficiency, uncertainty, and promotion thresholds before calibration claims.

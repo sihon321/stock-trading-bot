@@ -30,7 +30,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 - [x] **Phase 7: Deterministic Replay Validation** — Exercise the production decision and execution gates against frozen historical scenarios without live dependencies. (completed 2026-07-13)
 - [x] **Phase 8: Decision Reports & Operator Runbook** — Make validation evidence reviewable and daily operation repeatable, including failure triage. (completed 2026-07-13)
 - [ ] **Phase 9: KIS Mock Soak & Fault Drills** — Collect multi-day broker-facing mock evidence and prove recovery behavior under expected faults.
-- [ ] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review. (implementation complete; verification gaps found 2026-10-01)
+- [x] **Phase 10: Advisory Risk Calibration & Promotion Readiness** — Compare policy variants without mutation and gate any real-money consideration behind manual evidence review. (implemented 2026-08-10; re-verified 2026-10-01)
 
 ### 📋 v1.2 Complete Trade Lifecycle & Strategy Evidence (Planned)
 
@@ -222,7 +222,7 @@ Plans:
 
 **Plans**: 4/4 plans complete
 
-**Verification:** `gaps_found` (2026-10-01). Current runtime DB compatibility and resolved historical ambiguity warnings require gap closure; see `10-VERIFICATION.md`. All four implementation plans remain executed.
+**Verification:** `passed` (2026-10-01), 24/24 must-haves verified after shared runtime schema and historical-warning gap closure; see `10-VERIFICATION.md`.
 
 - [x] 10-01-PLAN.md
 - [x] 10-02-PLAN.md
@@ -244,7 +244,7 @@ Plans:
 | 7. Deterministic Replay Validation | v1.1 | 6/6 | Complete    | 2026-07-13 |
 | 8. Decision Reports & Operator Runbook | v1.1 | 6/6 | Complete    | 2026-07-14 |
 | 9. KIS Mock Soak & Fault Drills | v1.1 | 9/10 | In Progress|  |
-| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Verification gaps |  |
+| 10. Advisory Risk Calibration & Promotion Readiness | v1.1 | 4/4 | Complete | 2026-10-01 |
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 0/TBD | Not Planned |  |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 0/TBD | Not Planned |  |
