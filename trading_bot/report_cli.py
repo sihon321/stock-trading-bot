@@ -353,7 +353,7 @@ def readiness_command(
             calibration_valid=True,
             calibration_id=calibration_report.calibration_id,
             policy_frozen=policy_frozen,
-            resolved_historical_ambiguity=0,
+            resolved_historical_ambiguity=soak_report.resolved_historical_ambiguity,
             source_identities=tuple(
                 sorted(
                     [result.stable_result_id for result in normalized_results]

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from trading_bot import sqlite_audit, soak_store
+from trading_bot.portfolio_store import connect_portfolio_store
 from trading_bot.audit_models import OrderEvent, OrderEventType, RunKind
 from trading_bot.soak_controller import (
     append_controller_observation,
@@ -57,6 +58,148 @@ def _stores(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _repository(paths: tuple[Path, Path, Path]) -> ReadOnlySoakRepository:
     audit, soak, controller = paths
     return ReadOnlySoakRepository(audit, soak, controller)
+
+
+def test_shared_portfolio_schema_is_readonly_and_owned_schema_stays_strict(tmp_path: Path) -> None:
+    from trading_bot.calibration_reporting import ReadOnlyCalibrationEvidenceRepository
+    paths = _stores(tmp_path)
+    connect_portfolio_store(paths[0]).close()
+    before = {path: path.read_bytes() for path in paths}
+    assert build_soak_report(_repository(paths), "campaign-1").campaign.credited_days == 0
+    ReadOnlyCalibrationEvidenceRepository(*paths[:2]).load("campaign-1")
+    assert before == {path: path.read_bytes() for path in paths}
+    conn = sqlite_audit.connect(paths[0])
+    conn.execute("ALTER TABLE runs ADD COLUMN unsupported TEXT")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="primary audit schema: runs"):
+        build_soak_report(_repository(paths), "campaign-1")
+    with pytest.raises(RuntimeError, match="primary audit schema: runs"):
+        ReadOnlyCalibrationEvidenceRepository(*paths[:2]).load("campaign-1")
+
+
+@pytest.mark.parametrize("evidence_type", ["COMPARISON", "AMBIGUITY_OBSERVATION"])
+@pytest.mark.parametrize("corruption", [None, "subject", "terminal", "primary", "pointer"])
+def test_historical_ambiguity_requires_valid_terminal_release(
+    tmp_path: Path, evidence_type: str, corruption: str | None
+) -> None:
+    paths = _stores(tmp_path)
+    _write_primary_intent(paths[0])
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.freeze_ticker(soak, freeze_id="freeze-history", campaign_id="campaign-1",
+                           ticker="000660", order_intent_id="intent-resume", freeze_kind="AMBIGUITY")
+    if evidence_type == "COMPARISON":
+        _write_resume_comparison(paths[1])
+        evidence_id = "resume-comparison"
+        table, id_column = "soak_comparisons", "comparison_id"
+    else:
+        soak_store.append_ambiguity_observation(
+            soak, observation_id="terminal-observation", campaign_id="campaign-1",
+            run_id="primary-run", ticker="000660", order_intent_id="intent-resume",
+            verdict="ONE_MATCH_DETERMINATE", remaining_order_terminal=True,
+        )
+        evidence_id = "terminal-observation"
+        table, id_column = "soak_ambiguity_observations", "observation_id"
+    soak_store.transition_freeze(soak, freeze_id="freeze-history",
+                                release_evidence_type=evidence_type, release_evidence_id=evidence_id)
+    # Deliberately tamper fixture evidence to prove read-time validation does
+    # not trust a persisted RELEASED label without its underlying proof.
+    if corruption is not None:
+        for (name,) in soak.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name IN (?,?)",
+            (table, "soak_ticker_freezes"),
+        ).fetchall():
+            soak.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+    if corruption == "subject":
+        soak.execute(f"UPDATE {table} SET ticker='005930' WHERE {id_column}=?", (evidence_id,))
+    elif corruption == "terminal":
+        soak.execute(f"UPDATE {table} SET remaining_order_terminal=0 WHERE {id_column}=?", (evidence_id,))
+    elif corruption == "primary":
+        soak.execute(f"UPDATE {table} SET order_intent_id='missing-intent' WHERE {id_column}=?", (evidence_id,))
+        soak.execute("UPDATE soak_ticker_freezes SET order_intent_id='missing-intent'")
+    elif corruption == "pointer":
+        soak.execute("UPDATE soak_ticker_freezes SET release_evidence_id='missing' WHERE state='RELEASED'")
+    soak.commit()
+    soak.close()
+    report = build_soak_report(_repository(paths), "campaign-1")
+    assert report.resolved_historical_ambiguity == (1 if corruption is None else 0)
+    assert report.freezes.active_count == (0 if corruption is None else 1)
+    if corruption is None:
+        assert report.cross_store_unknown == 0
+    else:
+        assert report.cross_store_unknown >= 1
+
+
+def test_readiness_cli_projects_active_and_resolved_history_without_writes(
+    tmp_path: Path,
+) -> None:
+    import json
+    from typer.testing import CliRunner
+    from trading_bot import report_cli
+    from trading_bot.calibration import baseline_policy
+    from trading_bot.replay import (
+        ReplayManifest, ReplayResult, build_replay_funnel, load_replay_bundle,
+        run_replay_scenarios, verify_replay_expectations,
+    )
+
+    paths = _stores(tmp_path)
+    connect_portfolio_store(paths[0]).close()
+    _write_primary_intent(paths[0])
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.freeze_ticker(soak, freeze_id="cli-history", campaign_id="campaign-1",
+                           ticker="000660", order_intent_id="intent-resume", freeze_kind="AMBIGUITY")
+    soak.close()
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps(baseline_policy().as_mapping()))
+    result_path = tmp_path / "replay.json"
+    outcomes = run_replay_scenarios(load_replay_bundle(
+        Path(__file__).parent / "fixtures/replay/focused.json"
+    ))
+    verification = verify_replay_expectations(outcomes)
+    assert verification.passed
+    # The reporting input contract contains BUY/HOLD/SELL action rows; keep
+    # policy rejection boundary checks in verification, not action totals.
+    outcomes = tuple(row for row in outcomes if row.action in {"BUY", "HOLD", "SELL"})
+    manifest = ReplayManifest(
+        scenario_hash="a" * 64, ohlcv_hash="b" * 64, raw_signal_hash="c" * 64,
+        policy=baseline_policy().as_mapping(), head_commit="fixture-head",
+        relevant_tracked_diff_hash="d" * 64, code_state="clean",
+        initial_state={"cash": 1_000_000, "positions": []},
+        evaluation_time="2026-07-20T09:10:00+09:00", trading_date="20260720",
+        fixture_schema_version=1,
+    )
+    result_path.write_bytes(ReplayResult(
+        manifest, outcomes, {}, build_replay_funnel(outcomes), verification,
+    ).normalized_bytes())
+    fixture = Path(__file__).parent / "fixtures/replay/focused.json"
+    output = tmp_path / "readiness.txt"
+    command = ["readiness", "--replay-result", str(result_path),
+               "--calibration-fixture", str(fixture), "--audit-db", str(paths[0]),
+               "--soak-db", str(paths[1]), "--controller-db", str(paths[2]),
+               "--campaign-id", "campaign-1", "--policy-snapshot", str(policy),
+               "--rollback-ack", "--kill-ack", "--manual-approval"]
+    before = {path: path.read_bytes() for path in (*paths, policy, result_path, fixture)}
+    active = CliRunner().invoke(report_cli.report_app, command)
+    assert active.exit_code == 0, active.output
+    assert "ORDERS_RESOLVED=BLOCK" in active.stdout
+    assert "RESOLVED_HISTORICAL_AMBIGUITY" not in active.stdout
+    assert before == {path: path.read_bytes() for path in before}
+    _write_resume_comparison(paths[1])
+    soak = soak_store.connect_soak_store(paths[1])
+    soak_store.transition_freeze(soak, freeze_id="cli-history", release_evidence_type="COMPARISON",
+                                release_evidence_id="resume-comparison")
+    soak.close()
+    before = {path: path.read_bytes() for path in before}
+    first = CliRunner().invoke(report_cli.report_app, command + ["--output", str(output)])
+    second = CliRunner().invoke(report_cli.report_app, command + ["--output", str(output)])
+    assert first.exit_code == second.exit_code == 0, first.output
+    assert "ORDERS_RESOLVED=PASS" in first.stdout
+    assert "warning=RESOLVED_HISTORICAL_AMBIGUITY:1" in first.stdout
+    assert "state=BLOCKED" in first.stdout  # Still short of the 20-day gate.
+    assert first.stdout != active.stdout
+    assert first.stdout == second.stdout
+    assert first.stdout.encode() == output.read_bytes()
+    assert before == {path: path.read_bytes() for path in before}
 
 
 def _write_primary_intent(audit_path: Path, *, intent_id: str = "intent-resume") -> None:

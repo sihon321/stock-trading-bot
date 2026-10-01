@@ -67,6 +67,7 @@ class SoakReport:
     freezes: FreezeSummary
     drills: tuple[DrillCoverage, ...]
     cross_store_unknown: int
+    resolved_historical_ambiguity: int = 0
 
 
 _PRIMARY_SCHEMA = {
@@ -229,7 +230,7 @@ class ReadOnlySoakRepository:
     def _validate_primary(cls, connection: sqlite3.Connection) -> None:
         if int(connection.execute("PRAGMA user_version").fetchone()[0]) != SCHEMA_VERSION:
             raise RuntimeError("unsupported primary audit schema version")
-        if cls._tables(connection) != set(_PRIMARY_SCHEMA):
+        if not set(_PRIMARY_SCHEMA) <= cls._tables(connection):
             raise RuntimeError("unsupported primary audit schema tables")
         for table, columns in _PRIMARY_SCHEMA.items():
             if cls._columns(connection, table) != columns:
@@ -340,9 +341,15 @@ class ReadOnlySoakRepository:
         ).fetchall()
         freezes = soak.execute(
             """SELECT f.* FROM soak_ticker_freezes f
-               WHERE f.campaign_id=? AND f.state='FROZEN'
-               AND NOT EXISTS (SELECT 1 FROM soak_ticker_freezes r
-                   WHERE r.freeze_id=f.freeze_id AND r.state='RELEASED') ORDER BY f.id""",
+               WHERE f.campaign_id=? AND f.state='FROZEN' ORDER BY f.id""",
+            (campaign_id,),
+        ).fetchall()
+        releases = soak.execute(
+            "SELECT * FROM soak_ticker_freezes WHERE campaign_id=? AND state='RELEASED' ORDER BY id",
+            (campaign_id,),
+        ).fetchall()
+        ambiguity_observations = soak.execute(
+            "SELECT * FROM soak_ambiguity_observations WHERE campaign_id=? ORDER BY id",
             (campaign_id,),
         ).fetchall()
         links = soak.execute(
@@ -376,6 +383,8 @@ class ReadOnlySoakRepository:
             "legacy_pre_run_snapshot_ids": legacy_pre_run_snapshot_ids,
             "comparisons": comparisons,
             "freezes": freezes,
+            "releases": releases,
+            "ambiguity_observations": ambiguity_observations,
             "links": links,
             "controller": controller_rows,
             "primary_runs": primary_runs,
@@ -454,6 +463,42 @@ def _valid_comparison_reference(data: dict[str, Any], row: sqlite3.Row) -> bool:
     return len(snapshots) == 1 and _valid_snapshot_reference(data, snapshots[0])
 
 
+def _valid_release(data: dict[str, Any], frozen: sqlite3.Row, release: sqlite3.Row) -> bool:
+    """Only same-subject, primary-linked terminal truth resolves a freeze."""
+
+    if (
+        release["prior_transition_id"] != frozen["id"]
+        or release["id"] <= frozen["id"]
+        or frozen["order_intent_id"] is None
+        or any(release[key] != frozen[key] for key in (
+            "freeze_id", "campaign_id", "ticker", "order_intent_id", "freeze_kind"
+        ))
+    ):
+        return False
+    if release["release_evidence_type"] == "COMPARISON":
+        rows = data["comparisons"]
+        identity_key = "comparison_id"
+        terminal_verdicts = {"MATCHED"}
+        valid_reference = _valid_comparison_reference
+    elif release["release_evidence_type"] == "AMBIGUITY_OBSERVATION":
+        rows = data["ambiguity_observations"]
+        identity_key = "observation_id"
+        terminal_verdicts = {"NO_MATCH_CONFIRMED", "ONE_MATCH_DETERMINATE"}
+        valid_reference = _valid_primary_reference
+    else:
+        return False
+    matches = [row for row in rows if row[identity_key] == release["release_evidence_id"]]
+    if len(matches) != 1:
+        return False
+    evidence = matches[0]
+    return (
+        all(evidence[key] == frozen[key] for key in ("campaign_id", "ticker", "order_intent_id"))
+        and evidence["verdict"] in terminal_verdicts
+        and bool(evidence["remaining_order_terminal"])
+        and valid_reference(data, evidence)
+    )
+
+
 def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakReport:
     """Build a deterministic report while preserving independent evidence dimensions."""
 
@@ -512,13 +557,25 @@ def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakRep
         stages=tuple(sorted(stages.items())),
     )
 
-    active_tickers = tuple(sorted({str(item["ticker"]) for item in data["freezes"]}))
+    active_freezes = []
+    resolved_ambiguity = set()
+    valid_release_ids = set()
+    for frozen in data["freezes"]:
+        releases = [row for row in data["releases"] if row["freeze_id"] == frozen["freeze_id"]]
+        if len(releases) == 1 and _valid_release(data, frozen, releases[0]):
+            valid_release_ids.add(releases[0]["id"])
+            if frozen["freeze_kind"] == "AMBIGUITY":
+                resolved_ambiguity.add(str(frozen["freeze_id"]))
+        else:
+            active_freezes.append(frozen)
+    cross_unknown += sum(row["id"] not in valid_release_ids for row in data["releases"])
+    active_tickers = tuple(sorted({str(item["ticker"]) for item in active_freezes}))
     freezes = FreezeSummary(
-        active_count=len(data["freezes"]),
+        active_count=len(active_freezes),
         tickers=active_tickers,
-        ambiguity_count=sum(item["freeze_kind"] == "AMBIGUITY" for item in data["freezes"]),
+        ambiguity_count=sum(item["freeze_kind"] == "AMBIGUITY" for item in active_freezes),
         remaining_order_count=sum(
-            item["freeze_kind"] != "AMBIGUITY" for item in data["freezes"]
+            item["freeze_kind"] != "AMBIGUITY" for item in active_freezes
         ),
     )
 
@@ -564,6 +621,7 @@ def build_soak_report(repo: ReadOnlySoakRepository, campaign_id: str) -> SoakRep
         freezes=freezes,
         drills=tuple(coverage),
         cross_store_unknown=cross_unknown,
+        resolved_historical_ambiguity=len(resolved_ambiguity),
     )
 
 

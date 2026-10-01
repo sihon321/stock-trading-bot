@@ -190,7 +190,15 @@ class ReadOnlyCalibrationEvidenceRepository:
         actual_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if actual_version != version:
             raise RuntimeError(f"unsupported {owner} schema version")
-        if cls._tables(connection) != set(schema):
+        actual_tables = cls._tables(connection)
+        # The primary audit file also hosts independently versioned portfolio
+        # evidence. Validate only the tables this reader owns and consumes.
+        tables_valid = (
+            set(schema) <= actual_tables
+            if owner == "primary audit"
+            else actual_tables == set(schema)
+        )
+        if not tables_valid:
             raise RuntimeError(f"unsupported {owner} schema tables")
         for table, expected_columns in schema.items():
             if cls._columns(connection, table) != set(expected_columns):

@@ -245,11 +245,15 @@ def _calibration_command(
     return command
 
 
+@pytest.mark.parametrize("with_portfolio", [False, True])
 def test_calibration_command_is_offline_and_renders_every_locked_group(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_portfolio: bool
 ) -> None:
     _clear_live_credentials(monkeypatch)
     audit_path, soak_path = _calibration_stores(tmp_path)
+    if with_portfolio:
+        from trading_bot.portfolio_store import connect_portfolio_store
+        connect_portfolio_store(audit_path).close()
     fixture = REPLAY_FIXTURES / "focused.json"
 
     result = CliRunner().invoke(
