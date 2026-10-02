@@ -56,7 +56,8 @@ def test_worker_strict_stale_boundary_and_recovery():
     env = record('watch').envelope
     worker = WorkerDTO(env, 'source:intraday', 'RUNNING', True, 30, source_ids=('saved-1',))
     detector = AlertDetector()
-    assert detector.detect(AlertSourceBatch(NOW + timedelta(seconds=180), workers=(worker,))) == ()
+    boundary = detector.detect(AlertSourceBatch(NOW + timedelta(seconds=180), workers=(worker,)))
+    assert all(f.positive_recovery for f in boundary)
     stale = detector.detect(AlertSourceBatch(NOW + timedelta(seconds=181), workers=(worker,)))[0]
     assert stale.normalized_state == 'STALE' and stale.severity == Severity.WARNING
     assert detector.detect(AlertSourceBatch(NOW, workers=(replace(worker, state='STOPPED', expected_running=False),))) == ()

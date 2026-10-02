@@ -308,7 +308,7 @@ class OperatorEvidenceService:
                 sid = snapshot['snapshot_id']
                 source_ids.extend((snapshot['observation_id'], snapshot['cycle_id']))
             if kind.startswith('transition_'):
-                state = conn.execute('SELECT account_scope_hash FROM transition_states WHERE state_identity=?', (row['state_identity'],)).fetchone()
+                state = conn.execute('SELECT account_scope_hash,ticker,event_family,broker_subject_id FROM transition_states WHERE state_identity=?', (row['state_identity'],)).fetchone()
                 if state is None or state[0] != resource.account_hash:
                     raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
                 source_ids.append(row['state_identity'])
@@ -327,6 +327,14 @@ class OperatorEvidenceService:
         record = _wire_record(resource, kind, row, key, row[time_key], fields,
                               snapshot_id=sid, source_ids=source_ids)
         extra = []
+        if kind.startswith('transition_'):
+            extra.extend((name, _clean(state[name])) for name in ('ticker', 'event_family', 'broker_subject_id'))
+            if kind == 'transition_observations':
+                # Terminal meaning comes from saved state code, not mutable active=0.
+                recovered = row['state_code'] in {'FILLED', 'RESOLVED', 'RECOVERED', 'STOPPED'}
+                prior = conn.execute('SELECT 1 FROM transition_observations WHERE state_identity<>? AND id<? AND state_identity IN (SELECT state_identity FROM transition_states WHERE account_scope_hash=? AND COALESCE(ticker,\'\')=COALESCE(?,\'\') AND event_family=? AND COALESCE(broker_subject_id,\'\')=COALESCE(?,\'\')) LIMIT 1',
+                    (row['state_identity'], row['id'], resource.account_hash, state['ticker'], state['event_family'], state['broker_subject_id'])).fetchone()
+                extra.append(('producer_event_code', 'STATE_RECOVERED' if recovered else 'STATE_CHANGED' if prior else 'STATE_BEGIN'))
         if kind in {'candidates', 'evaluation_events'}:
             detail = _json(row['detail_json'])
             allowed = ('rank', 'screen_reason') if kind == 'candidates' else ('reason', 'provider', 'model', 'attempt', 'attempts')
@@ -474,7 +482,7 @@ class OperatorEvidenceService:
                 raise ValueError('invalid alert source cursor') from None
         facts = []
         kinds = {'transitions', 'transition_observations', 'transition_notifications', 'lease_events',
-                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs'}
+                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events'}
         for resource in self._resources():
             try:
                 with _transaction(resource) as conn:
@@ -493,7 +501,7 @@ class OperatorEvidenceService:
                 continue
         scopes = {(r.account_hash, r.target) for r in self._resources()}
         for account, target in sorted(scopes):
-            facts.extend(self._unresolved(ResourceScope(account, target)))
+            facts.extend(self._unresolved(ResourceScope(account, target), include_released=True))
         # Producer timestamps may collide or be backdated. Stream content checkpoints
         # also detect in-place transition-state updates; absence is never recovery.
         groups = {}
@@ -635,7 +643,7 @@ class OperatorEvidenceService:
         # This is the same fixed authorized field map, never a raw payload/model dump.
         return self.get_record(resource_id, record_id)
 
-    def _unresolved(self, scope):
+    def _unresolved(self, scope, *, include_released=False):
         records = []
         for resource in self._resources(scope, 'portfolio'):
             account = self._account(resource)
@@ -687,6 +695,9 @@ class OperatorEvidenceService:
                             if not linked:
                                 record = replace(record, envelope=replace(record.envelope, completeness='UNKNOWN', diagnostic_code='BROKEN_SOURCE_LINK'))
                             records.append(record)
+                        elif include_released:
+                            record = self._project(conn, resource, 'freezes', released)
+                            records.append(replace(record, fields=record.fields + (('release_validated', True),)))
             except EvidenceUnavailable as exc:
                 # Query failure is never positive recovery; preserve the last risk facts.
                 records.extend(replace(row, envelope=replace(row.envelope, query_at=self.clock(),

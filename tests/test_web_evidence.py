@@ -12,6 +12,26 @@ from trading_bot.web_models import PeriodSelection
 from trading_bot.web_evidence import OperatorEvidenceService
 
 
+def test_alert_stream_enriches_phase11_subject_and_daily_evaluation(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("INSERT INTO transition_states(state_identity,account_scope_hash,ticker,event_family,broker_subject_id,state_code,occurrence_count,first_observed_at,last_observed_at,duration_seconds,active,severity,last_notification_status) VALUES('transition-subject',?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ACCOUNT_HASH, '005930', 'BROKER_ORDER', 'broker-1', 'FILLED', 1,
+             NOW.isoformat(), NOW.isoformat(), 0, 0, 'INFO', None))
+        conn.execute("INSERT INTO transition_observations(state_identity,state_code,severity,detail_json,observed_at) VALUES(?,?,?,?,?)",
+            ('transition-subject', 'FILLED', 'INFO', '{}', NOW.isoformat()))
+        conn.execute("INSERT INTO daily_evaluations(evaluation_id,trading_date_kst,ticker,provenance_json,canonical_input,canonical_input_hash,account_scope_hash,status,started_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ('evaluation-1', '2026-10-02', '005930', '[]', b'input', 'b'*64, ACCOUNT_HASH, 'STARTED', NOW.isoformat()))
+    svc = service(sources)
+    batch = svc.observe_alert_sources()
+    row = next(r for r in batch.facts if r.kind == 'transition_observations')
+    assert row.data['ticker'] == '005930'
+    assert row.data['event_family'] == 'BROKER_ORDER'
+    assert row.data['broker_subject_id'] == 'broker-1'
+    assert row.data['producer_event_code'] == 'STATE_RECOVERED'
+    assert any(r.kind == 'evaluations' for r in batch.facts)
+
+
 def service(sources):
     settings = WebSettings(operational_db_path=sources.operational_db,
         artifact_root=sources.artifact_root,
