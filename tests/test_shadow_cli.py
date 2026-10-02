@@ -32,8 +32,9 @@ def test_prepare_and_standalone_report_have_no_live_capabilities(monkeypatch,tmp
     assert len(load_shadow_manifest(path).snapshots)==3
     r=result(tmp_path);evidence=tmp_path/'result.json';evidence.write_text(canonical_json(r))
     out=tmp_path/'report.md';read=runner.invoke(report_app,['shadow',str(evidence),'--output',str(out)])
-    assert read.exit_code==0,read.output
-    assert read.output==out.read_text() and '수동 결정' in read.output
+    assert read.exit_code==2,read.output
+    assert 'SAVED_SHADOW_PROVENANCE_UNAVAILABLE' in read.output
+    assert not out.exists()
 
 
 def test_mocked_paid_run_and_partial_exit_preserve_artifacts(monkeypatch,tmp_path):
@@ -71,19 +72,25 @@ def test_partial_run_resume_and_intentional_retry_handlers(monkeypatch,tmp_path)
     from test_shadow_runner import Fake
     args,path=prepare_args(tmp_path);runner=CliRunner();assert runner.invoke(app,args).exit_code==0
     m=load_shadow_manifest(path);m=ShadowManifest.model_validate({**m.model_dump(),'limits':{**m.limits.model_dump(),'max_attempts':1},'spec_id':''});path.write_text(canonical_json(m))
-    monkeypatch.setattr(shadow_cli,'run_shadow',lambda m,j:run_shadow(m,j,provider_factory=lambda v,p:Fake([],status='MALFORMED')))
-    monkeypatch.setattr(shadow_cli,'resume_shadow',lambda m,j:resume_shadow(m,j,provider_factory=lambda v,p:Fake([])))
-    monkeypatch.setattr(shadow_cli,'request_shadow_retry',lambda m,j,a:request_shadow_retry(m,j,a,provider_factory=lambda v,p:Fake([])))
+    captured=[]
+    def capture(fn,m,j,*args,**kwargs):
+        execution=fn(m,j,*args,**kwargs);captured.append(execution);return execution
+    monkeypatch.setattr(shadow_cli,'run_shadow',lambda m,j:capture(run_shadow,m,j,provider_factory=lambda v,p:Fake([],status='MALFORMED')))
+    monkeypatch.setattr(shadow_cli,'resume_shadow',lambda m,j:capture(resume_shadow,m,j,provider_factory=lambda v,p:Fake([])))
+    monkeypatch.setattr(shadow_cli,'request_shadow_retry',lambda m,j,a:capture(request_shadow_retry,m,j,a,provider_factory=lambda v,p:Fake([])))
     journal=tmp_path/'s.sqlite';output=tmp_path/'partial.json'
     r=runner.invoke(app,['shadow','run',str(path),'--journal',str(journal),'--output',str(output)])
     assert r.exit_code==1 and output.exists(),r.output
-    from trading_bot.shadow_reporting import load_shadow_result
-    saved=load_shadow_result(output);attempt=saved.observations[0].attempt_id
+    from trading_bot.shadow_reporting import load_shadow_result,build_shadow_result,SavedShadowUnavailable
+    with pytest.raises(SavedShadowUnavailable):load_shadow_result(output)
+    catalog=build_shadow_result(captured[-1])._creation_proof_catalog
+    saved=load_shadow_result(output,proof_catalog=catalog);attempt=saved.observations[0].attempt_id
     for mode,extra in [('resume',[]),('retry',['--attempt',attempt])]:
         out=tmp_path/(mode+'.json')
         r=runner.invoke(app,['shadow',mode,str(path),'--journal',str(journal),'--output',str(out),*extra])
         assert r.exit_code==1 and out.exists(),r.output
-        assert load_shadow_result(out).observations[0]==saved.observations[0]
+        catalog=build_shadow_result(captured[-1])._creation_proof_catalog
+        assert load_shadow_result(out,proof_catalog=catalog).observations[0]==saved.observations[0]
 
 
 def test_foreign_journal_and_live_write_tripwires(monkeypatch,tmp_path):
@@ -113,4 +120,5 @@ def test_installed_bot_offline_prepare_and_report(tmp_path):
     assert p.returncode==0,p.stdout+p.stderr
     saved=result(tmp_path);evidence=tmp_path/'result.json';evidence.write_text(canonical_json(saved));out=tmp_path/'report.md'
     p=subprocess.run([str(executable),'report','shadow',str(evidence),'--output',str(out)],cwd=tmp_path,env=env,text=True,capture_output=True,timeout=30)
-    assert p.returncode==0 and out.read_text()==p.stdout,p.stdout+p.stderr
+    assert p.returncode==2 and 'SAVED_SHADOW_PROVENANCE_UNAVAILABLE' in p.stderr+p.stdout
+    assert not out.exists()

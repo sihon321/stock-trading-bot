@@ -42,7 +42,9 @@ def test_confidence_gate_and_risk_share_canonical_projection(tmp_path):
 
 def test_saved_result_recomputed_and_outputs_are_idempotent(tmp_path):
     r=result(tmp_path);path=tmp_path/'result.json'
-    write_shadow_result(r,path);assert load_shadow_result(path)==r
+    catalog=r._creation_proof_catalog
+    write_shadow_result(r,path);assert load_shadow_result(path,proof_catalog=catalog)==r
+    with pytest.raises(SavedShadowUnavailable):load_shadow_result(path)
     text=render_shadow_report(r);out=tmp_path/'report.md'
     assert write_shadow_report(text,out)==write_shadow_report(text,out)
     assert '수동 결정' in text and 'UNKNOWN' in text and 'HINDSIGHT' in text
@@ -85,3 +87,24 @@ def test_linked_changed_spec_retains_parent_identity(tmp_path):
     changed=prepare_shadow_manifest(b,[variant()],[pricing()],start=b.calendar[5].session,seed='different',parent_result=previous)
     assert changed.spec_id!=previous.manifest.spec_id
     assert changed.parent_spec_id==previous.manifest.spec_id and changed.parent_run_id==previous.run_id
+
+
+def test_saved_render_and_write_require_registered_provenance(tmp_path):
+    r=result(tmp_path)
+    detached=ShadowRunResult.model_validate(strict_json(canonical_json(r)))
+    for action in (lambda: render_shadow_report(detached),
+                   lambda: write_shadow_result(detached,tmp_path/'unsupported.json')):
+        with pytest.raises(SavedShadowUnavailable) as error:action()
+        assert error.value.status=='UNKNOWN'
+    assert not (tmp_path/'unsupported.json').exists()
+    assert render_shadow_report(detached,proof_catalog=r._creation_proof_catalog)==render_shadow_report(r)
+
+
+def test_saved_path_and_proof_bounds_are_enforced(tmp_path):
+    r=result(tmp_path);path=tmp_path/'saved.json';write_shadow_result(r,path)
+    alias=tmp_path/'linked';alias.symlink_to(tmp_path,target_is_directory=True)
+    with pytest.raises(ShadowInputError,match='UNSAFE'):
+        load_shadow_result(alias/'saved.json',proof_catalog=r._creation_proof_catalog)
+    with pytest.raises(ShadowInputError,match='TOO_LARGE'):
+        write_shadow_report('x'*(DOCUMENT_LIMIT+1),tmp_path/'huge.txt')
+    assert not (tmp_path/'huge.txt').exists()

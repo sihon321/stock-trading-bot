@@ -72,12 +72,16 @@ class OperatorSources:
     operational_db: Path
     artifact_root: Path
     account_hash: str = ACCOUNT_HASH
+    shadow_proof_catalog: object | None = None
 
     def probe_registry(self):
         return {"sources": [str(p) for p in self.paths.values()],
                 "writable_roots": [str(self.operational_db.parent), str(self.artifact_root)],
                 "paths": {k: str(v) for k, v in self.paths.items()},
-                "expected_ids": self.expected_ids}
+                "expected_ids": self.expected_ids,
+                "shadow_proofs": [{"spec_id": p.spec_id, "run_id": p.run_id,
+                    "expected_hash": p.expected_hash, "path": str(self.paths["shadow_proof"])}
+                    for p in self.shadow_proof_catalog.proofs] if self.shadow_proof_catalog else []}
 
 
 def capture_sources(sources):
@@ -178,6 +182,11 @@ def make_operator_sources(tmp_path, scenario="linked"):
         shadow = build_shadow_result(run_shadow(manifest(), operation / "fixture-shadow.db",
                                                 provider_factory=lambda v, p: Fake([])))
     write_shadow_result(shadow, paths["shadow"])
+    # Capture the creation proof separately; the expected hash belongs to the
+    # trusted fixture registry, never to an uploaded result/proof document.
+    paths["shadow_proof"] = evidence / 'shadow-proof.json'
+    catalog = shadow._creation_proof_catalog
+    paths["shadow_proof"].write_text(catalog.proofs[0].document_json, encoding='utf-8')
     resources = tuple(FixtureResource(k, paths["audit"] if k == "portfolio" else paths[k],
         k, ACCOUNT_HASH, "simulated" if k in {"replay", "backtest", "shadow"} else "mock")
         for k in ("audit", "portfolio", "soak", "controller", "replay", "backtest", "shadow"))
@@ -185,4 +194,4 @@ def make_operator_sources(tmp_path, scenario="linked"):
         {"snapshot": snapshot.snapshot_id, "run": "operator-run", "campaign": "operator-campaign",
          "freeze": "historic-freeze", "replay": replay.result_id,
          "backtest": backtest.result_id, "shadow": shadow.result_id},
-        operation / "operator.db", artifact)
+        operation / "operator.db", artifact, shadow_proof_catalog=catalog)

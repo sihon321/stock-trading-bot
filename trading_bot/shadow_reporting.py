@@ -1,32 +1,49 @@
 """Deterministic descriptive comparison; no model/policy promotion authority."""
 from __future__ import annotations
-from collections import Counter
+import os
+import tempfile
 from decimal import Decimal
 from .shadow_models import *
-from .shadow_store import validate_events
-from .backtest_engine import project_backtest_action
-from .backtest_reporting import _write_evidence_bytes, BacktestResult, build_backtest_result
+from .shadow_evidence import (
+    ShadowExecution, ShadowComparison, SavedShadowProof, RegisteredShadowProof,
+    SavedShadowProofCatalog, SavedShadowUnavailable, validate_events,
+    validate_saved_shadow_result, saved_metrics,
+)
+from .backtest_reporting import BacktestResult, build_backtest_result
 
 
-class ShadowComparison(Frozen):
-    unit_id: str
-    variant_id: str
-    attempt_id: str
-    status: str
-    valid_pair: bool
-    raw_agreement: bool | None = None
-    confidence_delta: float | None = None
-    baseline_action: str
-    shadow_action: str
-    baseline_quantity: int
-    shadow_quantity: int
-    gate_reason: str
-    risk_override: bool
-    baseline_risk_override: bool
-    exact_equal: bool = False
-
+def _write_evidence_bytes(payload,output):
+    """Same bounded no-overwrite writer, without importing the report CLI."""
+    try:
+        if len(payload)>DOCUMENT_LIMIT:raise ShadowInputError('RESULT_TOO_LARGE')
+        raw=Path(output)
+        if raw.name in {'','.','..'} or '..' in raw.parts:
+            raise ShadowInputError('INVALID_OUTPUT_PATH')
+        if any(p.is_symlink() for p in (raw,*raw.parents)):
+            raise ShadowInputError('UNSAFE_OUTPUT')
+        raw.parent.mkdir(parents=True,exist_ok=True)
+        root=raw.parent.resolve(strict=True);target=root/raw.name
+        if target.is_symlink():raise ShadowInputError('UNSAFE_OUTPUT')
+        if target.exists():
+            if not target.is_file() or target.stat().st_size>DOCUMENT_LIMIT or target.read_bytes()!=payload:
+                raise ShadowInputError('OUTPUT_CONFLICT')
+            return target
+        temporary=None
+        try:
+            with tempfile.NamedTemporaryFile(dir=root,prefix='.shadow-',delete=False) as handle:
+                temporary=Path(handle.name);handle.write(payload);handle.flush();os.fsync(handle.fileno())
+            try:os.link(temporary,target)
+            except FileExistsError:
+                if target.is_symlink() or not target.is_file() or target.stat().st_size>DOCUMENT_LIMIT or target.read_bytes()!=payload:
+                    raise ShadowInputError('OUTPUT_CONFLICT')
+        finally:
+            if temporary:temporary.unlink(missing_ok=True)
+        return target
+    except ShadowInputError:raise
+    except (OSError,ValueError):raise ShadowInputError('INVALID_OUTPUT_PATH') from None
 
 def compare_shadow_action(snapshot,observation):
+    from .backtest_engine import project_backtest_action
     base=None
     try:base=strict_trade_signal(snapshot.fixture_raw)
     except ValueError:pass
@@ -37,31 +54,15 @@ def compare_shadow_action(snapshot,observation):
 
 
 def _metrics(manifest,observations,attempts):
-    units={s.unit_id:s for s in manifest.snapshots}; comparisons=[];latest={}
-    for o in observations:
-        c=compare_shadow_action(units[o.unit_id],o);comparisons.append(c.model_dump(mode='json'))
-        latest[(o.unit_id,o.variant_id,o.repetition)]=(o,c)
-    variants=[]
-    for v in manifest.variants:
-        obs=[o for o in observations if o.variant_id==v.variant_id]
-        paired=[(o,c) for (u,vid,r),(o,c) in latest.items() if vid==v.variant_id]
-        valid=[(o,c) for o,c in paired if c.valid_pair]
-        counts=dict(sorted(Counter(o.status for o in obs).items()))
-        matrix=Counter()
-        for o,c in valid:matrix[strict_trade_signal(units[o.unit_id].fixture_raw).decision.value+'->'+strict_trade_signal(o.raw_output).decision.value]+=1
-        requested=len(manifest.snapshots)*manifest.limits.repetitions
-        eligible=sum(s.eligible for s in manifest.snapshots)*manifest.limits.repetitions
-        logical=sum(1 for _,vid,_ in latest if vid==v.variant_id)
-        known=[o for o in obs if o.usage.known];charges=[a['charge'] for a in attempts.values() if a['variant_id']==v.variant_id]
-        estimated=[Decimal(c['estimated_cost_usd']) for c in charges if c.get('estimated_cost_usd') is not None]
-        variants.append({'variant_id':v.variant_id,'provider':v.provider,'requested_model':v.model,'returned_models':sorted({o.returned_model for o in obs if o.returned_model}),'unknown_returned_model_attempts':sum(o.returned_model is None for o in obs),'requested':requested,'eligible':eligible,'excluded':requested-eligible,'not_dispatched':eligible-logical,'attempted':len(obs),'finalized':len(obs),'retry_attempts':sum(o.retry_of is not None for o in obs),'unknown_outcome':counts.get('TIMEOUT_UNKNOWN',0),'outcomes':counts,'valid_pairs':len(valid),'agreement_numerator':sum(c.raw_agreement for o,c in valid),'agreement_denominator':len(valid),'matrix':dict(sorted(matrix.items())),'failure_numerator':sum(o.status!='SUCCESS' for o in obs),'failure_denominator':len(obs),'confidence_mean_delta':sum(c.confidence_delta for o,c in valid)/len(valid) if valid else None,'action_changes':sum(c.shadow_action!=c.baseline_action for o,c in paired),'quantity_changes':sum(c.shadow_quantity!=c.baseline_quantity for o,c in paired),'risk_changes':sum(c.risk_override!=c.baseline_risk_override for o,c in paired),'rare_baseline_risk_pairs':sum(c.baseline_risk_override for o,c in valid),'known_actual_tokens':sum(o.usage.total_tokens for o in known),'unknown_usage_attempts':len(obs)-len(known),'estimated_known_subtotal_usd':str(sum(estimated,Decimal(0))),'estimated_cost_usd':str(sum(estimated,Decimal(0))) if len(estimated)==len(obs) and obs else None,'charged_tokens':sum(c['charged_tokens'] for c in charges),'consumed_plus_retained_usd':str(sum((Decimal(c['charged_cost_usd']) for c in charges),Decimal(0))),'retained_reservations':sum(c['retained_reservation'] for c in charges),'actual_billed_cost':str(sum((o.usage.billed_cost for o in obs),Decimal(0))) if obs and all(o.usage.billed_cost is not None and o.usage.billed_currency==obs[0].usage.billed_currency for o in obs) else None,'actual_billed_currency':obs[0].usage.billed_currency if obs and all(o.usage.billed_cost is not None and o.usage.billed_currency==obs[0].usage.billed_currency for o in obs) else None,'native_estimates':[{'amount':c.get('estimated_cost_native'),'currency':c.get('pricing_currency'),'usd_per_native':c.get('usd_per_native')} for c in charges],'bill_facts':[{'amount':str(o.usage.billed_cost),'currency':o.usage.billed_currency,'reference':o.usage.billing_reference} for o in obs if o.usage.billed_cost is not None],'judgment':'NO_MEANINGFUL_DIFFERENCE' if len(valid)==eligible and eligible>0 and all(c.exact_equal for o,c in valid) else 'INSUFFICIENT_EVIDENCE'})
-    return {'variants':variants,'comparisons':comparisons,'attempted':len(observations),'requested':sum(v['requested'] for v in variants),'not_dispatched':sum(v['not_dispatched'] for v in variants),'valid_pairs':sum(v['valid_pairs'] for v in variants),'coverage':strict_json(manifest.coverage_json),'judgment_rule':'Exact signal including confidence/reason and projected action/quantity/risk equality for every eligible paired observation; consistency only.','promotion_authority':False,'alternative_portfolio_pnl':None}
+    units={s.unit_id:s for s in manifest.snapshots}
+    comparisons=tuple(compare_shadow_action(units[o.unit_id],o) for o in observations)
+    return saved_metrics(manifest,observations,attempts,comparisons)
 
 
 def build_shadow_result(execution):
     manifest=ShadowManifest.model_validate(execution.manifest.model_dump())
     from .shadow_inputs import validate_shadow_preparation
-    validate_shadow_preparation(manifest)
+    inventory=validate_shadow_preparation(manifest,return_inventory=True)
     baseline=BacktestResult.model_validate(strict_json(manifest.baseline_document_json))
     if build_backtest_result(baseline.run)!=baseline:raise ShadowInputError('INVALID_CANONICAL_BASELINE')
     # Final saved evidence retains all random outputs; recompute derived facts offline.
@@ -75,24 +76,43 @@ def build_shadow_result(execution):
     metrics=_metrics(manifest,execution.observations,attempts)
     if any(a['charge']['breach'] for a in attempts.values()) and execution.status!='ACCOUNTING_BREACH':raise ShadowInputError('INVALID_BREACH_STATUS')
     if execution.status=='COMPLETE' and (metrics['not_dispatched'] or not manifest.snapshots or any(o.status=='TIMEOUT_UNKNOWN' for o in execution.observations)): raise ShadowInputError('FALSE_COMPLETE_STATUS')
-    return ShadowRunResult(stop_reason=getattr(execution,'stop_reason',None),manifest=manifest,run_id=execution.run_id,status=execution.status,observations=tuple(execution.observations),events_document_json=canonical_json(list(execution.events)),metrics_document_json=canonical_json(metrics))
+    result=ShadowRunResult(stop_reason=getattr(execution,'stop_reason',None),manifest=manifest,run_id=execution.run_id,status=execution.status,observations=tuple(execution.observations),events_document_json=canonical_json(list(execution.events)),metrics_document_json=canonical_json(metrics))
+
+    # This non-serialized creation proof is attached only after strict preparation
+    # and canonical action projection. Saved JSON alone never recreates it.
+    proof=SavedShadowProof(spec_id=manifest.spec_id,run_id=result.run_id,
+        baseline_hash=manifest.baseline_hash,bundle_hash=manifest.bundle_hash,
+        source_hashes=manifest.source_hashes,
+        news_hash=shadow_content_hash(strict_json(manifest.news_document_json)),
+        code_revision=manifest.code_revision,code_content_hash=manifest.code_content_hash,
+        inventory=inventory,
+        comparisons=tuple(ShadowComparison.model_validate(c) for c in metrics['comparisons']),
+        events_hash=shadow_content_hash(strict_json(result.events_document_json)),
+        observations_hash=shadow_content_hash([o.model_dump(mode='json') for o in result.observations]))
+    catalog=SavedShadowProofCatalog((RegisteredShadowProof(spec_id=manifest.spec_id,
+        run_id=result.run_id,expected_hash=shadow_content_hash(proof),document_json=canonical_json(proof)),))
+    object.__setattr__(result,'_creation_proof_catalog',catalog)
+    return result
 
 
-def _checked_result(result):
-    from .shadow_runner import ShadowExecution
-    checked=build_shadow_result(ShadowExecution(result.manifest,result.run_id,result.status,result.observations,tuple(strict_json(result.events_document_json)),result.stop_reason))
-    if checked!=result:raise ShadowInputError('RESULT_METRICS_OR_HASH_MISMATCH')
-    return checked
+def _checked_result(result,proof_catalog=None):
+    catalog=proof_catalog if proof_catalog is not None else getattr(result,'_creation_proof_catalog',None)
+    checked=validate_saved_shadow_result(result,catalog)
+    if isinstance(checked,SavedShadowUnavailable):raise checked
+    return checked.result
 
 
-def load_shadow_result(path):
-    try:return _checked_result(ShadowRunResult.model_validate(read_shadow_json(path)))
+def load_shadow_result(path,*,proof_catalog=None):
+    try:
+        if any(p.is_symlink() for p in (Path(path),*Path(path).parents)):
+            raise ShadowInputError('UNSAFE_SHADOW_RESULT_PATH')
+        return _checked_result(ShadowRunResult.model_validate(read_shadow_json(path)),proof_catalog)
     except ShadowInputError:raise
     except (ValueError,TypeError,KeyError):raise ShadowInputError('INVALID_SHADOW_RESULT') from None
 
 
-def write_shadow_result(result,output):
-    _checked_result(result)
+def write_shadow_result(result,output,*,proof_catalog=None):
+    _checked_result(result,proof_catalog)
     payload=(canonical_json(result)+'\n').encode('utf-8')
     if len(payload)>DOCUMENT_LIMIT:raise ShadowInputError('RESULT_TOO_LARGE')
     return _write_evidence_bytes(payload,output)
@@ -108,8 +128,8 @@ def _safe_text(text):
     return ''.join(c for c in text if c in '\n\t' or ord(c)>=32 and ord(c)!=127 and not '\u0080'<=c<='\u009f')
 
 
-def render_shadow_report(result):
-    _checked_result(result);m=strict_json(result.metrics_document_json);coverage=m['coverage']
+def render_shadow_report(result,*,proof_catalog=None):
+    _checked_result(result,proof_catalog);m=strict_json(result.metrics_document_json);coverage=m['coverage']
     lines=['# 과거 LLM Shadow 비교 보고서','',f'상태: {result.status}',f'중단 사유: {result.stop_reason or "상태 및 결과별 사유 참조"}',f'실행: {result.run_id}',f'명세: {result.manifest.spec_id}',f'연결된 이전 명세/실행: {result.manifest.parent_spec_id or "없음"} / {result.manifest.parent_run_id or "없음"}',f'기준 결과: {result.manifest.baseline_hash}',f'코드: {result.manifest.code_revision} / {result.manifest.code_content_hash}','',f'요청 {m["requested"]}, 호출 의도/완료 관측 {m["attempted"]}, 미호출 {m["not_dispatched"]}, 유효 비교 쌍 {m["valid_pairs"]}.','', '비교 입력은 기준 포트폴리오의 의사결정 직전 모의 상태입니다. 다른 전략의 후속 보유 수량이나 수익률을 계산하지 않습니다.', '일치율은 일관성 지표이며 정확도·수익성·신뢰도 보정·운영 준비 상태를 증명하지 않습니다.', '현재 모델이 과거 이후 정보를 학습했을 수 있습니다 (CURRENT_MODEL_HINDSIGHT_CONTAMINATION). 시간 제한 입력만으로 이 오염을 제거할 수 없습니다.', '모델·프롬프트·정책 채택은 별도 수동 결정입니다. 자동 승자 선정이나 실거래 승격 권한은 없습니다. Phase 9/10/11 운영 게이트가 계속 적용됩니다.','',f'관측/적격/선택/제외: {coverage.get("observed_units","UNKNOWN")} / {coverage.get("eligible_units","UNKNOWN")} / {coverage.get("selected_units","UNKNOWN")} / {coverage.get("excluded_units","UNKNOWN")}',f'뉴스 부재: {coverage.get("missing_news_units","UNKNOWN")}',f'빠진 결정 층: {canonical_json(coverage.get("missing_decision_strata",[]))}',f'층별 표본: {canonical_json(coverage.get("strata",{}))}',f'빠진 보유/위험/기간 층: {canonical_json([coverage.get("missing_position_strata",[]),coverage.get("missing_risk_strata",[]),coverage.get("missing_period_buckets",[])])}',f'제외 사유: {canonical_json(coverage.get("exclusions",[]))}',f'기준 데이터·워밍업 한계: {canonical_json(coverage.get("baseline_limitations",[]))}','']
     for v in m['variants']:
         lines.extend([f'## {v["provider"]} / {v["requested_model"]}',f'변형: {v["variant_id"]}',f'반환 모델: {", ".join(v["returned_models"]) or "UNKNOWN"}; 알 수 없음 {v["unknown_returned_model_attempts"]}회',f'요청 {v["requested"]}, 적격 {v["eligible"]}, 제외 {v["excluded"]}, 미호출 {v["not_dispatched"]}, 호출 의도 {v["attempted"]}, 명시적 재시도 {v["retry_attempts"]}',f'원시 결정 일치: {v["agreement_numerator"]}/{v["agreement_denominator"]} (유효 쌍 기준)',f'실패: {v["failure_numerator"]}/{v["failure_denominator"]} (호출 의도 기준); 결과 {canonical_json(v["outcomes"])}',f'결정 행렬: {canonical_json(v["matrix"])}',f'신뢰도 평균 차이: {v["confidence_mean_delta"] if v["confidence_mean_delta"] is not None else "UNKNOWN"}; 가상 행동/수량/위험 변경 {v["action_changes"]}/{v["quantity_changes"]}/{v["risk_changes"]}',f'실제 보고된 토큰: 알려진 부분 {v["known_actual_tokens"]}; 사용량 UNKNOWN {v["unknown_usage_attempts"]}회',f'요금표 추정 비용 (ESTIMATED): {v["estimated_cost_usd"] if v["estimated_cost_usd"] is not None else "UNKNOWN"} USD; 알려진 부분 {v["estimated_known_subtotal_usd"]} USD',f'소비+유지 예약: {v["consumed_plus_retained_usd"]} USD / {v["charged_tokens"]} 토큰; 유지 예약 {v["retained_reservations"]}회',f'실제 청구 합계: {v["actual_billed_cost"] or "UNKNOWN"} {v["actual_billed_currency"] or ""} (요금표 추정은 청구서 증거가 아닙니다)',f'원통화 추정/환율: {canonical_json(v["native_estimates"])}',f'개별 청구 근거: {canonical_json(v["bill_facts"])}',f'판정: {v["judgment"]}',''])

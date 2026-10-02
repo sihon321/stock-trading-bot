@@ -57,7 +57,7 @@ def test_saved_reports_validate_original_identities(tmp_path):
     before = capture_sources(sources)
     assert load_replay_results((sources.paths["replay"],))[0].stable_result_id == sources.expected_ids["replay"]
     assert load_backtest_result(sources.paths["backtest"]).result_id == sources.expected_ids["backtest"]
-    assert load_shadow_result(sources.paths["shadow"]).result_id == sources.expected_ids["shadow"]
+    assert load_shadow_result(sources.paths["shadow"],proof_catalog=sources.shadow_proof_catalog).result_id == sources.expected_ids["shadow"]
     assert before == capture_sources(sources)
 
 

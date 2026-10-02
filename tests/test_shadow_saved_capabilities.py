@@ -31,6 +31,9 @@ def saved_action(registry):
     except ShadowInputError:
         assert registry.get('malformed')
         verdict = 'REJECTED'
+    except RuntimeError as error:
+        import traceback
+        raise AssertionError(traceback.format_exc()) from error
     assert not any(n.startswith(('trading_bot.shadow_store', 'trading_bot.shadow_runner',
         'trading_bot.shadow_inputs', 'trading_bot.backtest_engine', 'trading_bot.execution',
         'trading_bot.config', 'trading_bot.portfolio', 'trading_bot.kis_', 'openai', 'anthropic'))
@@ -69,6 +72,7 @@ def test_fresh_saved_load_render_write_with_registered_proof(tmp_path):
         'expected_spec': entry.spec_id, 'expected_run': entry.run_id, 'proof_hash': entry.expected_hash}
     assert probe(registry) == 'VERIFIED'
     assert {p: p.read_bytes() for p in before} == before
+    assert (output / 'copy.json').read_text() == canonical_json(saved) + '\n'
 
 
 def test_fresh_unsupported_and_malformed_saved_evidence_never_evaluate(tmp_path):
