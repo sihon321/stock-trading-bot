@@ -248,7 +248,7 @@ Plans:
 | 11. KIS Portfolio Synchronization & Intraday Exit Management | v1.2 | 9/9 | Complete   | 2026-09-04 |
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
-| 14. Operator Web UI, Dashboard & Alerting | v1.3 | 2/14 | In Progress|  |
+| 14. Operator Web UI, Dashboard & Alerting | v1.3 | 5/14 | In Progress|  |
 | 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
 
@@ -424,7 +424,7 @@ Plans:
   4. Alerts are severity-based, deduplicated, evidence-linked, and cover failed/stale workers, unresolved orders, safety latches, and broker divergence.
   5. The web process has no KIS order, live LLM execution, policy-write, secret-display, real-mode activation, or safety-gate waiver capability; local/private exposure is the secure default.
 
-**Plans:** 2/14 plans executed
+**Plans:** 5/14 plans executed
 
 Plans:
 **Wave 1**
@@ -434,9 +434,9 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 14-02-PLAN.md
-- [ ] 14-04-PLAN.md
-- [ ] 14-13-PLAN.md
+- [x] 14-02-PLAN.md
+- [x] 14-04-PLAN.md
+- [x] 14-13-PLAN.md
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
