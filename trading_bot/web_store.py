@@ -241,7 +241,8 @@ class WebStore:
         return tuple(hashlib.sha256(value.encode()).hexdigest() for value in
                      ('account:' + username, 'source:' + source_address))
 
-    def login_attempt(self, username: str, source_address: str, at: datetime, verify) -> str:
+    def login_attempt(self, username: str, source_address: str, at: datetime, verify,
+                      *, session_reference_hash: str | None = None) -> str:
         """Serialize lock check+verification+failure update across processes."""
         now = timestamp(at)
         keys = self.throttle_keys(username, source_address)
@@ -250,15 +251,24 @@ class WebStore:
             rows = [conn.execute('SELECT failures FROM web_login_throttle WHERE bucket_hash=?', (key,)).fetchone() for key in keys]
             if any(row is not None and row[0] >= 5 for row in rows):
                 return 'AUTH_FAILED'
+            count = conn.execute('SELECT COUNT(*) FROM web_login_throttle').fetchone()[0]
+            if count + sum(row is None for row in rows) > 2048:
+                return 'AUTH_FAILED'
             operator = conn.execute('SELECT username,password_hash FROM web_operator WHERE singleton=1').fetchone()
             correct = verify(None if operator is None else Operator(*operator))
             if correct:
+                if session_reference_hash is not None:
+                    if not re.fullmatch(r'[a-f0-9]{64}', session_reference_hash):
+                        raise ValueError('invalid session reference')
+                    conn.execute('INSERT INTO web_sessions VALUES(?,?,?,?,NULL)',
+                                 (session_reference_hash, operator[0], now, now + 43200))
+                    self._append_action(conn, operator[0], 'LOGIN', 'SUCCESS', None, at, {})
                 return 'SUCCESS'
             # Bound adversarial cardinality; new identities fail closed at capacity.
-            count = conn.execute('SELECT COUNT(*) FROM web_login_throttle').fetchone()[0]
             if count + sum(row is None for row in rows) <= 2048:
                 for key in keys:
                     conn.execute('INSERT INTO web_login_throttle VALUES(?,?,1) ON CONFLICT(bucket_hash) DO UPDATE SET failures=MIN(5,failures+1)', (key, now))
             else:
                 return 'AUTH_FAILED'
+            self._append_action(conn, 'anonymous', 'LOGIN', 'AUTH_FAILED', None, at, {})
             return 'AUTH_FAILED'
