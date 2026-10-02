@@ -7,9 +7,10 @@ import json
 import sqlite3
 import ipaddress
 import secrets
+import re
 from urllib.parse import urlsplit, parse_qsl, urlencode, quote
 
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, session
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session
 from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.exceptions import HTTPException
 
@@ -155,6 +156,9 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         WTF_CSRF_SSL_STRICT=False)
     store = WebStore(settings)
     auth = WebAuth(store, clock=clock)
+    if report_service is None:
+        from .web_reports import SavedReportService
+        report_service = SavedReportService(settings, store=store, clock=clock)
     app.extensions.update(web_settings=settings, web_store=store, web_auth=auth,
         evidence_service=evidence_service or OperatorEvidenceService(settings, clock=clock), report_service=report_service, alert_store=alert_store,
         operator_clock=clock, operator_view_builders={})
@@ -535,6 +539,139 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     app.extensions.update(operator_query_context=query_context, operator_contextual_url=contextual_url,
         operator_source_presentation=source_presentation, operator_present_record=present_record,
         operator_observer_status=observer_status)
+
+    validation_names = dict(replay='Replay', backtest='백테스트', shadow='LLM Shadow',
+        soak='모의투자 Soak', calibration='위험 보정', readiness='준비도')
+
+    def action_audit(action, code, resource_id=None):
+        store.append_action(actor=g.operator_session.actor, action=action, result_code=code,
+            resource_id=resource_id, at=clock())
+
+    def common_view(title, path, view_id=None, **values):
+        return dict(title=title, current_path=path, view_id=view_id,
+            operator_name=g.operator_session.actor, csrf_token=generate_csrf(),
+            expires_at=g.operator_session.expires_at.isoformat(),
+            critical_count='UNKNOWN', params={}, source=dict(queried_at=kst_time(clock())),
+            scope='저장 증거 · 실행 권한 없음', **values)
+
+    def saved_response(template, common, api=False):
+        html = render_template(template, **common)
+        if not api:
+            return html
+        sources = common.get('sources', [common['source']])
+        module = app.jinja_env.get_template('operator/macros.html').module
+        return dict(view_id=common['view_id'], rendered_html=html,
+            status_html=''.join(str(module.source_metadata(s)) for s in sources), sources=sources,
+            queried_at=kst_time(clock()), source_observed_at=sources[0].get('observed_at', 'UNKNOWN') if sources else 'UNKNOWN',
+            query_status=common.get('query_status', 'SUCCESS'), selection_id=common.get('selection_id'),
+            expires_at=g.operator_session.expires_at.isoformat(), login_url='/login')
+
+    def catalog():
+        return app.extensions['report_service'].catalog()
+
+    def validation_view(family, result_id=None, api=False):
+        from .web_reports import ReportRequest
+        if family not in validation_names:
+            abort(404)
+        if set(request.args) - {'resource_id', 'metric_id', 'record_id', 'result_id'} or any(
+                len(v) > 512 or len(request.args.getlist(k)) != 1 for k,v in request.args.items()):
+            abort(400)
+        entry = next(e for e in catalog() if e.family == family)
+        resource_id = request.args.get('resource_id') or next(iter(entry.resource_ids), None)
+        path = '/validation/' + family + ('/' + quote(result_id, safe='') if result_id else '')
+        common = common_view(validation_names[family], path, 'validation-' + family,
+            family=family, entries=entry.resource_ids, projection=None, selected_rows=(), metric=None,
+            result_id=result_id or request.args.get('result_id'), resource_id=resource_id)
+        common['params'] = dict(request.args)
+        if resource_id is None:
+            common.update(diagnostic='NO_REGISTERED_SOURCE', selection_id='UNKNOWN')
+        else:
+            try:
+                projection = app.extensions['report_service'].project(ReportRequest(family=family,
+                    resource_id=resource_id, result_id=common['result_id']))
+                rows = projection.rows
+                metric_id = request.args.get('metric_id')
+                if metric_id:
+                    rows = projection.metric_detail(metric_id)
+                    common['metric'] = next(m for m in projection.metrics if m.metric_id == metric_id)
+                if request.args.get('record_id'):
+                    rows = tuple(r for r in rows if r.record_id == request.args['record_id'])
+                    if not rows:
+                        abort(404)
+                if len(rows) > settings.export_rows:
+                    abort(400)
+                common.update(projection=projection, selected_rows=rows,
+                    source=source_presentation(projection.envelope, common['result_id']),
+                    selection_id=projection.selection.selection_id, diagnostic=None)
+                common['link'] = lambda **params: path + '?' + urlencode(dict(resource_id=resource_id,
+                    **({'result_id':common['result_id']} if common['result_id'] and not result_id else {}), **params))
+            except (ValueError, KeyError, StopIteration):
+                abort(400)
+        return saved_response('operator/validation.html', common, api)
+
+    app.add_url_rule('/validation/<family>', 'operator_validation', validation_view)
+    app.add_url_rule('/validation/<family>/<result_id>', 'operator_validation_result', validation_view)
+    for family in validation_names:
+        app.extensions['operator_view_builders']['validation-' + family] = (
+            lambda api=False, selected=family: validation_view(selected, request.args.get('result_id'), api))
+
+    def reports_view(api=False, artifact=None, error=None):
+        common = common_view('보고서', '/reports', 'reports', catalog=catalog(), artifact=artifact,
+            error=error, generated_at=kst_time(artifact.generated_at) if artifact else None,
+            today=clock().astimezone(KST).date().isoformat())
+        return saved_response('operator/reports.html', common, api)
+
+    app.add_url_rule('/reports', 'operator_reports', reports_view)
+    app.extensions['operator_view_builders']['reports'] = reports_view
+
+    @app.post('/reports/generate')
+    def generate_report():
+        from .web_reports import ReportRequest, ReportGenerationError
+        allowed = {'csrf_token','family','resource_id','result_id','start','end','format'}
+        try:
+            if set(request.form) - allowed or any(len(request.form.getlist(k)) != 1 for k in request.form):
+                raise ValueError()
+            values = {k:v for k,v in request.form.items() if k not in {'csrf_token','format'} and v}
+            if request.form.get('format') and request.form['format'] != 'all':
+                values['formats'] = (request.form['format'],)
+            report_request = ReportRequest.model_validate(values)
+            settings.resource(report_request.resource_id)
+            if report_request.resource_id not in next(e.resource_ids for e in catalog() if e.family == report_request.family):
+                raise ValueError()
+        except (ValueError, StopIteration):
+            action_audit('REPORT_GENERATE', 'INVALID_REQUEST')
+            return reports_view(error=FORM_ERROR), 400
+        try:
+            artifact = app.extensions['report_service'].generate_report(report_request, actor=g.operator_session.actor)
+        except (ValueError, OSError, sqlite3.Error):
+            return reports_view(error='보고서를 생성하지 못했습니다. 원천 상태와 선택 범위를 확인한 뒤 다시 시도하세요.'), 400
+        return reports_view(artifact=artifact)
+
+    def owned_artifact(artifact_id, format=None, download=False):
+        try:
+            if not re.fullmatch(r'[a-f0-9]{64}', artifact_id) or request.args or (download and format not in {'txt','json','csv'}):
+                raise ValueError()
+            owned = app.extensions['report_service'].load_owned_artifact(artifact_id, actor=g.operator_session.actor)
+            settings.resource(owned.resource_id)
+            if format is not None and owned.format != format:
+                raise ValueError()
+        except (ValueError, OSError, sqlite3.Error):
+            action_audit('REPORT_DOWNLOAD', 'NOT_FOUND')
+            abort(404)
+        if not download:
+            return render_template('operator/reports.html', **common_view('보고서', '/reports',
+                catalog=catalog(), artifact=None, owned=owned, today=clock().astimezone(KST).date().isoformat()))
+        if len(owned.data) > min(settings.export_bytes, 10*1024*1024):
+            abort(413)
+        action_audit('REPORT_DOWNLOAD', 'SUCCEEDED', owned.resource_id)
+        response = Response(owned.data, content_type={'txt':'text/plain; charset=utf-8',
+            'json':'application/json; charset=utf-8', 'csv':'text/csv; charset=utf-8'}[owned.format])
+        response.headers['Content-Disposition'] = f'attachment; filename="report-{artifact_id}.{owned.format}"'
+        return response
+
+    app.add_url_rule('/reports/<artifact_id>', 'operator_artifact', owned_artifact)
+    app.add_url_rule('/downloads/<artifact_id>/<format>', 'operator_download',
+        lambda artifact_id, format: owned_artifact(artifact_id, format, True))
 
     app.wsgi_app = FixedProxyBoundary(app.wsgi_app, settings)
     return app
