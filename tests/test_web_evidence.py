@@ -164,3 +164,72 @@ def test_unresolved_positive_same_subject_terminal_release(tmp_path):
         conn.execute("INSERT INTO soak_comparisons(comparison_id,campaign_id,run_id,snapshot_id,ticker,order_intent_id,verdict,remaining_order_terminal,detail_json,observed_at) VALUES ('terminal','operator-campaign','historic-run','proof','000660','historic-intent','MATCHED',1,'{}',?)", (NOW.isoformat(),))
         conn.execute("INSERT INTO soak_ticker_freezes(campaign_id,freeze_id,ticker,order_intent_id,freeze_kind,state,prior_transition_id,release_evidence_type,release_evidence_id,detail_json,observed_at) VALUES ('operator-campaign','historic-freeze','000660','historic-intent','AMBIGUITY','RELEASED',1,'COMPARISON','terminal','{}',?)", (NOW.isoformat(),))
     assert not any(r.data.get('freeze_id') == 'historic-freeze' for r in svc.overview(scope()).unresolved)
+
+
+def running_worker(sources, *, cadence=60, lifecycle='RUNNING'):
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        # Production iterations use their own cycle ID, not the outer snapshot cycle.
+        conn.execute("UPDATE watch_iterations SET cycle_id='iteration-only'")
+        conn.execute("UPDATE watch_observations SET detail_json=?", ('{"cadence_seconds":'+str(cadence)+'}' if cadence else '{}',))
+        conn.execute("INSERT INTO transition_states(state_identity,account_scope_hash,ticker,event_family,broker_subject_id,state_code,occurrence_count,first_observed_at,last_observed_at,duration_seconds,active,severity) VALUES ('worker-lifecycle',?,NULL,'INTRADAY_LIFECYCLE','operator-run',?,1,?,?,0,1,'INFO')", (ACCOUNT_HASH, lifecycle, NOW.isoformat(), NOW.isoformat()))
+        conn.execute("INSERT INTO mutation_leases(account_scope_hash,owner_token,state,pid,command,started_at,heartbeat_at,cycle_id) VALUES (?,'never-export-owner-secret','ACTIVE',1,'intraday-watch',?,?,'operator-run')", (ACCOUNT_HASH, (NOW-timedelta(hours=2)).isoformat(), (NOW-timedelta(hours=1)).isoformat()))
+
+
+def test_worker_watch_snapshot_join_and_freshness_strict_boundary(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    running_worker(sources)
+    svc = service(sources)
+    sources.clock.advance(seconds=180)
+    worker = svc.overview(scope()).workers[0]
+    assert worker.snapshot_id == 'operator-snapshot'
+    assert worker.expected_running is True and worker.state == 'RUNNING'
+    assert worker.envelope.freshness == 'FRESH'
+    assert worker.envelope.age_seconds == 180
+    assert worker.lease_observed_at == NOW - timedelta(hours=1)
+    assert 'operator-run' in worker.source_ids and 'operator-watch' in worker.source_ids
+    sources.clock.advance(microseconds=1)
+    assert svc.overview(scope()).workers[0].envelope.freshness == 'STALE'
+
+
+@pytest.mark.parametrize('lifecycle,cadence,expected,state', [
+    ('RUNNING', None, True, 'RUNNING'), ('STOPPED', 60, False, 'STOPPED'),
+    ('FAILED', 60, False, 'FAILED')])
+def test_worker_freshness_no_cadence_stopped_failed(tmp_path, lifecycle, cadence, expected, state):
+    sources = make_operator_sources(tmp_path)
+    running_worker(sources, cadence=cadence, lifecycle=lifecycle)
+    sources.clock.advance(days=2)
+    worker = service(sources).overview(scope()).workers[0]
+    assert worker.state == state and worker.expected_running is expected
+    assert worker.envelope.freshness == ('NOT_EXPECTED' if state == 'STOPPED' else 'UNKNOWN')
+    assert worker.envelope.source_observed_at == NOW
+
+
+def test_worker_no_lifecycle_record_is_unknown(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    worker = svc.overview(scope()).workers[0]
+    assert worker.expected_running is None
+    assert worker.envelope.freshness == 'UNKNOWN'
+    assert worker.envelope.age_seconds == 0
+
+
+def test_transition_alert_sources_order_cursor_and_no_source_writes(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    running_worker(sources)
+    before = capture_sources(sources)
+    svc = service(sources)
+    batch = svc.observe_alert_sources()
+    assert batch.cursor and batch.facts and batch.workers
+    assert any(row.kind == 'freezes' and row.data['ticker'] == '000660' for row in batch.facts)
+    assert any(row.kind == 'transitions' for row in batch.facts)
+    assert 'never-export-owner-secret' not in repr(batch)
+    next_batch = svc.observe_alert_sources(batch.cursor)
+    assert next_batch.facts == ()
+    assert capture_sources(sources) == before
+    statuses = svc.source_status()
+    assert len(statuses) == len(sources.resources)
+    portfolio = next(s for s in statuses if s.resource_id == 'portfolio')
+    assert portfolio.query_status == 'OK'
+    assert portfolio.source_observed_at == NOW
+    sources.clock.advance(hours=1)
+    assert next(s for s in svc.source_status() if s.resource_id == 'portfolio').source_observed_at == NOW
