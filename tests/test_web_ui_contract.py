@@ -61,7 +61,7 @@ def test_navigation_all_routes_and_current_marker(path):
     assert [x["href"] for x in nav.select('[aria-current="page"]')] == [path]
     disclosure = page.select_one("details.navigation-disclosure")
     assert disclosure.summary["aria-controls"] == nav["id"]
-    assert disclosure.summary["aria-expanded"] == "true"
+    assert "aria-expanded" not in disclosure.summary.attrs  # Native details owns no-JS expanded state.
     assert disclosure.has_attr("open")  # native disclosure works without JavaScript
 
 
@@ -223,6 +223,7 @@ def test_responsive_focus_numeric_scroll_and_motion_contract():
                  "overflow-x: auto", ":focus-visible", "outline: 2px solid var(--accent)",
                  "outline-offset: 4px", "scroll-margin", "scroll-padding",
                  "overflow-wrap: anywhere", "text-decoration: underline",
+                 "min-width: var(--target-min)",
                  "transition: none", "animation: none"):
         assert fact in css
     assert re.search(r"\.routine-table\s*\{\s*display:\s*none", css)

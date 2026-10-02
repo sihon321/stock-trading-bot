@@ -1,6 +1,13 @@
 /* Progressive saved evidence reads. All authority stays in guarded server routes. */
 (() => {
   'use strict';
+  const navigation = document.querySelector('.navigation-disclosure');
+  if (navigation) {
+    const summary = navigation.querySelector('summary');
+    const synchronizeNavigation = () => summary.setAttribute('aria-expanded', String(navigation.open));
+    navigation.addEventListener('toggle', synchronizeNavigation);
+    synchronizeNavigation();
+  }
   const view = document.body.dataset.operatorView;
   const url = new URL(view ? '/api/views/' + encodeURIComponent(view) : '/api/session', location.origin);
   url.search = location.search;

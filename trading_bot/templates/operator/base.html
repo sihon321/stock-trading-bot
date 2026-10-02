@@ -43,7 +43,7 @@
     {% endif %}
     {% endblock %}
   <details class="navigation-disclosure" open>
-    <summary aria-expanded="true" aria-controls="operator-navigation">{{ ui.icon('menu') }} 메뉴</summary>
+    <summary aria-controls="operator-navigation">{{ ui.icon('menu') }} 메뉴</summary>
     <nav id="operator-navigation" aria-label="운영 화면 탐색">
       {% for group, entries in navigation %}
       <section class="navigation-group" aria-labelledby="nav-group-{{ loop.index }}">

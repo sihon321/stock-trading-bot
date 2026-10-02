@@ -77,7 +77,7 @@ h1, h2, h3, p, dl { margin: 0 0 var(--space-md); }
 h1 { font-size: var(--font-display); font-weight: 600; line-height: 1.2; }
 h2 { font-size: var(--font-heading); font-weight: 600; line-height: 1.2; }
 h3 { font-size: var(--font-body); font-weight: 600; line-height: 1.5; }
-a { display: inline-flex; align-items: center; min-height: var(--target-min); color: var(--accent); text-decoration: underline; text-underline-offset: var(--space-xs); }
+a { display: inline-flex; align-items: center; min-height: var(--target-min); min-width: var(--target-min); color: var(--accent); text-decoration: underline; text-underline-offset: var(--space-xs); }
 a, button, input, select, textarea, summary { scroll-margin: var(--space-md); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 [tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 4px; }
