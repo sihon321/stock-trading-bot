@@ -46,7 +46,7 @@ coverage:
     requirement: OPSV-01
     verification: [{kind: integration, ref: tests/test_web_evidence.py#worker-freshness-watch-transition, status: pass}]
     human_judgment: false
-duration: 36min
+duration: 22min
 completed: 2026-10-02
 status: complete
 ---
