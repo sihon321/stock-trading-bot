@@ -287,19 +287,69 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             if resource and target and resource.target != target:
                 raise ValueError()
             scope = ResourceScope(chosen.account_hash, chosen.target, resource_id) if chosen else None
+            severity = args.get('severity') or None
+            active = args.get('active') or None
+            if severity not in {None, 'INFO', 'WARNING', 'CRITICAL'} or active not in {None, '0', '1'}:
+                raise ValueError()
         except (ValueError, KeyError, TypeError):
             abort(400)
         params = dict(period=period_name)
-        for key in ('start', 'end', 'resource_id', 'target', 'limit', 'selection_id'):
+        for key in ('start', 'end', 'resource_id', 'target', 'limit', 'selection_id', 'severity', 'active'):
             if args.get(key):
                 params[key] = args[key]
         return dict(period=period, period_name=period_name, scope_obj=scope, params=params,
             cursor=args.get('cursor') or None, limit=limit, page_number=page_number,
+            alert_severity=severity, alert_active=active,
             target={'dry_run': 'dry-run', 'simulated': 'simulation'}.get(scope.target, scope.target) if scope else 'UNKNOWN')
 
     def contextual_url(path, context, **values):
         params = {**context['params'], **values}
         return path + ('?' + urlencode({k: v for k, v in params.items() if v is not None}) if params else '')
+
+    def incident_selection(context, *, active, severity=None, period=None, include_page=False):
+        # Apply the complete registered subject scope before counting or bounding rows.
+        # COUNT and page IDs share a read transaction in the operational database.
+        alerts = app.extensions['alert_store']
+        if alerts is None:
+            raise ValueError('alert storage unavailable')
+        alerts._verify_ownership()
+        scope = context['scope_obj']
+        resources = tuple(r for r in settings.registered_resources
+            if scope is None or (r.account_hash == scope.account_hash and r.target == scope.target
+                and (not scope.resource_id or r.id == scope.resource_id)))
+        subjects = ' OR '.join("(json_extract(subject_json,'$[0]')=? AND "
+            "json_extract(subject_json,'$[1]')=? AND json_extract(subject_json,'$[2]')=?)" for _ in resources) or '0'
+        where = 'active=? AND (' + subjects + ')'
+        args = [int(active), *(v for r in resources for v in (r.id, r.account_hash, r.target))]
+        if severity:
+            where += ' AND severity=?'
+            args.append(severity)
+        if period is not None:
+            where += ' AND last_at>=? AND last_at<?'
+            args.extend((period.start.timestamp(), period.end.timestamp()))
+        with sqlite3.connect(alerts.path.as_uri() + '?mode=ro', uri=True, timeout=1) as conn:
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            total = conn.execute('SELECT COUNT(*) FROM alert_episodes WHERE ' + where, args).fetchone()[0]
+            ids = ()
+            if include_page:
+                offset = (context['page_number'] - 1) * context['limit']
+                ids = tuple(row[0] for row in conn.execute('SELECT episode_id FROM alert_episodes WHERE ' + where
+                    + ' ORDER BY last_at DESC,episode_id LIMIT ? OFFSET ?', (*args, context['limit'], offset)))
+        return total, ids
+
+    def critical_summary(context):
+        scope = context['scope_obj']
+        params = {k: context['params'][k] for k in ('resource_id', 'limit') if k in context['params']}
+        if scope is not None:
+            params['target'] = scope.target
+        params.update(severity='CRITICAL', active='1')
+        result = dict(critical_count='UNKNOWN', critical_url='/alerts?' + urlencode(params))
+        try:
+            result['critical_count'], _ = incident_selection(context, active=True, severity='CRITICAL')
+        except (ValueError, sqlite3.Error, OSError):
+            pass
+        return result
 
     def authorize_envelope(envelope):
         resource = settings.resource(envelope.resource_id)
@@ -373,7 +423,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         common = dict(title=title, current_path=path, operator_name=g.operator_session.actor,
             expires_at=g.operator_session.expires_at.isoformat(),
             csrf_token=generate_csrf(), scope='저장 증거 · 각 원천은 독립 관측이며 동시에 생성된 스냅샷이 아닙니다.',
-            critical_count='UNKNOWN', **context)
+            **critical_summary(context), **context)
         sources = [source_presentation(s) for s in overview.sources]
         for s in overview.sources:
             authorize_envelope(s)
@@ -388,16 +438,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         common['safety_blocks'] = [present_record(row, context, '/') for row in overview.safety_blocks[:100]]
         if app.extensions['alert_store'] is not None:
             try:
-                from .alert_models import Severity
-                registered = {r.id: r for r in settings.registered_resources}
-                episodes = tuple(episode for episode in app.extensions['alert_store'].list_incidents(active=True, limit=100)
-                    if episode.subject.resource_id in registered
-                    and registered[episode.subject.resource_id].account_hash == episode.subject.account_hash
-                    and registered[episode.subject.resource_id].target == episode.subject.target
-                    and (context['scope_obj'] is None or (episode.subject.account_hash == context['scope_obj'].account_hash
-                         and episode.subject.target == context['scope_obj'].target)))
-                common['critical_count'] = sum(1 for episode in episodes if episode.severity == Severity.CRITICAL)
-                common['active_incidents'] = episodes
+                _, ids = incident_selection(context, active=True, include_page=True)
+                common['active_incidents'] = tuple(app.extensions['alert_store'].get_incident(i) for i in ids)
             except (ValueError, sqlite3.Error, OSError):
                 common['active_incidents'] = ()
         else:
@@ -544,7 +586,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         common = dict(title='정제된 원천 증거' if evidence else parent[1] + ' 상세',
             current_path=parent[0], operator_name=g.operator_session.actor, csrf_token=generate_csrf(),
             target={'simulated': 'simulation', 'dry_run': 'dry-run'}.get(resource.target, resource.target),
-            source=row['source'], row=row, fields=fields, evidence=evidence, critical_count='UNKNOWN',
+            source=row['source'], row=row, fields=fields, evidence=evidence,
+            **critical_summary(dict(scope_obj=scoped, params=dict(resource_id=resource.id))),
             scope='저장 증거 · 실행 권한 없음', back_url=back,
             expires_at=g.operator_session.expires_at.isoformat(), view_id='evidence' if evidence else 'record',
             selection_id=record.selection.selection_id)
@@ -571,7 +614,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         return dict(title=title, current_path=path, view_id=view_id,
             operator_name=g.operator_session.actor, csrf_token=generate_csrf(),
             expires_at=g.operator_session.expires_at.isoformat(),
-            critical_count='UNKNOWN', params={}, source=dict(queried_at=kst_time(clock())),
+            **critical_summary(query_context()), params={}, source=dict(queried_at=kst_time(clock())),
             scope='저장 증거 · 실행 권한 없음', **values)
 
     def saved_response(template, common, api=False):
@@ -735,6 +778,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             observations=(), error=error, note=note, message=message, observer=observer_status(),
             unavailable=None, page_number=context['page_number'], previous_url=None, next_url=None)
         common.update(period_name=context['period_name'], params=context['params'])
+        common.update(active_total=None, history_total=None, alert_severity=context['alert_severity'],
+            alert_active=context['alert_active'])
         if episode_id:
             incident = authorized_incident(episode_id)
             common['incident'] = present_incident(incident)
@@ -762,33 +807,17 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 freshness='UNKNOWN', completeness='COMPLETE', query_status='SUCCESS', provenance='saved')
         else:
             try:
-                # The operational API lacks period/offset selectors. A fixed parameterized,
-                # read-only query supplies bounded pages without altering alert/source facts.
-                alerts._verify_ownership()
-                with sqlite3.connect(alerts.path.as_uri() + '?mode=ro', uri=True) as conn:
-                    conn.execute('PRAGMA query_only=ON')
-                    resources = tuple(r.id for r in settings.registered_resources
-                        if context['scope_obj'] is None or (r.account_hash == context['scope_obj'].account_hash and r.target == context['scope_obj'].target
-                            and (not context['scope_obj'].resource_id or r.id == context['scope_obj'].resource_id)))
-                    placeholders = ','.join('?' for _ in resources) or 'NULL'
-                    allowed = f"json_extract(subject_json,'$[0]') IN ({placeholders})"
-                    offset = (context['page_number']-1)*context['limit']
-                    for active, name in ((1,'active_rows'),(0,'history_rows')):
-                        period_clause = '' if active else ' AND last_at>=? AND last_at<?'
-                        period_values = () if active else (context['period'].start.timestamp(), context['period'].end.timestamp())
-                        ids = conn.execute('SELECT episode_id FROM alert_episodes WHERE active=? AND ' + allowed + period_clause +
-                            ' ORDER BY last_at DESC,episode_id LIMIT ? OFFSET ?', (active,*resources,*period_values,context['limit']+1,offset)).fetchall()
-                        rows = []
-                        for row in ids[:context['limit']]:
-                            try:
-                                rows.append(present_incident(authorized_incident(row[0])))
-                            except HTTPException:
-                                continue
-                        common[name] = rows
-                        if len(ids)>context['limit']:
-                            common['next_url'] = contextual_url('/alerts',context,page=context['page_number']+1)
-                    if context['page_number']>1:
-                        common['previous_url'] = contextual_url('/alerts',context,page=context['page_number']-1)
+                for active, name in ((1,'active_rows'),(0,'history_rows')):
+                    if context['alert_active'] is not None and int(context['alert_active']) != active:
+                        continue
+                    total, ids = incident_selection(context, active=active, severity=context['alert_severity'],
+                        period=None if active else context['period'], include_page=True)
+                    common['active_total' if active else 'history_total'] = total
+                    common[name] = [present_incident(authorized_incident(i)) for i in ids]
+                    if context['page_number'] * context['limit'] < total:
+                        common['next_url'] = contextual_url('/alerts',context,page=context['page_number']+1)
+                if context['page_number']>1:
+                    common['previous_url'] = contextual_url('/alerts',context,page=context['page_number']-1)
                 common['selection_id'] = proof_hash_alert(common)
             except (ValueError, sqlite3.Error, OSError):
                 common.update(unavailable='ALERT_STORAGE_UNAVAILABLE', query_status='FAILED')

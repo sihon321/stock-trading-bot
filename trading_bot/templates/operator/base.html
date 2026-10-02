@@ -25,7 +25,7 @@
   <header class="operator-header">
     <span class="current-page">{{ title|default('안전 개요')|forceescape }}</span>
     <span class="target-badge">{{ ui.target_badge(target|default('UNKNOWN')) }}</span>
-    <a class="critical-count" href="/alerts">미해결 CRITICAL · {{ critical_count|default('UNKNOWN')|forceescape }}</a>
+    <a class="critical-count" href="{{ critical_url|default('/alerts')|forceescape }}">미해결 CRITICAL · {{ critical_count|default('UNKNOWN')|forceescape }}</a>
     <form class="refresh-form" method="get" action="{{ selected.path }}">
       {% block refresh_fields %}{% endblock %}
       <button class="primary" type="submit" data-refresh aria-describedby="refresh-helper">저장 증거 새로고침</button>

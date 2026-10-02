@@ -113,6 +113,7 @@ def test_dirty_note_focus_disclosure_scroll_and_explicit_refresh(operator_page, 
     with page.expect_response('**/api/views/alerts*'):
         page.clock.run_for(30000)
     expect(page.locator('#refresh-status')).to_contain_text('새 증거가 있습니다')
+    expect(page.locator('.critical-count')).to_have_text('미해결 CRITICAL · 2')
     expect(note).to_have_value('초안 보존 <script>bad()</script>')
     expect(note).to_be_focused()
     assert note.evaluate('(e)=>e.selectionStart') == 2

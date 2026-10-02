@@ -86,6 +86,13 @@
   function replaceStatus(doc) {
     const old = document.getElementById('source-status'), fresh = doc.getElementById('source-status');
     if (old && fresh) old.replaceChildren(...Array.from(fresh.childNodes, n => document.importNode(n, true)));
+    const oldCritical = document.querySelector('.critical-count'), freshCritical = doc.querySelector('.critical-count');
+    if (oldCritical && freshCritical) {
+      const target = new URL(freshCritical.getAttribute('href'), location.origin);
+      if (target.origin !== location.origin || target.pathname !== '/alerts') throw new Error('invalid critical link');
+      oldCritical.textContent = freshCritical.textContent;
+      oldCritical.setAttribute('href', target.pathname + target.search);
+    }
   }
   function apply(doc, keepDraft) {
     const old = document.getElementById('operator-evidence'), fresh = doc.getElementById('operator-evidence');

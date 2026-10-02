@@ -105,7 +105,7 @@ def test_positive_recovery_history_remains_distinct(alert_web):
     assert 'same-subject-proof' in response.text and '미확인' in response.text
 
 
-@pytest.mark.parametrize('foreign', [False, True])
+@pytest.mark.parametrize('foreign', ['same', 'mismatch', 'registered', 'unregistered'])
 def test_critical_total_exact_scoped_and_all_pages(alert_web, foreign):
     from bs4 import BeautifulSoup
     from trading_bot.alert_models import Severity
@@ -114,11 +114,15 @@ def test_critical_total_exact_scoped_and_all_pages(alert_web, foreign):
     sources.clock.advance(seconds=1)
     for i in range(100):
         subject = replace(fact.subject, ticker_or_account=f'new-{i}')
-        if foreign:
+        if foreign == 'mismatch':
             subject = replace(subject, account_hash='b'*64, target='real')
+        elif foreign == 'registered':
+            subject = replace(subject, resource_id='soak')
+        elif foreign == 'unregistered':
+            subject = replace(subject, resource_id='unregistered')
         alerts.observe(replace(fact, subject=subject, source_id=f'new-{i}',
             observed_at=sources.clock(), severity=Severity.CRITICAL))
-    expected = 1 if foreign else 101
+    expected = 101 if foreign == 'same' else 1
     page = BeautifulSoup(client.get('/?resource_id=portfolio&limit=10').text, 'html.parser')
     header = page.select_one('.critical-count')
     assert header.get_text(strip=True) == f'미해결 CRITICAL · {expected}'
