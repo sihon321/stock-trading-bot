@@ -226,7 +226,7 @@ def test_artifact_atomic_owned_download_and_audited_source_unchanged(artifact_se
         with pytest.raises(ValueError):service.load_owned_artifact(fmt.artifact_id,actor='intruder')
     assert capture_sources(sources)==before
     with store.connection() as conn:
-        assert [r['result_code'] for r in conn.execute('SELECT * FROM web_actions')]==['ATTEMPTED','SUCCEEDED']
+        assert [r['result_code'] for r in conn.execute("SELECT * FROM web_actions WHERE action='REPORT_GENERATE'")]==['ATTEMPTED','SUCCEEDED']
     assert not list(settings.artifact_root.glob('.report-*'))
 
 
@@ -235,11 +235,13 @@ def test_artifact_bounds_and_failed_audit_no_partial_files(artifact_setup,monkey
     sources,settings,service,store=artifact_setup
     request=ReportRequest(family='backtest',resource_id='backtest')
     monkeypatch.setattr(service,'settings',settings.model_copy(update={'export_bytes':100}))
+    store.settings=service.settings
     with pytest.raises(ReportGenerationError):service.generate_report(request,actor='operator')
     assert not list(settings.artifact_root.iterdir())
     with store.connection() as conn:
-        assert [r['result_code'] for r in conn.execute('SELECT * FROM web_actions')]==['ATTEMPTED','FAILED']
+        assert [r['result_code'] for r in conn.execute("SELECT * FROM web_actions WHERE action='REPORT_GENERATE'")]==['ATTEMPTED','FAILED']
     service.settings=settings
+    store.settings=settings
     projection=service.project(request)
     monkeypatch.setattr(service,'project',lambda _:replace(projection,rows=(ReportRow('bound','test','COMPLETE',()),)*10001))
     with pytest.raises(ReportGenerationError):service.generate_report(request,actor='operator')
@@ -272,3 +274,82 @@ def test_export_nonfinite_and_row_byte_caps(setup):
         with pytest.raises(ValueError):serialize_report(replace(p,rows=(ReportRow('bad','test','COMPLETE',(('v',value),)),)))
     with pytest.raises(ValueError):serialize_report(p,max_bytes=10)
     with pytest.raises(ValueError):serialize_report(replace(p,rows=p.rows*10001))
+
+
+def test_artifact_partial_publish_failure_rolls_back_metadata_safely(artifact_setup,monkeypatch):
+    from trading_bot.web_reports import ReportRequest, ReportGenerationError
+    import os
+    sources,settings,service,store=artifact_setup
+    link=os.link;calls=[]
+    def fail_second(*args,**kwargs):
+        calls.append(args)
+        if len(calls)==2:raise OSError(SECRET_SENTINEL+' /private/untrusted-path')
+        return link(*args,**kwargs)
+    monkeypatch.setattr('trading_bot.web_reports.os.link',fail_second)
+    with pytest.raises(ReportGenerationError,match='^REPORT_GENERATION_FAILED$'):
+        service.generate_report(ReportRequest(family='backtest',resource_id='backtest'),actor='operator')
+    assert not list(settings.artifact_root.iterdir())
+    with store.connection() as conn:
+        assert conn.execute('SELECT count(*) FROM web_report_artifacts').fetchone()[0]==0
+        assert SECRET_SENTINEL not in repr(tuple(conn.execute('SELECT * FROM web_actions')))
+
+
+def test_artifact_root_inode_swap_and_source_hardlink_rejected(artifact_setup,monkeypatch):
+    from trading_bot.web_reports import ReportRequest, ReportGenerationError
+    import os
+    sources,settings,service,store=artifact_setup
+    root=settings.artifact_root;detached=root.with_name('detached-artifacts');link=os.link
+    def swap_root(*args,**kwargs):
+        root.rename(detached);root.mkdir(mode=0o700)
+        return link(*args,**kwargs)
+    monkeypatch.setattr('trading_bot.web_reports.os.link',swap_root)
+    with pytest.raises(ReportGenerationError):
+        service.generate_report(ReportRequest(family='backtest',resource_id='backtest',formats=('json',)),actor='operator')
+    assert not list(detached.iterdir()) and not list(root.iterdir())
+    monkeypatch.setattr('trading_bot.web_reports.os.link',link)
+    artifact=service.generate_report(ReportRequest(family='backtest',resource_id='backtest',formats=('json',)),actor='operator')
+    fmt=artifact.formats[0];path=root/(fmt.artifact_id+'.json')
+    path.unlink();os.link(sources.paths['backtest'],path)
+    with pytest.raises(ValueError):service.load_owned_artifact(fmt.artifact_id,actor='operator')
+
+
+def test_artifact_fresh_capability_generate_load_and_sanitized_exports(artifact_setup):
+    sources,settings,service,store=artifact_setup
+    registry=sources.probe_registry()
+    script='''
+import json,sys
+sys.path.insert(0,'tests')
+import capability_probe
+capability_probe.FORBIDDEN += ('trading_bot.report_cli',)
+payload=json.loads(sys.argv[1])
+capability_probe.install_tripwires(payload['registry'])
+from trading_bot.web_config import WebSettings
+from trading_bot.web_store import WebStore
+from trading_bot.web_reports import SavedReportService,ReportRequest
+from trading_bot.shadow_evidence import SavedShadowProofCatalog,RegisteredShadowProof
+from pathlib import Path
+settings=WebSettings.model_validate(payload['settings'])
+proofs=tuple(RegisteredShadowProof(**{k:v for k,v in p.items() if k!='path'},
+    document_json=Path(p['path']).read_text()) for p in payload['registry']['shadow_proofs'])
+service=SavedReportService(settings,store=WebStore(settings),shadow_proof_catalog=SavedShadowProofCatalog(proofs))
+import os
+# The shared probe resolves audited relative openat/link names against cwd.
+# Align its observation with the writer's already-pinned artifact dirfd.
+os.chdir(settings.artifact_root)
+for family,resource in [('daily','audit'),('period','audit'),('replay','replay'),('backtest','backtest'),('shadow','shadow'),('soak','soak')]:
+    request=ReportRequest(family=family,resource_id=resource,
+        start='2026-10-02' if family in {'daily','period'} else None,
+        end='2026-10-02' if family=='period' else None,
+        result_id='operator-campaign' if family=='soak' else None)
+    artifact=service.generate_report(request,actor='operator')
+    for fmt in artifact.formats:
+        data=service.load_owned_artifact(fmt.artifact_id,actor='operator').data
+        assert payload['sentinel'].encode() not in data
+assert not any(m in sys.modules for m in capability_probe.FORBIDDEN)
+print('ok')
+'''
+    before=capture_sources(sources)
+    child=subprocess.run([sys.executable,'-B','-c',script,json.dumps({'registry':registry,
+        'settings':settings.model_dump(mode='json'),'sentinel':SECRET_SENTINEL})],capture_output=True,text=True,timeout=20)
+    assert child.returncode==0,child.stderr
+    assert capture_sources(sources)==before

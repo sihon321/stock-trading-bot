@@ -13,6 +13,12 @@ import json
 import math
 import re
 import sqlite3
+import csv
+import io
+import os
+import stat
+import unicodedata
+from uuid import uuid4
 from types import MappingProxyType
 from typing import Literal
 
@@ -21,7 +27,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .web_config import checked_path
 from .web_evidence import _clean, _transaction, _check_run, EvidenceUnavailable
 from .web_models import ResourceScope, EvidenceSelection, SourceEnvelope
-from .replay_evidence import canonical_json_bytes
 
 FAMILIES = ('daily', 'period', 'replay', 'backtest', 'shadow', 'soak', 'calibration', 'readiness')
 FORMATS = ('txt', 'json', 'csv')
@@ -105,6 +110,123 @@ class SavedReportProjection:
         return tuple(row for row in self.rows if row.record_id in ids)
 
 
+class ReportGenerationError(ValueError):
+    """Stable public diagnostic; raw storage exceptions never cross this boundary."""
+
+
+@dataclass(frozen=True)
+class ArtifactFormat:
+    artifact_id: str
+    format: str
+    byte_count: int
+
+
+@dataclass(frozen=True)
+class ReportArtifact:
+    source_selection: EvidenceSelection
+    formats: tuple[ArtifactFormat, ...]
+    generated_at: datetime
+    diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OwnedArtifact:
+    artifact_id: str
+    format: str
+    data: bytes
+    resource_id: str
+
+
+CSV_IMPORT_PROFILE = ('UTF-8 CSV; Excel/LibreOffice import with comma delimiter and quote delimiter, '
+    'identity columns as Text and formula evaluation disabled. Text formula prefixes use apostrophe; '
+    'control characters are replaced; numeric cells remain numbers. Arbitrary re-save/re-import is outside this profile.')
+
+
+def spreadsheet_text(value, *, identity=False):
+    """Neutralize text after whitespace/control/NFKC inspection; never touch numbers."""
+    value=str(value)
+    inspected=''.join(c for c in unicodedata.normalize('NFKC',value)
+        if unicodedata.category(c) not in {'Cc','Cf','Cs'}).lstrip()
+    # Structured CSV cells have already been sanitized leaf by leaf. Do not
+    # apply the scalar DTO's 4096-character truncation to aggregate metadata.
+    cleaned=''.join(c if unicodedata.category(c) not in {'Cc','Cf','Cs'} else ' ' for c in value)
+    return "'"+cleaned if identity or inspected.startswith(('=','+','-','@')) else cleaned
+
+
+def _document(value):
+    if isinstance(value, ReportRow):
+        return {'record_id':value.record_id,'kind':value.kind,'state':value.state,
+                'fields':{k:_identity_value(v) if k=='ticker' or k.endswith('_id') else _document(v) for k,v in value.fields}}
+    if hasattr(type(value),'__dataclass_fields__'):
+        return {f.name:_identity_value(getattr(value,f.name)) if (f.name.endswith('_id') and f.name!='metric_id') or f.name in {'account_hash','record_ids','source_ids','constituent_ids','excluded_ids','unknown_ids'}
+            else _document(getattr(value,f.name)) for f in fields(value)}
+    if isinstance(value,dict):return {k:_document(v) for k,v in value.items()}
+    if isinstance(value,(tuple,list)):return [_document(v) for v in value]
+    if isinstance(value,Decimal):
+        if not value.is_finite():raise ValueError('nonfinite export number')
+        return value
+    if isinstance(value,float) and not math.isfinite(value):raise ValueError('nonfinite export number')
+    return _scalar(value)
+
+
+def _identity_value(value):
+    if isinstance(value,(tuple,list)):return [_identity_value(v) for v in value]
+    if value is None:return None
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,512}',value):
+        raise ValueError('invalid export identity')
+    return value
+
+
+def _exact_json(value):
+    # Decimal values are emitted as exact JSON numbers, without a float round trip.
+    if isinstance(value,Decimal):return str(value)
+    if isinstance(value,dict):return '{'+','.join(json.dumps(k,ensure_ascii=False)+':'+_exact_json(v) for k,v in value.items())+'}'
+    if isinstance(value,list):return '['+','.join(_exact_json(v) for v in value)+']'
+    return json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(',',':'))
+
+
+def serialize_report(projection, *, formats=FORMATS, max_rows=10000, max_bytes=10*1024*1024):
+    if (len(projection.rows)>min(max_rows,10000) or not formats or len(set(formats))!=len(formats)
+            or any(f not in FORMATS for f in formats)):
+        raise ValueError('export row/format bound exceeded')
+    document=_document(projection)
+    document['csv_import_profile']=CSV_IMPORT_PROFILE
+    payloads={}
+    for fmt in formats:
+        if fmt=='json':payload=(_exact_json(document)+'\n').encode()
+        elif fmt=='txt':
+            lines=['저장 증거 보고서',f'종류: {projection.family}',f'상태: {projection.status}',
+                '자료 미확인 값은 UNKNOWN, 불완전 자료는 INCOMPLETE입니다.',
+                '이 보고서는 평가 실행·정책 변경·실거래 승격 권한이 없습니다.',_exact_json(document)]
+            payload=('\n'.join(lines)+'\n').encode()
+        else:
+            output=io.StringIO(newline='');writer=csv.writer(output,lineterminator='\n')
+            writer.writerow(('section','selection_id','resource_id','account_hash','target',
+                'record_id','kind','state','key','type','value'))
+            base=(projection.selection.selection_id,projection.selection.resource_id,
+                projection.selection.scope.account_hash,projection.selection.scope.target)
+            entries=[('metadata','','','',key,value) for key,value in document.items() if key not in {'rows','metrics'}]
+            entries.extend(('rows',row['record_id'],row['kind'],row['state'],key,value)
+                for row in document['rows'] for key,value in row['fields'].items())
+            entries.extend(('metrics',m['metric_id'],'metric','',key,value)
+                for m in document['metrics'] for key,value in m.items())
+            if len(entries)>min(max_rows,10000):raise ValueError('export CSV row bound exceeded')
+            for section,rid,kind,state,key,value in entries:
+                type_name=('null' if value is None else 'boolean' if isinstance(value,bool) else
+                    'number' if isinstance(value,(int,float,Decimal)) else 'text')
+                if type_name=='number':cell=str(value)
+                elif value is None:cell='UNKNOWN'
+                elif isinstance(value,(dict,list)):cell=spreadsheet_text(_exact_json(value))
+                else:cell=spreadsheet_text(str(value),identity=(key=='ticker' or key.endswith('_id')))
+                writer.writerow((section,*(spreadsheet_text(v,identity=True) for v in base),
+                    spreadsheet_text(rid,identity=True) if rid else '',spreadsheet_text(kind),
+                    spreadsheet_text(state),spreadsheet_text(key),type_name,cell))
+            payload=output.getvalue().encode()
+        if len(payload)>min(max_bytes,10*1024*1024):raise ValueError('export byte bound exceeded')
+        payloads[fmt]=payload
+    return MappingProxyType(payloads)
+
+
 @dataclass(frozen=True)
 class SavedCalibrationProof:
     resource_id: str
@@ -160,11 +282,11 @@ def _scalar(value):
 
 
 def _row(record_id, kind, obj, names, state='COMPLETE'):
-    if len(record_id) > 512 or _clean(record_id) != record_id:
+    if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,512}',record_id):
         raise EvidenceUnavailable('INVALID_SOURCE_ID')
     def get(name):
         return obj[name] if isinstance(obj, (dict, sqlite3.Row)) else getattr(obj, name)
-    return ReportRow(record_id, kind, state, tuple((n, _scalar(get(n))) for n in names))
+    return ReportRow(record_id, kind, state, tuple((n, _identity_value(get(n)) if n=='ticker' or n.endswith('_id') else _scalar(get(n))) for n in names))
 
 
 class SavedReportService:
@@ -174,6 +296,114 @@ class SavedReportService:
         self.shadow_proof_catalog = shadow_proof_catalog
         self.calibration_proofs = self._proofs(calibration_proof_catalog, SavedCalibrationProof)
         self.readiness_proofs = self._proofs(readiness_proof_catalog, SavedReadinessFacts)
+
+    def _actor(self, actor):
+        from .web_store import identifier
+        identifier(actor)
+        if self.store is None or self.store.settings != self.settings:
+            raise ValueError('registered operational store required')
+        operator=self.store.get_operator()
+        if operator is None or operator.username!=actor:
+            raise ValueError('authenticated artifact owner required')
+
+    def _root(self):
+        _,root=self.settings.validate_topology()
+        fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            info=os.fstat(fd)
+            if info.st_mode & 0o077 or info.st_uid!=os.getuid():
+                raise ValueError('unsafe artifact root')
+            self._verify_root(root,fd)
+            return root,fd
+        except BaseException:
+            os.close(fd);raise
+
+    @staticmethod
+    def _verify_root(root,fd):
+        checked_path(root)
+        actual=os.stat(root,follow_symlinks=False);held=os.fstat(fd)
+        if (actual.st_dev,actual.st_ino)!=(held.st_dev,held.st_ino) or not stat.S_ISDIR(actual.st_mode):
+            raise ValueError('artifact root changed')
+
+    def generate_report(self, request, *, actor):
+        request=ReportRequest.model_validate(request)
+        self._actor(actor)
+        # Registration is checked before writing any caller-derived metadata.
+        self.settings.resource(request.resource_id)
+        self.store.append_action(actor=actor,action='REPORT_GENERATE',result_code='ATTEMPTED',
+            resource_id=request.resource_id,at=self.clock())
+        root=fd=None;created=[]
+        try:
+            projection=self.project(request)
+            if projection.status!='AVAILABLE':raise ReportGenerationError(projection.diagnostics[0])
+            payloads=serialize_report(projection,formats=request.formats,
+                max_rows=self.settings.export_rows,max_bytes=self.settings.export_bytes)
+            root,fd=self._root();formats=[];at=self.clock()
+            for fmt,payload in payloads.items():
+                self.settings.validate_topology();self._verify_root(root,fd)
+                # 64 opaque hex characters: random namespace + 192-bit content seal.
+                artifact_id=uuid4().hex[:16]+hashlib.sha256(payload).hexdigest()[:48]
+                filename=f'{artifact_id}.{fmt}';temporary='.report-'+uuid4().hex
+                tmpfd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+                try:
+                    with os.fdopen(tmpfd,'wb') as handle:
+                        handle.write(payload);handle.flush();os.fsync(handle.fileno())
+                    self._verify_root(root,fd)
+                    os.link(temporary,filename,src_dir_fd=fd,dst_dir_fd=fd,follow_symlinks=False)
+                    info=os.stat(filename,dir_fd=fd,follow_symlinks=False)
+                    created.append((filename,info.st_dev,info.st_ino))
+                finally:os.unlink(temporary,dir_fd=fd)
+                formats.append(ArtifactFormat(artifact_id,fmt,len(payload)))
+            self._verify_root(root,fd);os.fsync(fd)
+            # Ownership metadata and success audit commit together or neither does.
+            with self.store.connection() as conn:
+                from .web_store import timestamp
+                for item in formats:
+                    conn.execute('INSERT INTO web_report_artifacts VALUES(?,?,?,?,?,?)',
+                        (item.artifact_id,request.resource_id,actor,item.artifact_id+'.'+item.format,item.format,timestamp(at)))
+                self.store._append_action(conn,actor,'REPORT_GENERATE','SUCCEEDED',request.resource_id,at,
+                    {'row_count':len(projection.rows)})
+            return ReportArtifact(projection.selection,tuple(formats),at,projection.diagnostics)
+        except (ValueError,OSError,sqlite3.Error) as exc:
+            if fd is not None:
+                for name,device,inode in created:
+                    try:
+                        info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                        if (info.st_dev,info.st_ino)==(device,inode):os.unlink(name,dir_fd=fd)
+                    except FileNotFoundError:pass
+            self.store.append_action(actor=actor,action='REPORT_GENERATE',result_code='FAILED',
+                resource_id=request.resource_id,at=self.clock())
+            code=str(exc) if isinstance(exc,ReportGenerationError) else 'REPORT_GENERATION_FAILED'
+            raise ReportGenerationError(code) from None
+        finally:
+            if fd is not None:os.close(fd)
+
+    def load_owned_artifact(self, artifact_id, *, actor):
+        from .web_store import identifier
+        identifier(artifact_id);self._actor(actor)
+        if not re.fullmatch('[a-f0-9]{64}',artifact_id):raise ValueError('unknown owned artifact')
+        metadata=self.store.get_artifact(artifact_id,actor=actor)
+        if metadata is None:raise ValueError('unknown owned artifact')
+        self.settings.resource(metadata.resource_id)
+        if metadata.format not in FORMATS or metadata.filename!=artifact_id+'.'+metadata.format:
+            raise ValueError('invalid owned artifact metadata')
+        root,fd=self._root()
+        try:
+            opened=os.open(metadata.filename,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)
+            with os.fdopen(opened,'rb') as handle:
+                info=os.fstat(handle.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid()
+                        or info.st_mode & 0o077 or info.st_size>self.settings.export_bytes):
+                    raise ValueError('unsafe artifact inode')
+                data=handle.read(min(self.settings.export_bytes,10*1024*1024)+1)
+                after=os.stat(metadata.filename,dir_fd=fd,follow_symlinks=False)
+                if (info.st_dev,info.st_ino)!=(after.st_dev,after.st_ino):raise ValueError('artifact changed')
+            self._verify_root(root,fd)
+            if len(data)>self.settings.export_bytes or hashlib.sha256(data).hexdigest()[:48]!=artifact_id[16:]:
+                raise ValueError('artifact seal mismatch')
+            return OwnedArtifact(artifact_id,metadata.format,data,metadata.resource_id)
+        except OSError:raise ValueError('owned artifact unavailable') from None
+        finally:os.close(fd)
 
     @staticmethod
     def _proofs(proofs, cls):
@@ -295,14 +525,16 @@ class SavedReportService:
                     ('attempt_id','kind','delivery_state','failure_category','observed_at')))
         candidates = tuple(r for r in rows if r.kind == 'candidates')
         unknown = tuple(r.record_id for r in candidates if r.state == 'UNKNOWN')
-        metrics = [self._metric('total_candidates', report.total_candidates,candidates, denominator=len(candidates))]
-        for state in ('complete','incomplete','unknown'):
-            count = getattr(report,state)
-            metrics.append(self._metric(state,count.numerator,
-                tuple(r for r in candidates if r.state == state.upper()), numerator=count.numerator,
-                denominator=count.total_denominator, unknown=unknown,
-                excluded=tuple(r.record_id for r in candidates if r.state not in {state.upper(),'UNKNOWN'}),
-                determinate=count.determinate_denominator))
+        metrics = [self._metric('total_candidates', report.total_candidates,candidates, denominator=len(candidates),unit='RAW_ROW_COUNT')]
+        for kind in sorted({run.run_kind for run in report.runs}):
+            relevant=tuple(r for r in candidates if r.data['run_kind']==kind)
+            unknown=tuple(r.record_id for r in relevant if r.state=='UNKNOWN')
+            for state in ('complete','incomplete','unknown'):
+                selected=tuple(r for r in relevant if r.state==state.upper())
+                metrics.append(self._metric(kind+'.'+state,len(selected),selected,numerator=len(selected),
+                    denominator=len(relevant),unknown=unknown,
+                    excluded=tuple(r.record_id for r in relevant if r.state not in {state.upper(),'UNKNOWN'}),
+                    unit=kind,determinate=sum(r.state!='UNKNOWN' for r in relevant)))
         return rows,metrics,(),('SAVED','TARGET_SEPARATE','RUN_KIND_SEPARATE'),tuple(r.run_id for r in report.runs)
 
     def _replay(self, request, resource):
@@ -348,12 +580,20 @@ class SavedReportService:
             for i,item in enumerate(items):
                 state=str(item.coverage_status.value) if kind=='sessions' else ('INCOMPLETE' if kind=='fills' and not item.quantity else 'COMPLETE')
                 rows.append(_row(f'{kind}:{result.result_id}:{i}',kind,item,names,state))
+        for i,item in enumerate(run.intents):
+            rows.append(_row(f'intents:{result.result_id}:{i}','intents',item,
+                ('intent_id','ticker','side','quantity','remaining_quantity','limit_price','decision_session','eligible_session','reserved_cash','reserved_quantity')))
+        for i,item in enumerate(run.expiries):
+            rows.append(_row(f'expiries:{result.result_id}:{i}','expiries',item,
+                tuple(k for k in ('intent_id','ticker','quantity','reason','session') if k in item)))
         metrics=[]
         fill_names={'commission','sell_tax','surtax','slippage_drag','fill_count','partial_count','nonfill_count','turnover'}
         for name in type(result.metrics).model_fields:
             value=getattr(result.metrics,name)
             constituents=tuple(r for r in rows if r.kind==('fills' if name in fill_names else 'sessions'))
             if name=='benchmark_return':constituents=tuple(r for r in rows if r.kind=='benchmark')
+            if name=='expired_quantity':constituents=tuple(r for r in rows if r.kind=='expiries')
+            if name=='partial_count':constituents=tuple(r for r in rows if r.kind in {'fills','intents'})
             if isinstance(value,(dict,tuple)):
                 facts=value.items() if isinstance(value,dict) else enumerate(value)
                 for sub,number in facts:
@@ -402,6 +642,14 @@ class SavedReportService:
                         numerator=v.get(key.replace('_denominator','_numerator')) if key.endswith('_denominator') else None,
                         denominator=value if key.endswith('_denominator') else None,
                         unknown=tuple(r.record_id for r in constituents if r.state=='UNKNOWN'),unit='ESTIMATED' if 'estimated' in key else 'saved_fact'))
+                elif key in {'matrix','outcomes','returned_models'}:
+                    if isinstance(value,dict):
+                        for sub,count in value.items():
+                            if isinstance(count,(str,int,float,bool)) or count is None:
+                                metrics.append(self._metric(variant+'.'+key+'.'+str(sub),count,constituents))
+                    elif isinstance(value,list):
+                        for i,text in enumerate(value):
+                            if isinstance(text,str):metrics.append(self._metric(variant+'.'+key+'.'+str(i),text,constituents))
         facts=[('result_id',result.result_id),('run_id',result.run_id),('spec_id',result.manifest.spec_id),('status',result.status)]
         for key,value in m['coverage'].items():
             if value is None or isinstance(value,(str,int,float,bool)):facts.append(('coverage.'+key,_scalar(value)))
