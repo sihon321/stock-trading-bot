@@ -135,3 +135,32 @@ def test_detail_disclosure_allowlist_and_secret_sentinels(tmp_path):
         svc.get_evidence('audit', 'sqlite_master:1')
     with pytest.raises(ValueError):
         svc.get_record('../../outside', 'runs:operator-run')
+
+
+def test_history_missing_schema_bad_time_and_broken_links_safe(tmp_path):
+    sources = make_operator_sources(tmp_path, 'broken_links')
+    svc = service(sources)
+    before = capture_sources(sources)
+    risks = svc.overview(scope()).unresolved
+    assert any(r.data.get('freeze_id') == 'historic-freeze' and
+               r.envelope.completeness == 'UNKNOWN' for r in risks)
+    assert capture_sources(sources) == before
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE decisions SET created_at='not-a-time'")
+    result = svc.list_records('decisions', scope())
+    assert result.total is None and result.rows == ()
+    assert result.sources[0].diagnostic_code == 'INVALID_SOURCE_TIME'
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE portfolio_schema_metadata SET version=999")
+    account = svc.overview(scope()).accounts[0]
+    assert account.envelope.query_status == 'FAILED'
+    assert account.envelope.diagnostic_code == 'UNSUPPORTED_SCHEMA'
+
+
+def test_unresolved_positive_same_subject_terminal_release(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("INSERT INTO soak_comparisons(comparison_id,campaign_id,run_id,snapshot_id,ticker,order_intent_id,verdict,remaining_order_terminal,detail_json,observed_at) VALUES ('terminal','operator-campaign','historic-run','proof','000660','historic-intent','MATCHED',1,'{}',?)", (NOW.isoformat(),))
+        conn.execute("INSERT INTO soak_ticker_freezes(campaign_id,freeze_id,ticker,order_intent_id,freeze_kind,state,prior_transition_id,release_evidence_type,release_evidence_id,detail_json,observed_at) VALUES ('operator-campaign','historic-freeze','000660','historic-intent','AMBIGUITY','RELEASED',1,'COMPARISON','terminal','{}',?)", (NOW.isoformat(),))
+    assert not any(r.data.get('freeze_id') == 'historic-freeze' for r in svc.overview(scope()).unresolved)
