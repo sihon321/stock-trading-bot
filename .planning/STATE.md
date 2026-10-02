@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 14
 current_phase_name: operator-dashboard-alerting
-current_plan: 7
+current_plan: 11
 status: executing
-stopped_at: Phase 14 Wave 4 complete (9/14); executing 14-07; 1198 regression tests passed
-last_updated: "2026-10-02T03:38:56.182Z"
+stopped_at: Phase 14 Wave 5 complete (12/14); executing 14-11; 1335 regression tests passed
+last_updated: "2026-10-02T04:47:41.692Z"
 last_activity: 2026-10-02
-last_activity_desc: Wave 4 complete; full regression 1198 passed in 69.80s
+last_activity_desc: Wave 5 complete; full regression 1335 passed in 92.45s
 progress:
   total_phases: 5
   completed_phases: 4
@@ -31,12 +31,12 @@ See: .planning/PROJECT.md (updated 2026-07-11)
 
 Current Phase: 14
 Current Phase Name: operator-dashboard-alerting
-Current Plan: 7
+Current Plan: 11
 Total Plans in Phase: 14
 Phase: 14 (Operator Web UI, Dashboard & Alerting) — IN PROGRESS
-Plan: 7 of 14
-Status: Executing Phase 14 Wave 5 — 14-07 saved reports; 9/14 plans complete
-Last activity: 2026-10-02 — Wave 4 complete; full regression 1198 passed in 69.80s
+Plan: 11 of 14
+Status: Executing Phase 14 Wave 6 — 14-11 reports alerts and refresh; 12/14 plans complete
+Last activity: 2026-10-02 — Wave 5 complete; full regression 1335 passed in 92.45s
 
 ## Performance Metrics
 
@@ -193,9 +193,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-02T03:38:56.175Z
-Stopped at: Phase 14 Wave 4 complete (9/14); executing 14-07; 1198 regression tests passed
-Resume file: .planning/phases/14-operator-dashboard-alerting/14-07-PLAN.md
+Last session: 2026-10-02T04:47:41.685Z
+Stopped at: Phase 14 Wave 5 complete (12/14); executing 14-11; 1335 regression tests passed
+Resume file: .planning/phases/14-operator-dashboard-alerting/14-11-PLAN.md
 
 ## Operator Next Steps
 
