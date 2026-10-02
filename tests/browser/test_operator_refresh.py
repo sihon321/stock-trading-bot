@@ -1,5 +1,6 @@
 """Real Chromium contracts: virtual timers and test-owned saved server only."""
 from dataclasses import replace
+import re
 
 import pytest
 from playwright.sync_api import expect
@@ -47,6 +48,27 @@ def test_visible_cadence_manual_and_source_time(operator_page, operator_server, 
         page.get_by_role('button',name='저장 증거 새로고침',exact=True).click()
     expect(page.locator('[data-refresh]')).to_be_enabled()
     assert len(calls) == baseline+2
+
+
+def test_critical_header_tracks_saved_worsening_recovery_and_scope(operator_page, operator_server, alert_web):
+    from trading_bot.alert_models import Severity
+    page = operator_page
+    _, _, sources, alerts, _, fact = alert_web
+    enter(page, operator_server, sources.clock, '/?resource_id=portfolio')
+    header = page.locator('.critical-count')
+    expect(header).to_have_text('미해결 CRITICAL · 1')
+    alerts.observe(replace(fact, source_id='header-worse', sequence=2, severity=Severity.CRITICAL))
+    with page.expect_response('**/api/views/overview*'):
+        page.get_by_role('button', name='저장 증거 새로고침', exact=True).click()
+    expect(header).to_have_text('미해결 CRITICAL · 2')
+    expect(header).to_have_attribute('href', re.compile('.*resource_id=portfolio.*severity=CRITICAL.*'))
+    alerts.observe(replace(fact, source_id='header-recovery', sequence=3,
+        positive_recovery=True, recovery_proof_id='same-subject-proof'))
+    with page.expect_response('**/api/views/overview*'):
+        page.clock.run_for(30000)
+    expect(header).to_have_text('미해결 CRITICAL · 1')
+    page.goto(operator_server + '/?resource_id=audit')
+    expect(page.locator('.critical-count')).to_have_text('미해결 CRITICAL · 0')
 
 
 def test_timeout_no_overlap_retains_last_success_and_then_recovers(operator_page, operator_server, alert_web):

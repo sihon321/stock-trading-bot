@@ -103,3 +103,52 @@ def test_positive_recovery_history_remains_distinct(alert_web):
     response = client.get('/alerts/' + episode.episode_id)
     assert response.status_code == 200 and '복구 확인' in response.text
     assert 'same-subject-proof' in response.text and '미확인' in response.text
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_critical_total_exact_scoped_and_all_pages(alert_web, foreign):
+    from bs4 import BeautifulSoup
+    from trading_bot.alert_models import Severity
+    _, client, sources, alerts, _, fact = alert_web
+    before = capture_sources(sources)
+    sources.clock.advance(seconds=1)
+    for i in range(100):
+        subject = replace(fact.subject, ticker_or_account=f'new-{i}')
+        if foreign:
+            subject = replace(subject, account_hash='b'*64, target='real')
+        alerts.observe(replace(fact, subject=subject, source_id=f'new-{i}',
+            observed_at=sources.clock(), severity=Severity.CRITICAL))
+    expected = 1 if foreign else 101
+    page = BeautifulSoup(client.get('/?resource_id=portfolio&limit=10').text, 'html.parser')
+    header = page.select_one('.critical-count')
+    assert header.get_text(strip=True) == f'미해결 CRITICAL · {expected}'
+    link = header['href']
+    assert 'resource_id=portfolio' in link and 'severity=CRITICAL' in link and 'active=1' in link
+    episodes = set()
+    for _ in range(12):
+        response = client.get(link)
+        assert response.status_code == 200
+        page = BeautifulSoup(response.text, 'html.parser')
+        cards = page.select('.record-card')
+        assert len(cards) <= 10
+        for card in cards:
+            assert 'CRITICAL' in card.get_text() and '활성' in card.get_text()
+            assert 'real' not in card.get_text()
+            episodes.add(card['id'])
+        next_link = page.find('a', string='다음 페이지')
+        if next_link is None:
+            break
+        link = next_link['href']
+    assert len(episodes) == expected
+    assert capture_sources(sources) == before
+
+
+def test_critical_storage_failure_is_unknown_and_filters_are_validated(alert_web, monkeypatch):
+    _, client, _, alerts, _, _ = alert_web
+    def unavailable():
+        raise ValueError('unavailable')
+    monkeypatch.setattr(alerts, '_verify_ownership', unavailable)
+    assert '미해결 CRITICAL · UNKNOWN' in client.get('/').text
+    assert 'ALERT_STORAGE_UNAVAILABLE' in client.get('/alerts?active=1&severity=CRITICAL').text
+    for path in ['/alerts?severity=bogus', '/alerts?active=bogus']:
+        assert client.get(path).status_code == 400
