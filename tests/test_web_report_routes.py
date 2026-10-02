@@ -70,6 +70,7 @@ def test_generate_downloads_owned_authorized_and_source_unchanged(report_web):
     links = re.findall(r'href="(/downloads/[a-f0-9]+/(?:txt|json|csv))"', response.text)
     assert len(links) == 3
     for link in links:
+        assert client.get(link.replace('/downloads/','/reports/').rsplit('/',1)[0]).status_code == 200
         downloaded = client.get(link)
         assert downloaded.status_code == 200
         assert downloaded.headers['Content-Disposition'].startswith('attachment;')
@@ -98,3 +99,13 @@ def test_report_native_csrf_family_scope_and_artifact_idor(report_web):
     assert client.get('/validation/replay?resource_id=audit').status_code == 400
     assert client.get('/validation/not-a-family').status_code == 404
     assert client.get('/downloads/' + 'a'*64 + '/txt').status_code == 404
+
+
+def test_csrf_and_oversize_generation_audited(report_web):
+    app, client, _ = report_web
+    assert client.post('/reports/generate',data={'family':'replay','resource_id':'replay'}).status_code == 400
+    assert client.post('/reports/generate',data={'csrf_token':csrf(client,'/reports'),'family':'replay',
+        'resource_id':'replay','result_id':'x'*40000}).status_code == 413
+    with app.extensions['web_store'].connection() as conn:
+        codes={row[0] for row in conn.execute("SELECT result_code FROM web_actions WHERE action='REPORT_GENERATE'")}
+    assert {'INVALID_REQUEST','REQUEST_BOUND'} <= codes

@@ -220,6 +220,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
 
     @app.errorhandler(HTTPException)
     def http_error(error):
+        if error.code == 413 and g.get('operator_session') and request.endpoint in {'generate_report','acknowledge_alert'}:
+            action_audit('ALERT_ACK' if request.endpoint == 'acknowledge_alert' else 'REPORT_GENERATE','REQUEST_BOUND')
         return safe_error({400: 'INVALID_REQUEST', 404: 'NOT_FOUND', 405: 'METHOD_NOT_ALLOWED',
                            413: 'REQUEST_BOUND'}.get(error.code, 'REQUEST_FAILED'), error.code)
 
@@ -253,6 +255,10 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         if builder is None:
             abort(404)
         return jsonify(builder(api=True))
+
+    @app.get('/api/session')
+    def api_session():
+        return jsonify(expires_at=g.operator_session.expires_at.isoformat(), login_url='/login')
 
     def query_context():
         args = request.args
@@ -365,6 +371,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         overview = reader.overview(context['scope_obj'])
         path, title = OPERATIONAL_VIEWS[view_id]
         common = dict(title=title, current_path=path, operator_name=g.operator_session.actor,
+            expires_at=g.operator_session.expires_at.isoformat(),
             csrf_token=generate_csrf(), scope='저장 증거 · 각 원천은 독립 관측이며 동시에 생성된 스냅샷이 아닙니다.',
             critical_count='UNKNOWN', **context)
         sources = [source_presentation(s) for s in overview.sources]
@@ -492,7 +499,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         app.extensions['operator_view_builders'][view_id] = builder
         app.add_url_rule(path, endpoint='operator_' + view_id, view_func=builder, methods=['GET'])
 
-    def record_view(resource_id, record_id, evidence=False):
+    def record_view(resource_id, record_id, evidence=False, api=False):
         try:
             resource = settings.resource(resource_id)
             if len(record_id) > 512 or any(c in record_id for c in ('/', '\\', '\r', '\n', '\t')):
@@ -534,11 +541,14 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         parent_kind = {'evaluations': 'decisions', 'evaluation_events': 'decisions', 'campaigns': 'overview', 'freezes': 'orders'}.get(record.kind, record.kind)
         parent = OPERATIONAL_VIEWS.get(parent_kind, ('/orders', '주문'))
         fields = {LABELS.get(k, k): ('UNKNOWN · 확인되지 않음' if v is None else _clean(v)) for k, v in row['fields'].items()}
-        return render_template('operator/detail.html', title='정제된 원천 증거' if evidence else parent[1] + ' 상세',
+        common = dict(title='정제된 원천 증거' if evidence else parent[1] + ' 상세',
             current_path=parent[0], operator_name=g.operator_session.actor, csrf_token=generate_csrf(),
             target={'simulated': 'simulation', 'dry_run': 'dry-run'}.get(resource.target, resource.target),
             source=row['source'], row=row, fields=fields, evidence=evidence, critical_count='UNKNOWN',
-            scope='저장 증거 · 실행 권한 없음', back_url=back)
+            scope='저장 증거 · 실행 권한 없음', back_url=back,
+            expires_at=g.operator_session.expires_at.isoformat(), view_id='evidence' if evidence else 'record',
+            selection_id=record.selection.selection_id)
+        return saved_response('operator/detail.html',common,api)
 
     app.add_url_rule('/records/<resource_id>/<record_id>', 'operator_record', record_view, methods=['GET'])
     app.add_url_rule('/evidence/<resource_id>/<record_id>', 'operator_evidence',
@@ -546,6 +556,9 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     app.extensions.update(operator_query_context=query_context, operator_contextual_url=contextual_url,
         operator_source_presentation=source_presentation, operator_present_record=present_record,
         operator_observer_status=observer_status)
+    for record_kind in ('record','evidence'):
+        app.extensions['operator_view_builders'][record_kind] = lambda api=False, kind=record_kind: record_view(
+            request.args.get('resource_id',''),request.args.get('record_id',''),kind=='evidence',api)
 
     validation_names = dict(replay='Replay', backtest='백테스트', shadow='LLM Shadow',
         soak='모의투자 Soak', calibration='위험 보정', readiness='준비도')
@@ -610,6 +623,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 common.update(projection=projection, selected_rows=rows,
                     source=source_presentation(projection.envelope, common['result_id']),
                     selection_id=projection.selection.selection_id, diagnostic=None)
+                common['target'] = {'simulated':'simulation','dry_run':'dry-run'}.get(projection.envelope.target,projection.envelope.target)
                 common['link'] = lambda **params: path + '?' + urlencode(dict(resource_id=resource_id,
                     **({'result_id':common['result_id']} if common['result_id'] and not result_id else {}), **params))
             except (ValueError, KeyError, StopIteration):
@@ -625,6 +639,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     def reports_view(api=False, artifact=None, error=None):
         common = common_view('보고서', '/reports', 'reports', catalog=catalog(), artifact=artifact,
             error=error, generated_at=kst_time(artifact.generated_at) if artifact else None,
+            resource_targets={r.id:r.target for r in settings.registered_resources},
             today=clock().astimezone(KST).date().isoformat())
         return saved_response('operator/reports.html', common, api)
 
@@ -667,7 +682,9 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             abort(404)
         if not download:
             return render_template('operator/reports.html', **common_view('보고서', '/reports',
-                catalog=catalog(), artifact=None, owned=owned, today=clock().astimezone(KST).date().isoformat()))
+                catalog=catalog(), artifact=None, owned=owned,
+                resource_targets={r.id:r.target for r in settings.registered_resources},
+                today=clock().astimezone(KST).date().isoformat()))
         if len(owned.data) > min(settings.export_bytes, 10*1024*1024):
             abort(413)
         action_audit('REPORT_DOWNLOAD', 'SUCCEEDED', owned.resource_id)
@@ -751,7 +768,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 with sqlite3.connect(alerts.path.as_uri() + '?mode=ro', uri=True) as conn:
                     conn.execute('PRAGMA query_only=ON')
                     resources = tuple(r.id for r in settings.registered_resources
-                        if context['scope_obj'] is None or (r.account_hash == context['scope_obj'].account_hash and r.target == context['scope_obj'].target))
+                        if context['scope_obj'] is None or (r.account_hash == context['scope_obj'].account_hash and r.target == context['scope_obj'].target
+                            and (not context['scope_obj'].resource_id or r.id == context['scope_obj'].resource_id)))
                     placeholders = ','.join('?' for _ in resources) or 'NULL'
                     allowed = f"json_extract(subject_json,'$[0]') IN ({placeholders})"
                     offset = (context['page_number']-1)*context['limit']
@@ -787,7 +805,11 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     @app.post('/alerts/<episode_id>/ack')
     def acknowledge_alert(episode_id):
         from .alert_store import RevisionConflict
-        incident = authorized_incident(episode_id)
+        try:
+            incident = authorized_incident(episode_id)
+        except HTTPException:
+            action_audit('ALERT_ACK','NOT_FOUND')
+            raise
         note = request.form.get('note','')
         try:
             if set(request.form) - {'csrf_token','expected_revision','note'} or any(
@@ -799,7 +821,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         except ValueError:
             action_audit('ALERT_ACK','INVALID_REQUEST',incident.subject.resource_id)
             return alerts_view(episode_id,error=FORM_ERROR,note=_clean(note)),400
-        safe_note = _clean(note)
+        safe_note = _clean(note)[:500]
         try:
             app.extensions['alert_store'].acknowledge(episode_id, revision, g.operator_session.actor, note=safe_note)
         except RevisionConflict:

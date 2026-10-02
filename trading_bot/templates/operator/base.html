@@ -16,10 +16,12 @@
   <meta name="color-scheme" content="light dark">
   <title>{{ title|default('안전 개요')|forceescape }} · 운영 증거</title>
   <link rel="stylesheet" href="/static/operator.css">
+  {% if operator_name|default('') %}<script src="/static/operator.js" defer></script>{% endif %}
   {% block head %}{% endblock %}
 </head>
-<body>
+<body data-operator-view="{{ view_id|default('',true)|forceescape }}" data-expires-at="{{ expires_at|default('',true)|forceescape }}">
   <a class="skip-link" href="#main-content">본문으로 이동</a>
+  <div id="operator-private">
   <header class="operator-header">
     <span class="current-page">{{ title|default('안전 개요')|forceescape }}</span>
     <span class="target-badge">{{ ui.target_badge(target|default('UNKNOWN')) }}</span>
@@ -64,14 +66,15 @@
     <div id="error-summary" role="alert" tabindex="-1">{% block errors %}{% endblock %}</div>
     <div id="critical-announcement" role="alert" aria-atomic="true">{% block critical_announcement %}{% endblock %}</div>
     <section class="page-actions" aria-label="지원되는 작업">{% block actions %}{% endblock %}</section>
-    {% block content %}
+    <div id="operator-evidence">{% block content %}
       {% block filters %}{% endblock %}
       {% block summary %}{% endblock %}
       {% block rows %}{% endblock %}
       {% block pagination %}{% endblock %}
       {% block evidence %}{% endblock %}
-    {% endblock %}
+    {% endblock %}</div>
   </main>
+  </div>
   {% block scripts %}{% endblock %}
 </body>
 </html>

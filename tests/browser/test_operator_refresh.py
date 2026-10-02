@@ -63,6 +63,7 @@ def test_timeout_no_overlap_retains_last_success_and_then_recovers(operator_page
     page.get_by_role('button',name='저장 증거 새로고침',exact=True).click()
     expect(page.locator('[data-refresh]')).to_be_disabled()
     page.clock.run_for(9000)
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
     assert page.evaluate('window.delayedReads') == 1
     page.clock.run_for(1000)
     expect(page.locator('#refresh-status')).to_contain_text('마지막 성공 관측을 유지')
@@ -141,3 +142,104 @@ def test_session_boundary_hides_cached_evidence_no_post_replay(operator_page, op
     expect(page.locator('#main-content')).to_be_hidden()
     assert 'operator-snapshot' not in page.locator('body').inner_text()
     assert not posts
+
+
+def test_failed_saved_source_retains_attribution(operator_page,operator_server,alert_web):
+    page=operator_page
+    _,_,sources,_,_,_=alert_web
+    enter(page,operator_server,sources.clock)
+    before=page.locator('#operator-evidence').inner_text()
+    metadata=page.locator('#source-status').inner_text()
+    sources.clock.advance(minutes=10)
+    sources.paths['audit'].rename(sources.paths['audit'].with_suffix('.missing'))
+    with page.expect_response('**/api/views/account*'):
+        page.get_by_role('button',name='저장 증거 새로고침',exact=True).click()
+    expect(page.locator('#refresh-status')).to_contain_text('마지막 성공 관측을 유지')
+    assert page.locator('#operator-evidence').inner_text()==before
+    expect(page.locator('#source-status')).to_contain_text('조회 실패')
+    assert '원천 관측' in metadata
+
+
+def test_enhanced_ack_conflict_retains_draft_then_server_success(operator_page,operator_server,alert_web):
+    from trading_bot.alert_models import Severity
+    page=operator_page
+    _,_,sources,alerts,episode,fact=alert_web
+    enter(page,operator_server,sources.clock,'/alerts/'+episode.episode_id)
+    note=page.get_by_label('대응 메모 (선택)',exact=True)
+    note.fill('확인 중')
+    alerts.observe(replace(fact,source_id='post-worse',sequence=2,severity=Severity.CRITICAL))
+    with page.expect_response('**/ack') as reply:
+        page.get_by_role('button',name='읽음으로 기록',exact=True).click()
+    assert reply.value.status==409
+    expect(page.locator('#error-summary')).to_contain_text('알림 상태가 변경되었습니다')
+    expect(note).to_have_value('확인 중')
+    expect(page.locator('[name=expected_revision]')).to_have_value('2')
+    assert not alerts.get_incident(episode.episode_id).acknowledged
+    with page.expect_response('**/ack') as reply:
+        page.get_by_role('button',name='읽음으로 기록',exact=True).click()
+    assert reply.value.status==200
+    expect(page.locator('#refresh-status')).to_contain_text('읽음으로 기록했습니다')
+    assert alerts.get_incident(episode.episode_id).active
+    assert alerts.list_acknowledgements(episode.episode_id)[0].actor=='owner'
+
+
+def test_enhanced_report_three_real_downloads(operator_page,operator_server,alert_web):
+    page=operator_page
+    _,_,sources,_,_,_=alert_web
+    enter(page,operator_server,sources.clock,'/reports')
+    replay=page.locator('form:has([name=family][value=replay])')
+    with page.expect_response('**/reports/generate'):
+        replay.get_by_role('button',name='보고서 생성',exact=True).click()
+    expect(page.locator('#generated-report')).to_be_visible()
+    for fmt in ['TXT','JSON','CSV']:
+        with page.expect_download() as download:
+            page.get_by_role('link',name=fmt+' 내려받기',exact=True).click()
+        assert download.value.failure() is None
+        assert download.value.suggested_filename.endswith('.'+fmt.lower())
+
+
+def test_record_detail_timer_uses_same_saved_selection(operator_page,operator_server,alert_web):
+    page=operator_page
+    _,_,sources,_,_,_=alert_web
+    enter(page,operator_server,sources.clock,'/records/audit/runs%3Aoperator-run')
+    before=page.locator('#operator-evidence').inner_text()
+    with page.expect_response('**/api/views/record*'):
+        page.clock.run_for(30000)
+    expect(page.locator('#refresh-status')).to_contain_text('다시 조회했습니다')
+    assert page.locator('#operator-evidence').inner_text()==before
+
+
+def test_native_report_download_and_blank_ack_without_javascript(browser,operator_server,alert_web):
+    from urllib.parse import urlsplit
+    from operator_fixtures import capture_sources
+    _,_,sources,alerts,episode,_=alert_web
+    before=capture_sources(sources)
+    violations=[]
+    origin=urlsplit(operator_server)
+    with browser.new_context(java_script_enabled=False,accept_downloads=True,service_workers='block') as context:
+        def local(route):
+            if urlsplit(route.request.url)[:2]==origin[:2]:
+                route.continue_()
+            else:
+                violations.append(route.request.url)
+                route.abort()
+        context.route('**/*',local)
+        page=context.new_page()
+        page.set_default_timeout(5000)
+        page.goto(operator_server+'/login?return_to=/reports')
+        page.get_by_label('운영자 계정',exact=True).fill('owner')
+        page.get_by_label('비밀번호',exact=True).fill('synthetic-password')
+        page.get_by_role('button',name='로그인',exact=True).click()
+        page.locator('form:has([name=family][value=replay])').get_by_role('button',name='보고서 생성',exact=True).click()
+        expect(page.locator('#generated-report')).to_be_visible()
+        for fmt in ['TXT','JSON','CSV']:
+            with page.expect_download() as download:
+                page.get_by_role('link',name=fmt+' 내려받기',exact=True).click()
+            assert download.value.failure() is None
+        page.goto(operator_server+'/alerts/'+episode.episode_id)
+        page.get_by_role('button',name='읽음으로 기록',exact=True).click()
+        expect(page.locator('#refresh-status')).to_contain_text('읽음으로 기록했습니다')
+        assert alerts.get_incident(episode.episode_id).active
+        assert alerts.list_acknowledgements(episode.episode_id)[0].note==''
+    assert not violations
+    assert capture_sources(sources)==before
