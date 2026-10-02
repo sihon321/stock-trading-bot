@@ -43,12 +43,15 @@ def login(client, **kwargs):
 
 @pytest.mark.parametrize('path', ['/', '/account', '/holdings', '/candidates', '/decisions',
     '/orders', '/fills', '/runs', '/workers', '/records/audit/runs:one',
-    '/evidence/audit/runs:one', '/reports', '/alerts', '/validation/soak', '/downloads/fake'])
+    '/evidence/audit/runs:one', '/reports', '/alerts', '/validation/soak', '/downloads/fake',
+    '/validation/replay/result', '/reports/'+'a'*64, '/downloads/'+'a'*64+'/txt',
+    '/alerts/'+'a'*32, '/api/views/alerts', '/api/views/reports', '/api/views/validation-replay'])
 def test_auth_guards_even_reserved_and_unknown_routes(web, path):
     app, client, _ = web
     response = client.get(path)
-    assert response.status_code == 302
-    assert response.headers['Location'].startswith('/login')
+    assert response.status_code == (401 if path.startswith('/api/') else 302)
+    if not path.startswith('/api/'):
+        assert response.headers['Location'].startswith('/login')
     assert 'operator-snapshot' not in response.text
     assert client.get('/api/views/overview').status_code == 401
 

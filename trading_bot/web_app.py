@@ -159,6 +159,9 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     if report_service is None:
         from .web_reports import SavedReportService
         report_service = SavedReportService(settings, store=store, clock=clock)
+    if alert_store is None:
+        from .alert_store import AlertStore
+        alert_store = AlertStore(settings.operational_db_path, clock=clock)
     app.extensions.update(web_settings=settings, web_store=store, web_auth=auth,
         evidence_service=evidence_service or OperatorEvidenceService(settings, clock=clock), report_service=report_service, alert_store=alert_store,
         operator_clock=clock, operator_view_builders={})
@@ -209,6 +212,10 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
 
     @app.errorhandler(CSRFError)
     def csrf_error(error):
+        if g.get('operator_session') and request.endpoint in {'generate_report', 'acknowledge_alert'}:
+            action_audit('ALERT_ACK' if request.endpoint == 'acknowledge_alert' else 'REPORT_GENERATE', 'INVALID_REQUEST')
+            if request.endpoint == 'acknowledge_alert':
+                return alerts_view(request.view_args['episode_id'],error=FORM_ERROR,note=_clean(request.form.get('note',''))),400
         return safe_error('INVALID_REQUEST', 400)
 
     @app.errorhandler(HTTPException)
@@ -672,6 +679,137 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     app.add_url_rule('/reports/<artifact_id>', 'operator_artifact', owned_artifact)
     app.add_url_rule('/downloads/<artifact_id>/<format>', 'operator_download',
         lambda artifact_id, format: owned_artifact(artifact_id, format, True))
+
+    def authorized_incident(episode_id):
+        if not re.fullmatch(r'[a-f0-9]{32}', episode_id):
+            abort(404)
+        alerts = app.extensions['alert_store']
+        try:
+            incident = alerts.get_incident(episode_id)
+            if incident is None:
+                abort(404)
+            resource = settings.resource(incident.subject.resource_id)
+            if resource.account_hash != incident.subject.account_hash or resource.target != incident.subject.target:
+                abort(404)
+            return incident
+        except (ValueError, sqlite3.Error, OSError):
+            abort(404)
+
+    def present_incident(incident):
+        from dataclasses import fields
+        values = {f.name: _clean(getattr(incident, f.name)) for f in fields(incident)
+            if f.name not in {'subject','first_observed_at','last_observed_at','recovered_at','next_reminder_at'}}
+        values.update(resource_id=incident.subject.resource_id, target=incident.subject.target,
+            ticker=_clean(incident.subject.ticker_or_account), family=_clean(incident.subject.problem_family),
+            broker_subject=_clean(incident.subject.broker_subject),
+            first=kst_time(incident.first_observed_at), last=kst_time(incident.last_observed_at),
+            recovered=kst_time(incident.recovered_at), reminder=kst_time(incident.next_reminder_at),
+            url='/alerts/' + incident.episode_id,
+            deliveries=tuple(dict(state=a.state.value, owner=a.delivery_owner, kind=a.kind)
+                for a in app.extensions['alert_store'].list_attempts(incident.episode_id)))
+        return values
+
+    def alerts_view(episode_id=None, api=False, error=None, note='', message=None):
+        from dataclasses import fields
+        context = query_context()
+        alerts = app.extensions['alert_store']
+        common = common_view('알림 상세' if episode_id else '알림', '/alerts',
+            'alerts', active_rows=(), history_rows=(), incident=None, revisions=(), reads=(), attempts=(),
+            observations=(), error=error, note=note, message=message, observer=observer_status(),
+            unavailable=None, page_number=context['page_number'], previous_url=None, next_url=None)
+        common.update(period_name=context['period_name'], params=context['params'])
+        if episode_id:
+            incident = authorized_incident(episode_id)
+            common['incident'] = present_incident(incident)
+            common['params']['episode_id'] = episode_id
+            common['revisions'] = [dict(revision=r.revision, severity=r.severity.value,
+                observed=kst_time(r.observed_at), source_owner=_clean(r.source_owner), source_id=_clean(r.source_id))
+                for r in alerts.list_revisions(episode_id)]
+            common['reads'] = [dict(revision=a.revision, actor=_clean(a.actor), at=kst_time(a.at), note=_clean(a.note))
+                for a in alerts.list_acknowledgements(episode_id)]
+            attempts = alerts.list_attempts(episode_id)
+            common['attempts'] = [dict(kind=a.kind, state=a.state.value, revision=a.revision,
+                delivery_owner=a.delivery_owner, due=kst_time(a.due_at), finalized=kst_time(a.finalized_at),
+                failure_code=_clean(a.failure_code), producer_event_id=_clean(a.producer_event_id),
+                producer_attempt_id=_clean(a.producer_attempt_id),
+                history=tuple(dict(state=h.state.value, due=kst_time(h.due_at), failure_code=_clean(h.failure_code))
+                    for h in alerts.list_delivery_history(a.event_key))) for a in attempts]
+            with alerts.connection() as conn:
+                common['observations'] = [dict(source_owner=_clean(r['source_owner']), source_id=_clean(r['source_id']),
+                    sequence=r['sequence'], observed=kst_time(datetime.fromtimestamp(r['observed_at'], timezone.utc)))
+                    for r in conn.execute('SELECT source_owner,source_id,sequence,observed_at FROM alert_observations WHERE episode_id=? ORDER BY sequence LIMIT 1000', (episode_id,))]
+            common['selection_id'] = f'{episode_id}:{incident.revision}'
+            common['source'] = dict(resource_id=incident.subject.resource_id, record_id=episode_id,
+                observed_at=kst_time(incident.last_observed_at), queried_at=kst_time(clock()),
+                age=f'{max(0,(clock()-incident.last_observed_at).total_seconds()):,.0f}초',
+                freshness='UNKNOWN', completeness='COMPLETE', query_status='SUCCESS', provenance='saved')
+        else:
+            try:
+                # The operational API lacks period/offset selectors. A fixed parameterized,
+                # read-only query supplies bounded pages without altering alert/source facts.
+                alerts._verify_ownership()
+                with sqlite3.connect(alerts.path.as_uri() + '?mode=ro', uri=True) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    resources = tuple(r.id for r in settings.registered_resources
+                        if context['scope_obj'] is None or (r.account_hash == context['scope_obj'].account_hash and r.target == context['scope_obj'].target))
+                    placeholders = ','.join('?' for _ in resources) or 'NULL'
+                    allowed = f"json_extract(subject_json,'$[0]') IN ({placeholders})"
+                    offset = (context['page_number']-1)*context['limit']
+                    for active, name in ((1,'active_rows'),(0,'history_rows')):
+                        period_clause = '' if active else ' AND last_at>=? AND last_at<?'
+                        period_values = () if active else (context['period'].start.timestamp(), context['period'].end.timestamp())
+                        ids = conn.execute('SELECT episode_id FROM alert_episodes WHERE active=? AND ' + allowed + period_clause +
+                            ' ORDER BY last_at DESC,episode_id LIMIT ? OFFSET ?', (active,*resources,*period_values,context['limit']+1,offset)).fetchall()
+                        rows = []
+                        for row in ids[:context['limit']]:
+                            try:
+                                rows.append(present_incident(authorized_incident(row[0])))
+                            except HTTPException:
+                                continue
+                        common[name] = rows
+                        if len(ids)>context['limit']:
+                            common['next_url'] = contextual_url('/alerts',context,page=context['page_number']+1)
+                    if context['page_number']>1:
+                        common['previous_url'] = contextual_url('/alerts',context,page=context['page_number']-1)
+                common['selection_id'] = proof_hash_alert(common)
+            except (ValueError, sqlite3.Error, OSError):
+                common.update(unavailable='ALERT_STORAGE_UNAVAILABLE', query_status='FAILED')
+        return saved_response('operator/alerts.html', common, api)
+
+    def proof_hash_alert(common):
+        return hashlib.sha256(json.dumps([(r['episode_id'],r['revision'],r['acknowledged'])
+            for r in (*common['active_rows'],*common['history_rows'])]).encode()).hexdigest()
+
+    app.add_url_rule('/alerts', 'operator_alerts', alerts_view)
+    app.add_url_rule('/alerts/<episode_id>', 'operator_alert', alerts_view)
+    app.extensions['operator_view_builders']['alerts'] = lambda api=False: alerts_view(request.args.get('episode_id'),api)
+
+    @app.post('/alerts/<episode_id>/ack')
+    def acknowledge_alert(episode_id):
+        from .alert_store import RevisionConflict
+        incident = authorized_incident(episode_id)
+        note = request.form.get('note','')
+        try:
+            if set(request.form) - {'csrf_token','expected_revision','note'} or any(
+                    len(request.form.getlist(k)) != 1 for k in request.form) or len(note)>500:
+                raise ValueError()
+            revision = int(request.form.get('expected_revision',''))
+            if revision<1:
+                raise ValueError()
+        except ValueError:
+            action_audit('ALERT_ACK','INVALID_REQUEST',incident.subject.resource_id)
+            return alerts_view(episode_id,error=FORM_ERROR,note=_clean(note)),400
+        safe_note = _clean(note)
+        try:
+            app.extensions['alert_store'].acknowledge(episode_id, revision, g.operator_session.actor, note=safe_note)
+        except RevisionConflict:
+            action_audit('ALERT_ACK','REVISION_CONFLICT',incident.subject.resource_id)
+            return alerts_view(episode_id,error='알림 상태가 변경되었습니다. 최신 증거를 확인한 뒤 읽음으로 기록하세요.', note=safe_note),409
+        except (ValueError, OSError, sqlite3.Error):
+            action_audit('ALERT_ACK','FAILED',incident.subject.resource_id)
+            return alerts_view(episode_id,error='읽음 기록을 저장하지 못했습니다. 알림은 미확인 상태입니다. 메모를 확인하고 다시 시도하세요.',note=safe_note),503
+        action_audit('ALERT_ACK','SUCCEEDED',incident.subject.resource_id)
+        return alerts_view(episode_id,message='읽음으로 기록했습니다. 원천 증거의 복구 확인 전까지 활성 알림을 유지합니다.')
 
     app.wsgi_app = FixedProxyBoundary(app.wsgi_app, settings)
     return app
