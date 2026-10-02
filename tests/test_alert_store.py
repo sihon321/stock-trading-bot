@@ -108,10 +108,10 @@ def test_schema_ownership_coexists_and_unknown_version_refuses_without_writes(tm
     from trading_bot.web_config import WebSettings
     from trading_bot.web_store import WebStore
     root = tmp_path / "operation"
-    settings = WebSettings(operational_db=root / "operator.db", artifact_root=root / "artifacts")
+    settings = WebSettings(operational_db_path=root / "operator.db", artifact_root=tmp_path / "artifacts")
     web = WebStore(settings)
     web.initialize()
-    alerts = AlertStore(settings.operational_db)
+    alerts = AlertStore(settings.operational_db_path)
     alerts.initialize()
     web.initialize()
     with sqlite3.connect(alerts.path) as conn:
