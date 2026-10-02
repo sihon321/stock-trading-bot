@@ -149,7 +149,11 @@ def test_escape_untrusted_shell_and_macro_facts(attack):
     page = shell(operator_name=attack, scope=attack, source={"resource_id": attack})
     evidence = macro('{{ ui.evidence_details(evidence) }}{{ ui.badge("UNKNOWN", label) }}',
                      evidence={"reason": attack}, label=attack)
-    assert not page.select("script, img, [onfocus], [onerror]")
+    scripts = page.select("script")
+    assert len(scripts) == 1
+    assert scripts[0].attrs == {"src": "/static/operator.js", "defer": ""}
+    assert not scripts[0].get_text(strip=True)
+    assert not page.select("img, [onfocus], [onerror]")
     assert not evidence.select("script, img, [onfocus], [onerror]")
     assert attack in page.text and attack in evidence.text
 

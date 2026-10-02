@@ -39,13 +39,21 @@ def test_framework_smoke_in_fresh_interpreter():
 
 
 def test_chromium_launch_is_real_and_missing_binary_is_explicit(tmp_path):
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        with playwright.chromium.launch() as browser:
-            page = browser.new_page()
-            page.set_content("<title>operator infrastructure</title>")
-            assert page.title() == "operator infrastructure"
+    # The browser plugin keeps its own event loop alive for the pytest session.
+    # A fresh process proves provisioning without nesting a second sync driver.
+    result = subprocess.run([sys.executable, "-c", '''
+import json
+from playwright.sync_api import sync_playwright
+with sync_playwright() as playwright:
+    with playwright.chromium.launch() as browser:
+        page = browser.new_page()
+        page.set_content("<title>operator infrastructure</title>")
+        print(json.dumps({"title": page.title(), "version": browser.version}))
+'''], capture_output=True, text=True, check=True, timeout=15,
+        env=os.environ.copy())
+    launched = json.loads(result.stdout)
+    assert launched["title"] == "operator infrastructure"
+    assert launched["version"]
     env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(tmp_path / "absent")}
     result = subprocess.run([sys.executable, "-c", (
         "from playwright.sync_api import sync_playwright; "
