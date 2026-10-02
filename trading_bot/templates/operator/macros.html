@@ -105,9 +105,11 @@
 {% set bounds = namespace(remaining=16384, truncated=truncated) %}
 <details class="evidence-details"><summary><span class="disclosure-closed">정제된 원천 증거 펼치기</span><span class="disclosure-open">정제된 원천 증거 접기</span></summary>
 <dl>{% for name, value in fields.items() %}
+  {% set field_name = (name|string)[:128] %}
+  {% set bounds.remaining = [0, bounds.remaining - field_name|length]|max %}
   {% set text = value|string %}{% set limit = [4096, bounds.remaining]|min %}
   {% if text|length > limit %}{% set bounds.truncated = true %}{% endif %}
-  {% if bounds.remaining > 0 %}<dt>{{ (name|string)[:128]|forceescape }}</dt><dd><pre>{{ text[:limit]|forceescape }}</pre></dd>{% endif %}
+  {% if bounds.remaining > 0 %}<dt>{{ field_name|forceescape }}</dt><dd><pre>{{ text[:limit]|forceescape }}</pre></dd>{% endif %}
   {% set bounds.remaining = bounds.remaining - [text|length, limit]|min %}
 {% endfor %}</dl>
 {% if bounds.truncated %}<p class="helper">표시 한도에 도달했습니다. 등록된 정제 보고서에서 범위를 나누어 확인하세요.</p>{% endif %}

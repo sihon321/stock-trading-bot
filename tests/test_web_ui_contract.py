@@ -42,6 +42,7 @@ def test_shell_semantic_landmarks_and_progressive_regions():
     assert len(page.select("h1")) == 1
     assert page.select_one('a[href="#main-content"]').text == "본문으로 이동"
     assert page.header and page.main and page.main["id"] == "main-content"
+    assert page.header.select_one('summary[aria-controls="operator-navigation"]')
     assert page.select_one('[role="status"][aria-live="polite"]')
     assert page.select_one('[role="alert"]')
     assert page.select_one('form[method="get"] button').text.strip() == "저장 증거 새로고침"
@@ -124,7 +125,7 @@ def test_macro_filter_pagination_and_evidence_bounds():
     assert len(page.pre.text.strip()) == 4096
     assert "표시 한도에 도달했습니다." in page.text
     bounded = macro('{{ ui.evidence_details(evidence) }}', evidence={str(i): "y" * 4096 for i in range(8)})
-    assert sum(len(x.text.strip()) for x in bounded.select("pre")) <= 16384
+    assert sum(len(x.text.strip()) for x in bounded.select("pre, dt")) <= 16384
 
 
 @pytest.mark.parametrize("attack", ['<script>alert(1)</script>', '<img src=x onerror=alert(1)>',

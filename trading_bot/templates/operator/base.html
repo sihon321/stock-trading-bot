@@ -40,7 +40,6 @@
     </details>
     {% endif %}
     {% endblock %}
-  </header>
   <details class="navigation-disclosure" open>
     <summary aria-expanded="true" aria-controls="operator-navigation">{{ ui.icon('menu') }} 메뉴</summary>
     <nav id="operator-navigation" aria-label="운영 화면 탐색">
@@ -54,6 +53,7 @@
       {% endfor %}
     </nav>
   </details>
+  </header>
   <main id="main-content" tabindex="-1">
     <nav class="breadcrumb" aria-label="현재 위치">{% block breadcrumb %}<a href="/">안전 개요</a> / <span>{{ title|default('안전 개요')|forceescape }}</span>{% endblock %}</nav>
     <h1>{{ title|default('안전 개요')|forceescape }}</h1>
