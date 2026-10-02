@@ -1,0 +1,77 @@
+{% import "operator/macros.html" as ui %}
+{% set navigation = [
+  ('운영 개요', [('/', '안전 개요'), ('/alerts', '알림'), ('/workers', '작업 상태')]),
+  ('계좌·보유', [('/account', '계좌 요약'), ('/holdings', '보유 종목')]),
+  ('판단·주문', [('/candidates', '선별 후보'), ('/decisions', 'LLM 판단'), ('/orders', '주문'), ('/fills', '체결'), ('/runs', '실행 이력')]),
+  ('검증·보고', [('/reports', '보고서'), ('/validation/replay', 'Replay'), ('/validation/backtest', '백테스트'), ('/validation/shadow', 'LLM Shadow'), ('/validation/soak', '모의투자 Soak'), ('/validation/calibration', '위험 보정'), ('/validation/readiness', '준비도')])
+] %}
+{% set active = current_path|default('/') %}
+{% set selected = namespace(path='/') %}
+{% for group, entries in navigation %}{% for path, label in entries %}{% if active == path %}{% set selected.path = path %}{% endif %}{% endfor %}{% endfor %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{ title|default('안전 개요')|forceescape }} · 운영 증거</title>
+  <link rel="stylesheet" href="/static/operator.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main-content">본문으로 이동</a>
+  <header class="operator-header">
+    <span class="current-page">{{ title|default('안전 개요')|forceescape }}</span>
+    <span class="target-badge">{{ ui.target_badge(target|default('UNKNOWN')) }}</span>
+    <a class="critical-count" href="/alerts">미해결 CRITICAL · {{ critical_count|default('UNKNOWN')|forceescape }}</a>
+    <form class="refresh-form" method="get" action="{{ selected.path }}">
+      {% block refresh_fields %}{% endblock %}
+      <button class="primary" type="submit" data-refresh aria-describedby="refresh-helper">저장 증거 새로고침</button>
+    </form>
+    {% block operator_menu %}
+    {% if operator_name|default('') %}
+    <details class="operator-menu"><summary>운영자 계정</summary>
+      <p>{{ operator_name|forceescape }}</p>
+      <p>로그인은 최대 12시간 유지됩니다. PC와 휴대폰 세션은 각각 만료됩니다.</p>
+      {% if csrf_token|default('') %}<form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token|forceescape }}">
+        <button type="submit">로그아웃</button>
+      </form>{% endif %}
+    </details>
+    {% endif %}
+    {% endblock %}
+  </header>
+  <details class="navigation-disclosure" open>
+    <summary aria-expanded="true" aria-controls="operator-navigation">{{ ui.icon('menu') }} 메뉴</summary>
+    <nav id="operator-navigation" aria-label="운영 화면 탐색">
+      {% for group, entries in navigation %}
+      <section class="navigation-group" aria-labelledby="nav-group-{{ loop.index }}">
+        <h2 id="nav-group-{{ loop.index }}">{{ group }}</h2>
+        <ul>{% for path, label in entries %}
+          <li><a href="{{ path }}"{% if selected.path == path %} aria-current="page"{% endif %}>{{ label }}</a></li>
+        {% endfor %}</ul>
+      </section>
+      {% endfor %}
+    </nav>
+  </details>
+  <main id="main-content" tabindex="-1">
+    <nav class="breadcrumb" aria-label="현재 위치">{% block breadcrumb %}<a href="/">안전 개요</a> / <span>{{ title|default('안전 개요')|forceescape }}</span>{% endblock %}</nav>
+    <h1>{{ title|default('안전 개요')|forceescape }}</h1>
+    {% if scope|default('') %}<p class="page-scope">{{ scope|forceescape }}</p>{% endif %}
+    <section id="source-status" aria-label="관측 및 조회 상태">{% block source_status %}{{ ui.source_metadata(source|default({})) }}{% endblock %}</section>
+    <p id="refresh-helper" class="helper">저장된 증거만 조회합니다. 새 시세 수집이나 거래 실행을 시작하지 않습니다.</p>
+    <div id="refresh-status" role="status" aria-live="polite" aria-atomic="true">{% block refresh_status %}{% endblock %}</div>
+    <div id="error-summary" role="alert" tabindex="-1">{% block errors %}{% endblock %}</div>
+    <div id="critical-announcement" role="alert" aria-atomic="true">{% block critical_announcement %}{% endblock %}</div>
+    <section class="page-actions" aria-label="지원되는 작업">{% block actions %}{% endblock %}</section>
+    {% block content %}
+      {% block filters %}{% endblock %}
+      {% block summary %}{% endblock %}
+      {% block rows %}{% endblock %}
+      {% block pagination %}{% endblock %}
+      {% block evidence %}{% endblock %}
+    {% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
