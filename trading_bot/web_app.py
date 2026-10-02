@@ -310,7 +310,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         if isinstance(data.get('confidence'), (int, float)):
             data['confidence'] = f'{data["confidence"]:.2f}'
         back = contextual_url(parent or OPERATIONAL_VIEWS.get(record.kind, ('/orders', ''))[0], context,
-            cursor=context.get('cursor'), page=context.get('page_number'))
+            **{key: context[value] for key, value in (('cursor', 'cursor'), ('page', 'page_number')) if value in context})
         return dict(**data, id=record.record_id, resource_id=record.resource_id,
             kind=record.kind, fields=fields, source=source_presentation(record.envelope, record.record_id),
             source_ids=record.selection.source_ids, selection_id=record.selection.selection_id,

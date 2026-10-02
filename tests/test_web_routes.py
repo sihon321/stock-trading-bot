@@ -165,3 +165,6 @@ def test_detail_back_preserves_second_page_cursor(saved_web):
     back = page.select_one('.breadcrumb a')['href']
     assert 'cursor=' in back and 'page=2' in back
     assert 'operator-run' in client.get(back).text
+    evidence_url = next(a['href'] for a in page.select('a') if a['href'].startswith('/evidence/'))
+    evidence = BeautifulSoup(client.get(evidence_url).text, 'html.parser')
+    assert 'cursor=' in evidence.select_one('.breadcrumb a')['href']
