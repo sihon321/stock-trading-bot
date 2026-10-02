@@ -1,6 +1,5 @@
 """Self-check the evidence and capability harness before downstream tests trust it."""
 
-import importlib.util
 import json
 from pathlib import Path
 import sqlite3
@@ -27,7 +26,7 @@ def test_links_scope_history_unknown_marks_and_no_read_mutation(tmp_path):
     assert rows(sources.paths["audit"], "SELECT order_id FROM portfolio_orders") == [("broker-order-1",)]
     assert rows(sources.paths["audit"], "SELECT order_id FROM portfolio_fills") == [("broker-order-1",)]
     freeze = rows(sources.paths["soak"], "SELECT ticker,order_intent_id,state FROM soak_ticker_freezes")
-    assert freeze == [("000660", "historic-intent", "ACTIVE")]
+    assert freeze == [("000660", "historic-intent", "FROZEN")]
     assert rows(sources.paths["audit"], "SELECT origin_run_id FROM order_events WHERE order_intent_id='historic-intent'") == [("historic-run",)]
     assert rows(sources.paths["audit"], "SELECT current_price FROM decisions") == [(None,)]
     assert before == capture_sources(sources)
@@ -60,6 +59,14 @@ def test_saved_reports_validate_original_identities(tmp_path):
     assert load_backtest_result(sources.paths["backtest"]).result_id == sources.expected_ids["backtest"]
     assert load_shadow_result(sources.paths["shadow"]).result_id == sources.expected_ids["shadow"]
     assert before == capture_sources(sources)
+
+
+def test_saved_report_fixtures_repeat_with_identical_content_and_ids(tmp_path):
+    first = make_operator_sources(tmp_path / "first")
+    second = make_operator_sources(tmp_path / "second")
+    assert first.expected_ids == second.expected_ids
+    for family in ("replay", "backtest", "shadow"):
+        assert first.paths[family].read_bytes() == second.paths[family].read_bytes()
 
 
 def probe(sources, action, module="json", **extra):
@@ -119,3 +126,19 @@ def test_browser_conftest_collection_is_lazy():
             "assert 'trading_bot.config' not in sys.modules")
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_local_saved_server_serves_and_stops_without_app_import():
+    import importlib.util
+    import urllib.request
+    from flask import Flask
+    spec = importlib.util.spec_from_file_location("browser_harness", "tests/browser/conftest.py")
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+    app = Flask("fixture-selfcheck")
+    app.add_url_rule("/", view_func=lambda: "saved fixture")
+    with harness.serve_saved_app(app) as origin:
+        assert origin.startswith("http://127.0.0.1:")
+        assert urllib.request.urlopen(origin, timeout=3).read() == b"saved fixture"
+    with pytest.raises(OSError):
+        urllib.request.urlopen(origin, timeout=1)
