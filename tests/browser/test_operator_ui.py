@@ -320,7 +320,9 @@ def test_real_download_formula_text_is_safe_and_selection_denominators_match(ope
     assert capture_sources(sources)==baseline
 
 
-def test_bounded_synthetic_overview_review_screenshots(operator_page,operator_server,tmp_path):
+def test_bounded_synthetic_overview_review_screenshots(operator_page,operator_server):
+    import tempfile
+    review=Path(tempfile.mkdtemp(prefix='phase14-review-'))
     page=operator_page
     enter(page,operator_server)
     for width,theme in ((1280,'light'),(390,'dark'),(320,'light')):
@@ -329,7 +331,7 @@ def test_bounded_synthetic_overview_review_screenshots(operator_page,operator_se
         page.goto(operator_server+'/')
         if width<1024:
             page.locator('.navigation-disclosure > summary').click()
-        path=tmp_path/f'operator-overview-{width}-{theme}.png'
+        path=review/f'operator-overview-{width}-{theme}.png'
         page.screenshot(path=str(path))
         assert path.is_file()
         print('SYNTHETIC_REVIEW_SCREENSHOT='+str(path))

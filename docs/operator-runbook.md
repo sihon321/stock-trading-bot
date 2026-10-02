@@ -275,3 +275,130 @@ bot report backtest ./results/baseline.json --output ./results/baseline.txt
 순자산은 정산 현금(예약분 포함) + 결제 대기금 + 보유 평가액이다. 노출은 보유 평가액/순자산, 회전율은 총 체결 금액/일별 순자산 평균, 최대 낙폭은 초기 순자산을 포함한 누적 최고점 대비 최대 하락 비율이다. 수익률은 종료 순자산/초기 순자산−1이다. gross는 **같은 net 체결 수량·시점**에 수수료·거래세·추가 세목·가격 슬리피지 귀속을 더한 값이며 비용 없는 별도 전략 결과가 아니다. 매입 비용은 원가에 포함하고 실현 손익과 미실현 손익을 분리한다. 배당·분할 현금은 거래 비용과 구분한다. 평가액 누락은 null이며 기간 수익률·낙폭·회전율을 산출하지 않는다. benchmark는 같은 계산 세션의 동결 지수 종가가 모두 있을 때만 매수 후 보유 수익률을 표시한다.
 
 저장 증거에는 원래 입력/소스 해시, 정책/체결/비용/결제 버전, 관련 코드 내용 식별자, 의사결정·주문·체결·기업행사·일별 원장이 들어간다. 보고 명령은 해시와 비용·현금·수량·gross/net 계산을 재검증하며 원장 전이를 다시 계산한다. 식별자에 현재 시각·출력 위치·절대 로컬 경로는 들어가지 않는다. baseline/stress는 독립 실행하되 같은 입력·기간·코드의 scenario_group으로 연결된다. 테스트 fixture는 재현성·안전 계약을 확인할 뿐 3년 실측 수익률이나 수익 보장을 증명하지 않는다.
+
+## Phase 14 운영자 웹과 독립 알림 관찰
+
+웹은 **저장 증거 조회, 저장 보고서 생성·내려받기, 알림 읽음 기록**을 제공한다. KIS 조회나 LLM 평가, 주문·취소, 거래 정책 수정, 동결/래치 해제, 실계좌 승격, 거래 워커 시작·중지 권한은 없다. 기존 인증 모의계좌 수동 절차와 000660 동결은 그대로 적용된다. 아래는 소유자가 필요할 때 수행하는 로컬 설정 절차이며 이 구현 검증에서 소유자 서버·암호·원천 DB·Discord를 설정하거나 호출하지 않았다.
+
+### 검증된 실행 환경과 설치
+
+이번 검증의 실제 인터프리터는 **Python 3.14.3**이다. 저장 증거 모듈은 `enum.StrEnum`을 사용한다. 패키지 메타데이터의 `>=3.10`만으로 Python 3.10을 지원한다고 해석하지 않는다. 다른 Python 버전은 해당 버전에서 의존성·설치·회귀 검증을 별도로 수행한다. 웹 검증은 KIS 라이브러리의 해당 인터프리터 호환성을 증명하지 않는다.
+
+Phase 14의 소유자 확인을 마친 정확한 추가 의존성은 Flask 3.1.3, Flask-WTF 1.3.0, waitress 3.0.2, Werkzeug 3.1.9, Jinja2 3.1.6, playwright 1.63.0, pytest-playwright 0.9.0이다. 새로운 환경에서 이름·버전·공식 배포 출처를 확인한 뒤 프로젝트 가상환경에 설치한다. 기존 확인된 환경에서는 다시 설치할 필요가 없다. 로컬 개발 환경 예시는 다음과 같다.
+
+```bash
+PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pip install --user -e '.[web,browser]'
+PYTHONUSERBASE="$PWD/.python-userbase" python3 -m playwright install chromium
+PYTHONUSERBASE="$PWD/.python-userbase" python3 -m trading_bot.web_cli --help
+PYTHONUSERBASE="$PWD/.python-userbase" python3 -m trading_bot.alert_cli --help
+```
+
+브라우저 실행은 실제 Chromium이 필요하다. 브라우저가 없거나 테스트가 skip이면 모바일/테마 검증 성공으로 기록하지 않는다. 배포용 wheel은 `python3 -m pip wheel --no-index --no-deps --no-build-isolation . --wheel-dir <임시출력>`으로 로컬 빌드하고, 검토된 의존성이 이미 있는 환경에 로컬 wheel을 `python3 -m pip install --no-index --no-deps <wheel>`로 설치할 수 있다. wheel에는 `templates/operator/*.html`, `static/operator.css`, `static/operator.js`와 `bot-web`, `bot-alerts` 독립 진입점이 포함되어야 한다.
+
+### 원천 등록·설정·암호의 소유권
+
+소유자만 쓰는 서로 분리된 디렉터리를 사용한다. 다음 절대 경로들은 설명용 예시이며 실제 소유자 경로로 검토해 바꾼다.
+
+| 위치 | 내용과 권한 |
+|---|---|
+| `/srv/operator/config/web.json` | 웹 전용 JSON, 파일 0600·소유자 소유, 디렉터리 0700. 운영자 cookie signing secret을 포함하며 KIS/LLM/webhook을 넣지 않는다. |
+| `/srv/operator/config/alerts.json` | 관찰자 전용 JSON, 동일한 소유자 보호. Discord를 사용하는 경우 webhook은 이 파일에만 보관한다. 화면·로그·공유 자료에 출력하지 않는다. |
+| `/srv/operator/operations/operator.db` | 세션·로그인 제한·웹 작업 audit·읽음·incident·outbox·전달·observer 건강성. 새 DB는 0600, 디렉터리 0700. |
+| `/srv/operator/artifacts` | 등록된 ID의 TXT/JSON/CSV 출력, 디렉터리 0700. 원천 경로와 분리한다. |
+| `/srv/trading-evidence` | 소유자가 이미 보유한 감사·portfolio·soak·controller·저장 JSON 증거. 웹/관찰자는 읽기 전용이며 생성·migration·수정하지 않는다. |
+
+원천의 파일뿐 아니라 **그 파일의 부모 디렉터리**도 읽기 권한 영역이다. 운영 DB 부모·artifact·config 부모는 원천과 동일하거나 상하위일 수 없다. symlink/hardlink 또는 쓰기 영역 안의 원천 별칭을 등록하지 않는다. 감사와 portfolio가 같은 SQLite 파일을 공유하더라도 각 owner의 스키마 검증·읽기 트랜잭션은 구분된다. 여러 DB의 동시 원자적 스냅샷을 주장하지 않는다.
+
+처음 빈 화면을 확인할 수 있는 최소 웹 JSON:
+
+```json
+{
+  "operational_db_path": "/srv/operator/operations/operator.db",
+  "artifact_root": "/srv/operator/artifacts",
+  "registered_resources": [],
+  "bind_host": "127.0.0.1",
+  "port": 8765
+}
+```
+
+`registered_resources`의 항목은 예를 들어 `{"id":"audit","path":"/srv/trading-evidence/audit.db","owner":"audit","account_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target":"mock"}`다. 이 hash는 합성 예시이며 실제 saved account scope hash로 대체한다. `id`는 고정 등록 식별자이고 브라우저에서 임의 파일 경로를 선택하지 않는다. owner는 audit/portfolio/soak/controller/replay/backtest/shadow/calibration 중 실제 스키마를 선택한다. target은 mock/real/dry_run/simulated/shadow 중 저장 증거의 실제 귀속을 선택하며 hash로 추측하지 않는다. 누락 파일·지원하지 않는 스키마·깨진 연결은 UNKNOWN으로 남는다. 거래자의 `.env`나 거래 `Settings`를 웹 설정으로 복사하지 않는다.
+
+Shadow는 저장 결과에 대한 신뢰된 등록 proof가 있어야 검증된다. calibration은 저장 outcome·가격·원천 연결 proof, readiness는 등록된 saved facts가 있어야 AVAILABLE이다. proof가 등록되지 않은 family는 이름이 있는 unavailable/UNKNOWN 상태이며 CLI 설정이나 업로드한 자기 주장으로 성공 처리하지 않는다. 제공된 CLI factory에 그런 proof 등록이 없으면 해당 화면은 UNKNOWN으로 남는다.
+
+```bash
+bot-web setup --config /srv/operator/config/web.json --username operator
+bot-web serve --config /srv/operator/config/web.json
+bot-web reset-password --config /srv/operator/config/web.json
+```
+
+setup은 숨겨진 입력으로 12자 이상의 전용 운영자 암호를 두 번 받고 scrypt hash만 저장하며, 필요한 signing secret을 보호된 web.json에 생성한다. 기존 계정을 덮어쓰지 않는다. 암호를 명령행 인자나 KIS/LLM 계정으로 입력하지 않는다. reset-password는 실행 PC의 로컬 명령이며 모든 PC·휴대폰 세션을 폐기한다. 웹은 공개 회원가입이나 웹 암호 복구를 제공하지 않는다.
+
+기본 주소는 `http://127.0.0.1:8765`이며 실행 PC에서만 사용한다. 로그인의 절대 유효 시간은 발급 후 **12시간**이다. 30초 조회가 expiry를 연장하지 않는다. PC·휴대폰 세션은 독립적이며 하나의 로그아웃이 다른 세션을 종료하지 않는다. cookie는 HttpOnly/SameSite=Lax이며 사설 HTTPS 모드에서는 Secure도 요구한다.
+
+웹 schema owner는 `phase14_web_metadata`, 알림은 `phase14_alert_metadata`, 관찰자는 `phase14_alert_observer_metadata`다. 이들은 운영 DB만 관리하며 원천의 user_version이나 portfolio/soak/controller metadata를 변경하지 않는다. 백업은 웹·관찰자 쓰기를 멈춘 뒤 SQLite의 일관된 backup API와 보호된 config/artifact를 함께 보관한다. 실행 중 주 DB 파일 하나만 복사해 WAL 내용을 잃지 않는다. 백업에는 운영자 hash·session references·signing secret·webhook이 있을 수 있으므로 접근 권한을 유지한다. 복원 후 local reset-password로 세션을 폐기하고 각 schema owner 버전을 확인한다. 원천 evidence 백업·복구는 각 원천 소유자의 기존 절차를 따른다.
+
+### 선택적 사설 VPN/HTTPS 접속
+
+외부 휴대폰 접속은 소유자가 선택·설정한 **사설 VPN 경로와 HTTPS 종료점**에서만 사용한다. VPN 접속도 애플리케이션 로그인을 대체하지 않는다. 이 문서는 VPN 사업자를 선택하거나 배포하지 않으며 실제 휴대폰 도달성을 확인했다고 주장하지 않는다. 공개 DNS/port forwarding/public listener를 설정하지 않는다.
+
+VPN 인터페이스가 실제로 `10.42.0.2`이고 HTTPS proxy가 같은 PC의 `127.0.0.1`에서 upstream에 접속한다고 소유자가 확인한 경우, web.json에 다음 명시적 값들을 더한다. 주소는 설명용이므로 실제 사설 주소·인증서 이름과 일치시킨다.
+
+```json
+{
+  "private_mode": true,
+  "bind_host": "127.0.0.1",
+  "port": 8765,
+  "tls_termination": true,
+  "trusted_proxies": ["127.0.0.1"],
+  "allowed_hosts": ["10.42.0.2"],
+  "allowed_origin": "https://10.42.0.2"
+}
+```
+
+위 JSON은 기존 보호된 설정에 병합하는 접속 필드다. Waitress는 고정 proxy peer 한 개와 한 hop만 신뢰한다. origin의 scheme·host·port는 브라우저가 사용하는 주소와 정확히 일치해야 한다. 임의 Forwarded/X-Forwarded-* 값, 다른 Host/Origin, proxy chain은 통과 조건이 아니다. HTTPS upstream 전달 방식과 peer 고정은 [Waitress 공식 proxy 문서](https://docs.pylonsproject.org/projects/waitress/en/stable/reverse-proxy.html)를 확인한다.
+
+**분명히 선택적인 예시:** 소유자가 별도로 Caddy를 선택·검토한 경우의 사설 HTTPS 설정 모양이다. 설치·실행 명령이나 기본 선택이 아니다. 사설 주소에만 바인딩하고 자동 HTTP redirect listener를 끈다.
+
+```caddyfile
+{
+    auto_https disable_redirects
+}
+https://10.42.0.2 {
+    bind 10.42.0.2
+    tls internal
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+주소 고정은 [Caddy bind 문서](https://caddyserver.com/docs/caddyfile/directives/bind), local CA는 [Caddy tls 문서](https://caddyserver.com/docs/caddyfile/directives/tls), redirect 비활성화는 [global options 문서](https://caddyserver.com/docs/caddyfile/options)를 따른 예시다. 휴대폰과 PC에서 선택한 인증서 CA를 명시적으로 신뢰해야 하며 인증서 경고를 우회해 로그인하지 않는다. 실제 VPN 인터페이스·인증서·방화벽·다른 listener 검토는 소유자 설정 단계에서 확인한다.
+
+### 독립 전경 알림 관찰 시작·중지
+
+alerts.json에는 `operational_db_path`와 웹과 같은 고정 `registered_resources`를 사용하고 webhook이 필요한 경우 observer 전용 `webhook_url`을 보호해 넣는다. 기본 `scan_interval_seconds`는 정확히 30초다. 웹 프로세스는 webhook을 읽거나 observer를 시작하지 않는다.
+
+```bash
+bot-alerts --config /srv/operator/config/alerts.json status
+bot-alerts --config /srv/operator/config/alerts.json once
+bot-alerts --config /srv/operator/config/alerts.json watch
+```
+
+status는 읽기 전용이고 DB를 초기화하거나 ownership을 얻지 않는다. once는 한 번 관찰·전달 기록 후 STOPPED가 된다. watch는 **전경의 비거래 알림 관찰**이며, SIGINT(Ctrl+C) 또는 SIGTERM으로 멈추면 STOPPED와 ownership 해제를 저장한다. 강제 종료 뒤에는 최근 heartbeat로 동시 소유자를 차단하며 기본 300초를 넘은 이전 ownership은 takeover 때 실패 이력과 미확정 전송으로 기록한다. 원천/필수 운영 증거 저장 실패는 FAILED가 되고 이후 전송을 막는다.
+
+브라우저가 닫혀 있어도 **관찰자가 실행 중일 때만** 새 관찰과 반복 알림이 이루어진다. 웹 서버만 켜져 있다고 Discord 전달을 기대하지 않는다. status에서 NOT_STARTED/STOPPED/RUNNING/STALE/FAILED와 heartbeat·전달 집계를 각각 읽는다. 웹의 관찰자 stale 표시 기준은 180초이고 takeover 기준과 다르다. 다른 거래 워커의 기대 실행/cadence가 저장되어 있지 않으면 작업 상태는 UNKNOWN이지 정상 또는 장애 확정이 아니다.
+
+INFO는 웹 이력에만 남고 WARNING/CRITICAL 발생·악화·복구는 해당 소유자의 전달 증거를 남긴다. 기존 Phase 11 producer가 소유한 전송은 연결된 attempt로 보여 주며 observer가 같은 occurrence를 중복 전송하지 않는다. WARNING은 정기 반복이 없고 미확인 CRITICAL만 **30분** 간격으로 reminder를 만든다. 읽음은 자동 기록한 운영자·시각과 선택 메모를 보관하며 현재 revision의 반복 알림만 중지한다. 읽음으로는 문제 해결·원천 동결·안전 래치를 바꾸지 않는다. 악화는 새 unread revision, 복구 뒤 재발은 새 unread episode가 된다. 같은 대상의 양의 원천 증거가 있어야 복구를 표시한다.
+
+전송 전에 claim을 저장하며 네트워크 실패·중단/충돌·전송 후 crash의 불확실한 attempt는 **UNKNOWN**이다. 전송하지 않았다고 추측해 재발송하지 않는다. 정확히 한 번 전달을 보장하지 않는다. 운영자는 웹의 source/occurrence/revision/delivery history와 채널의 해당 메시지를 수동 대조하며 UNKNOWN이나 FAILED를 거래 성공/실패로 바꾸지 않는다. 저장된 secret-bearing 예외 본문 대신 bounded failure code를 확인한다. 이 관찰 명령은 Phase 15 무인 거래 scheduler와 Phase 16 실계좌 승인 기능이 아니다.
+
+### 화면·보고서 판독과 수동 확인
+
+`source_observed_at`의 **원천 관측** 시각과 `query_at`의 **화면 조회** 시각(KST)을 구분한다. 30초 자동 조회/수동 새로고침은 저장 증거만 읽는다. 마지막 성공 관측은 역사적 값일 수 있고 조회 실패/오래됨을 함께 표시한다. INCOMPLETE의 0 placeholder는 UNKNOWN으로 표시하며 누락 원천·깨진 연결·모르는 분모를 0이나 PASS로 바꾸지 않는다. 각 source owner의 관측을 동시에 생성한 계좌 사실로 합치지 않는다.
+
+일상 실행·판단·주문 이력은 오늘 Asia/Seoul부터 보여 주며 7일/30일/기간 지정으로 바꿀 수 있다. 모든 날짜의 미해결 주문·활성 알림은 별도 유지되므로 과거 000660이 오늘의 routine 이력에 없다고 해결됐다고 해석하지 않는다. 합계→정확한 구성 행→개별 기록→정제된 원천 증거에서 ID·대상·scope·분모·excluded/UNKNOWN을 확인한다. 백테스트/replay는 모델링/시뮬레이션, Shadow는 비교 증거, calibration/readiness는 참고용이며 실거래 승격 권한이 없다.
+
+TXT는 한국어 보고서, JSON은 구조화 결과, CSV는 표 검토용이다. 모든 형식에서 같은 source/selection IDs·대상·기간·분모·UNKNOWN/INCOMPLETE를 보존한다. CSV 텍스트의 수식 시작 문자는 작은따옴표로 중화하고 제어문자를 치환한다. **UTF-8, 쉼표 구분, 따옴표 인용, identity 열은 Text, 수식 평가 비활성화**로 Excel/LibreOffice에 가져온다. 숫자는 숫자로 유지한다. 임의 재저장·재가져오기·문자열 변환에서 작은따옴표가 제거되면 수식 보호가 보존되지 않을 수 있다. 다른 변환/가져오기 설정까지 안전을 보장하지 않는다.
+
+자동 Chromium 검사와 별도로 다음 두 항목은 소유자 판단이 남아 있다.
+
+- 선택적 실제 phone **mobile data** + 사설 VPN에서 HTTPS 주소의 인증서가 신뢰되는지, VPN 밖에서 도달하지 않는지, 로그인이 필수인지 확인한다. PC·휴대폰 동시 로그인, 한쪽 로그아웃, 12시간 절대 만료와 암호 재설정 후 전체 세션 폐기를 실제 구성에서 확인한다.
+- PC/390px/320px와 시스템 light/dark에서 안전 개요→원천→상세→다운로드/읽음을 읽어 본다. UNKNOWN·원천 나이·000660 동결·읽음과 복구의 차이가 한국어로 명확한지 확인한다. 두 확인은 주문·알림 전송·정책 변경·실계좌 승격의 허가를 부여하지 않는다.
