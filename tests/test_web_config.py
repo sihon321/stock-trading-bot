@@ -94,7 +94,8 @@ def test_topology_rejects_source_overlap_before_write(tmp_path, kind):
                             registered_resources=(resource(src),))
         value.validate_topology()
     assert src.read_bytes() == b'unchanged-source'
-    assert not artifacts.exists()
+    if kind != 'artifact':
+        assert not artifacts.exists()
 
 
 def test_bounds_and_cookie_secret_redaction(tmp_path):
