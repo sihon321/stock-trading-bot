@@ -5,9 +5,16 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import AbstractSet, Any, Iterator, Mapping
 
-from .soak_controller import CONTROLLER_SCHEMA_VERSION
+from .evidence_contracts import (
+    CONTROLLER_SCHEMA_VERSION,
+    CONTROLLER_REPORT_SCHEMA as _CONTROLLER_SCHEMA,
+    PRIMARY_AUDIT_SCHEMA_VERSION as SCHEMA_VERSION,
+    PRIMARY_REPORT_SCHEMA as _PRIMARY_SCHEMA,
+    SOAK_REPORT_SCHEMA as _SOAK_SCHEMA,
+    SOAK_SCHEMA_VERSION,
+)
 from .soak_models import (
     CampaignKind,
     CampaignState,
@@ -15,8 +22,6 @@ from .soak_models import (
     ReconciliationStage,
     SoakEvidenceClass,
 )
-from .soak_store import SOAK_SCHEMA_VERSION
-from .sqlite_audit import SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -70,109 +75,6 @@ class SoakReport:
     resolved_historical_ambiguity: int = 0
 
 
-_PRIMARY_SCHEMA = {
-    "runs": {
-        "run_id", "started_at", "trading_mode", "dry_run", "run_kind", "status",
-        "finished_at", "trading_date_kst", "target", "policy_snapshot", "provenance",
-        "parent_run_id", "recovered_at", "recovery_reason",
-    },
-    "decisions": {
-        "id", "run_id", "ticker", "final_action", "parsed_decision", "confidence",
-        "parse_error", "risk_override", "override_reason", "order_reason",
-        "broker_order_id", "requested_qty", "filled_qty", "current_price",
-        "correlation_id", "created_at",
-    },
-    "ticker_outcomes": {
-        "id", "run_id", "ticker", "outcome_code", "reason_code", "detail_json",
-        "failed_stage", "order_intent_id", "final_order_state", "created_at",
-    },
-    "order_events": {
-        "id", "order_intent_id", "origin_run_id", "observer_run_id", "ticker",
-        "event_type", "submission_id", "broker_order_id", "side", "requested_qty",
-        "filled_qty", "unfilled_qty", "broker_status", "duplicate_of_intent_id",
-        "detail_json", "observed_at",
-    },
-    "notification_attempts": {
-        "id", "run_id", "ticker", "kind", "delivery_status", "failure_category",
-        "detail_json", "observed_at",
-    },
-}
-
-_SOAK_SCHEMA = {
-    "soak_campaigns": {
-        "campaign_id", "state", "campaign_kind", "credit_eligible",
-        "target_eligible_days", "availability_failure_budget",
-        "availability_failures_used", "safety_failure_code",
-        "availability_failure_code", "accepted_profile_fingerprint",
-        "accepted_profile_version", "field_contract_version",
-        "ambiguity_policy_version", "ambiguity_window_seconds",
-        "ambiguity_poll_cadence_seconds", "ambiguity_max_observations", "created_at",
-    },
-    "soak_identity_receipts": {
-        "id", "receipt_id", "campaign_id", "target", "domain_class", "account_suffix",
-        "profile_version", "policy_version", "detail_json", "observed_at",
-    },
-    "soak_days": {
-        "id", "campaign_id", "trading_date", "run_id", "run_kind", "terminal",
-        "credit_state", "credit_detail_json", "designated_at",
-    },
-    "soak_events": {
-        "id", "observation_id", "campaign_id", "run_id", "ticker", "order_intent_id",
-        "drill_id", "event_code", "evidence_class", "detail_json", "observed_at",
-    },
-    "soak_snapshots": {
-        "snapshot_id", "campaign_id", "run_id", "stage", "ticker", "completeness",
-        "detail_json", "observed_at",
-    },
-    "soak_snapshot_orders": {
-        "id", "observation_id", "snapshot_id", "order_id", "status", "remaining_qty",
-        "detail_json",
-    },
-    "soak_snapshot_fills": {
-        "id", "observation_id", "snapshot_id", "order_id", "fill_id", "quantity",
-        "price", "detail_json",
-    },
-    "soak_snapshot_holdings": {
-        "id", "observation_id", "snapshot_id", "ticker", "quantity", "average_price",
-        "detail_json",
-    },
-    "soak_snapshot_accounts": {
-        "id", "observation_id", "snapshot_id", "available_cash", "total_value",
-        "detail_json",
-    },
-    "soak_comparisons": {
-        "id", "comparison_id", "campaign_id", "snapshot_id", "run_id", "ticker",
-        "order_intent_id", "verdict", "remaining_order_terminal", "detail_json",
-        "observed_at",
-    },
-    "soak_ambiguity_observations": {
-        "id", "observation_id", "campaign_id", "run_id", "ticker", "order_intent_id",
-        "verdict", "remaining_order_terminal", "detail_json", "observed_at",
-    },
-    "soak_ticker_freezes": {
-        "id", "freeze_id", "campaign_id", "ticker", "order_intent_id", "freeze_kind",
-        "state", "prior_transition_id", "release_evidence_type", "release_evidence_id",
-        "detail_json", "observed_at",
-    },
-    "soak_drill_links": {
-        "id", "link_id", "campaign_id", "drill_id", "run_id", "ticker",
-        "order_intent_id", "evidence_class", "verdict", "detail_json", "observed_at",
-    },
-}
-_CONTROLLER_SCHEMA = {
-    "drill_contracts": {
-        "drill_id", "campaign_id", "fault", "injection_boundary",
-        "expected_containment_json", "required_observations_json", "policy_version",
-        "prepared_at",
-    },
-    "drill_commits": {"id", "drill_id", "committed_at"},
-    "drill_observations": {
-        "id", "drill_id", "observation_type", "evidence_class", "primary_run_id",
-        "ticker", "order_intent_id", "reconciliation_id", "freeze_id", "facts_json",
-        "observed_at",
-    },
-    "drill_verdicts": {"id", "drill_id", "verdict", "detail_json", "finalized_at"},
-}
 
 
 class ReadOnlySoakRepository:
@@ -242,7 +144,7 @@ class ReadOnlySoakRepository:
         connection: sqlite3.Connection,
         *,
         version: int,
-        schema: dict[str, set[str]],
+        schema: Mapping[str, AbstractSet[str]],
         owner: str,
     ) -> None:
         if int(connection.execute("PRAGMA user_version").fetchone()[0]) != version:
