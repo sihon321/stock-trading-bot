@@ -8,6 +8,7 @@ import pytest
 from operator_fixtures import make_operator_sources, capture_sources, NOW, ACCOUNT_HASH
 from trading_bot.web_config import WebSettings, ResourceDescriptor
 from trading_bot.web_models import ResourceScope
+from trading_bot.web_models import PeriodSelection
 from trading_bot.web_evidence import OperatorEvidenceService
 
 
@@ -75,3 +76,62 @@ def test_missing_schema_source_never_created_and_cache_scope_bound(tmp_path):
     assert svc.overview(ResourceScope('f' * 64, 'mock')).accounts == ()
     assert svc.overview(scope()).accounts[0].envelope.query_status == 'FAILED'
     assert not sources.paths['audit'].exists()
+
+
+def test_history_kst_pagination_and_detail_selection(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    period = PeriodSelection.for_days(NOW)
+    assert period.start.hour == 0
+    assert period.start.astimezone(NOW.tzinfo).hour == 15
+    # UTC previous day 15:00 is KST midnight and included; upper bound is excluded.
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,created_at) VALUES ('operator-run','000001','HOLD',?)", (period.start.isoformat(),))
+        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,created_at) VALUES ('operator-run','000002','HOLD',?)", (period.end.isoformat(),))
+    first = svc.list_records('decisions', scope(), period, limit=1)
+    assert first.total == 2 and len(first.rows) == 1 and first.cursor
+    second = svc.list_records('decisions', scope(), period, first.cursor, 1)
+    assert len(second.rows) == 1 and second.cursor is None
+    assert second.selection_id == first.selection_id
+    assert second.rows[0].record_id != first.rows[0].record_id
+    row = first.rows[0]
+    detail = svc.get_record(row.resource_id, row.record_id)
+    assert detail.record_id == row.record_id
+    assert detail.selection.source_ids == row.selection.source_ids
+    with pytest.raises(ValueError):
+        svc.list_records('runs', scope(), period, first.cursor)
+    with pytest.raises(ValueError):
+        svc.list_records('decisions', scope(), period, limit=101)
+
+
+def test_unresolved_historic_freeze_survives_today_and_unproven_release(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    page = svc.list_records('orders', scope())
+    assert any(row.data['ticker'] == '000660' for row in page.active_unresolved)
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("INSERT INTO soak_ticker_freezes(campaign_id,freeze_id,ticker,order_intent_id,freeze_kind,state,prior_transition_id,release_evidence_type,release_evidence_id,detail_json,observed_at) VALUES ('operator-campaign','historic-freeze','000660','historic-intent','AMBIGUITY','RELEASED',1,'comparison','missing','{}',?)", (NOW.isoformat(),))
+    overview = svc.overview(scope())
+    assert any(row.data['ticker'] == '000660' for row in overview.unresolved)
+
+
+def test_detail_disclosure_allowlist_and_secret_sentinels(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    sentinel = 'sk-test-operator-secret-sentinel'
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE decisions SET order_reason=?,parse_error=?,override_reason=?",
+            ('reason '+sentinel+' Bearer hidden-token CANO=12345678\x00'+ 'x'*20000,
+             'raw-exception-'+sentinel, 'api_key='+sentinel))
+    page = svc.list_records('decisions', scope())
+    row = svc.get_evidence('audit', page.rows[0].record_id)
+    rendered = repr(row)
+    assert sentinel not in rendered and '12345678' not in rendered
+    assert 'hidden-token' not in rendered and 'raw-exception' not in rendered and '\x00' not in rendered
+    assert len(str(row.data['order_reason'])) <= 4096
+    assert len(rendered.encode()) <= 16384
+    assert 'parse_error' not in row.data and 'canonical_input' not in row.data
+    with pytest.raises(ValueError):
+        svc.get_evidence('audit', 'sqlite_master:1')
+    with pytest.raises(ValueError):
+        svc.get_record('../../outside', 'runs:operator-run')
