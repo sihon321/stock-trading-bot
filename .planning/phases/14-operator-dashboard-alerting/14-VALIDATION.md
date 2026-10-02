@@ -21,7 +21,7 @@ created: 2026-10-01
 | Planned quick command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_evidence.py tests/test_web_auth.py tests/test_web_security.py tests/test_web_reports.py tests/test_alert_store.py tests/test_alert_observer.py tests/test_web_capabilities.py` |
 | Full suite command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` |
 | Planned browser command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/browser/test_operator_ui.py --browser chromium` |
-| Actual observation | Final full suite: 1412 passed in 320.01s; focused results and browser group splits below |
+| Actual observation | Final full suite after verification fixes: 1418 passed in 336.19s; focused results and browser group splits below |
 
 The planned commands require their listed modules and web/browser dependencies to be created first. Do not call a missing-test command and interpret collection failure as product verification. Do not skip browser coverage merely because backend tests pass. Browser installation and package verification follow the research artifact's explicit dependency setup protocol.
 
@@ -174,3 +174,11 @@ Optional private-network acceptance is distinct from automated application corre
 - Parent final full regression: PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q — 1412 passed in 320.01s, including all browser cases and all 37 extant test-file references from prior phase verifications.
 - Wave drift checks passed (structure-map advisory skipped). execute:post and verify:post have no active review/security hooks; their gates were evaluated, with no bypass.
 - All 14 plans and 33 automated task checks complete. Fresh goal-backward verification is next; Phase 14 remains in progress until its result and any required human acceptance are handled.
+
+### Independent Verification Gaps Repaired — 2026-10-02
+
+- Initial independent verification at `9ac4f28` found G-1 (global LIMIT before registered subject/CRITICAL filtering and mismatched drilldown) and G-2 (saved refresh left the safety header stale), score 34/36. Four added focused tests reproduced the defects; RED `1af0c88`. Initial verification is preserved in commit `4c7fa73`.
+- Necessary narrow follow-up `e457357` applies complete registered resource/account/target/active/severity selection before COUNT and bounded page LIMIT, uses the same selector for header drilldown and pages, and consumes updated header text/link on saved refresh/actions. Unavailable storage stays UNKNOWN; source databases and trading authority remain untouched.
+- Related routes/security/UI/Chromium: 153 passed in 50.23s. Additional boundary selection: 7 passed in 6.91s, covering 101 constituents, newer registered/unregistered/foreign subjects, manual and automatic state changes, scope change and preserved dirty drafts.
+- Final full regression after the last change: `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` — **1418 passed in 336.19s**. This includes the 37 extant prior-phase test references and all Chromium cases. Schema drift still has no drift; execute:post/verify:post have no active hooks.
+- All implementation plans remain executed; independent gap re-verification and required human acceptance remain the phase completion gates.

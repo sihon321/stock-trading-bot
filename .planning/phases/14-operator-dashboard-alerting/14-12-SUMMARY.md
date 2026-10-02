@@ -219,3 +219,14 @@ None introduced. Synthetic fixtures deliberately cover missing and incomplete ev
 ## Self-Check: PASSED
 
 All ten deliverable/source files and this summary exist; all six RED/GREEN task commits resolve in repository history. The three retained screenshot files exist. Task commits contain no tracked deletions, `git diff --check` passed, and stub/threat scans found no unfinished functionality or new security surface outside the planned boundaries.
+
+## Parent Verification Follow-up — 2026-10-02
+
+The independent verifier found two implementation gaps after the first full 1412-test pass: a global LIMIT 100 before registered subject/severity filtering produced wrong CRITICAL totals, and successful saved refresh did not consume the safety header. The parent fixed both within the authorized Phase 14 execution workflow.
+
+- RED commit `1af0c88`: four focused cases reproduced the incorrect 101→100 total, mixed scope 1→0 total, unvalidated alert selectors and stale browser header.
+- GREEN commit `e457357`: read-only parameterized operational SQL applies registered resource/account/target, active state and severity before COUNT/page LIMIT. The header links to the identical all-date active CRITICAL selector; bounded pages preserve it. Successful refresh/action responses update the header text/link without replacing focus or dirty form drafts. Storage failure preserves UNKNOWN.
+- Regression coverage additionally includes newer registered/unregistered resources, mismatched account/target, all 101 constituents across bounded pages, manual worsening, automatic positive recovery, resource change and dirty-note deferred refresh. Temporary source inventories remain unchanged.
+- Related route/security/UI/browser selection: **153 passed in 50.23s**. Final focused boundary selection: **7 passed in 6.91s**.
+- Final full suite after the last source/test change: **1418 passed in 336.19s**, including all prior phase and real Chromium tests.
+- Independent re-verification is required before phase acceptance. Korean usability and optional explicitly configured actual private phone access remain human checks; no owner deployment or source mutation occurred.
