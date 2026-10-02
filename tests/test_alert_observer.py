@@ -112,7 +112,6 @@ def test_process_exclusion_takeover_and_crash_unknown(tmp_path):
     competitor = observer(tmp_path, clock=clock)
     with pytest.raises(ObserverBusy):
         competitor.scan_once()
-    bot._scan(clock(), after_send=lambda: (_ for _ in ()).throw(SystemExit())) if False else None
     fact = bot.detector.detect(bot.evidence.batch)[0]
     episode = bot.store.observe(fact)
     event = bot.store.pending_deliveries()[0]
@@ -185,3 +184,66 @@ def test_real_source_observation_leaves_source_bytes_unchanged(tmp_path):
     bot = AlertObserver(settings, clock=sources.clock, notifier=Transport())
     bot.scan_once()
     assert capture_sources(sources) == before
+
+
+def test_operational_schema_coexists_with_web_store(tmp_path):
+    from trading_bot.web_config import WebSettings
+    from trading_bot.web_store import WebStore
+    bot = observer(tmp_path)
+    settings = WebSettings(operational_db_path=bot.store.path,
+        artifact_root=tmp_path / 'artifacts')
+    web = WebStore(settings)
+    web.initialize()
+    bot.scan_once()
+    web.initialize()
+    assert bot.status()['state'] == 'STOPPED'
+
+
+def test_mandatory_source_failure_and_checkpoint_failure_block_send(tmp_path, monkeypatch):
+    bot = observer(tmp_path)
+    env = replace(record('runs').envelope, schema_owner='audit', query_status='FAILED')
+    bot.evidence.batch = replace(bot.evidence.batch, sources=(env,))
+    with pytest.raises(ObserverEvidenceError):
+        bot.scan_once()
+    assert bot.notifier.sent == []
+    assert bot.store.get_checkpoint() is None
+    bot.evidence.batch = replace(bot.evidence.batch, sources=())
+    monkeypatch.setattr(bot.store, 'set_checkpoint', lambda *_: (_ for _ in ()).throw(sqlite3.Error('secret')))
+    with pytest.raises(ObserverEvidenceError):
+        bot.scan_once()
+    assert bot.notifier.sent == []
+    assert bot.store.get_checkpoint() is None
+
+
+def test_crash_after_send_stays_unknown_no_duplicate(tmp_path):
+    bot = observer(tmp_path, after_send=lambda: (_ for _ in ()).throw(SystemExit()))
+    with pytest.raises(SystemExit):
+        bot.scan_once()
+    episode = bot.store.list_incidents()[0]
+    assert bot.store.list_attempts(episode.episode_id)[0].state == DeliveryState.UNKNOWN
+    restarted = observer(tmp_path)
+    restarted.scan_once()
+    assert restarted.notifier.sent == []
+
+
+def test_recovery_worsening_recurrence_deliver_once(tmp_path):
+    reader = Reader(AlertSourceBatch(NOW, (record('runs', status='FAILED', run_kind='daily'),)))
+    clock = Clock()
+    bot = observer(tmp_path, reader=reader, clock=clock)
+    bot.scan_once()
+    first = bot.store.list_incidents()[0]
+    bot.store.acknowledge(first.episode_id, first.revision, 'operator')
+    clock.advance(1)
+    reader.batch = AlertSourceBatch(clock(), (record('runs', '2', 1, status='FAILED', run_kind='daily', severity='CRITICAL'),))
+    bot.scan_once()
+    assert not bot.store.get(first.episode_id).acknowledged
+    clock.advance(1)
+    reader.batch = AlertSourceBatch(clock(), (record('runs', '3', 2, status='COMPLETED', run_kind='daily'),))
+    bot.scan_once()
+    assert not bot.store.get(first.episode_id).active
+    clock.advance(1)
+    reader.batch = AlertSourceBatch(clock(), (record('runs', '4', 3, status='FAILED', run_kind='daily'),))
+    bot.scan_once()
+    bot.scan_once()
+    assert len(bot.store.list_incidents()) == 2
+    assert len(bot.notifier.sent) == 4
