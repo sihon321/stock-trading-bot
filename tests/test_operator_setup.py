@@ -8,9 +8,6 @@ import sys
 import tomllib
 from importlib.metadata import version
 
-import pytest
-
-
 WEB = {"Flask": "3.1.3", "Flask-WTF": "1.3.0", "waitress": "3.0.2",
        "Werkzeug": "3.1.9", "Jinja2": "3.1.6"}
 BROWSER = {"playwright": "1.63.0", "pytest-playwright": "0.9.0"}
@@ -42,7 +39,7 @@ def test_framework_smoke_in_fresh_interpreter():
 
 
 def test_chromium_launch_is_real_and_missing_binary_is_explicit(tmp_path):
-    from playwright.sync_api import Error, sync_playwright
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
         with playwright.chromium.launch() as browser:
