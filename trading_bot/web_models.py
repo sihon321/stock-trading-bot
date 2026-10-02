@@ -1,7 +1,7 @@
 """Immutable credential-free operator evidence contracts."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from types import MappingProxyType
 from typing import Protocol
@@ -59,6 +59,10 @@ class SourceEnvelope:
     diagnostic_code: str | None = None
     provenance: str = 'saved'
 
+    def __post_init__(self):
+        if self.query_at.tzinfo is None or (self.source_observed_at is not None and self.source_observed_at.tzinfo is None):
+            raise ValueError('aware evidence times required')
+
     @property
     def age_seconds(self):
         return None if self.source_observed_at is None else max(0, (self.query_at - self.source_observed_at).total_seconds())
@@ -84,6 +88,12 @@ class EvidenceRecord:
     envelope: SourceEnvelope
     selection: EvidenceSelection
     fields: tuple[tuple[str, str | int | float | bool | None], ...] = ()
+
+    def __post_init__(self):
+        if not isinstance(self.fields, tuple) or any(not isinstance(pair, tuple) or len(pair) != 2 or
+            not isinstance(pair[0], str) or not (pair[1] is None or type(pair[1]) in {str, int, float, bool})
+            for pair in self.fields):
+            raise ValueError('immutable scalar evidence fields required')
 
     @property
     def data(self):

@@ -226,6 +226,11 @@ def test_transition_alert_sources_order_cursor_and_no_source_writes(tmp_path):
     next_batch = svc.observe_alert_sources(batch.cursor)
     assert next_batch.facts == ()
     assert capture_sources(sources) == before
+    # A later INSERT with a historical/colliding source time must still be observed.
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("INSERT INTO notification_attempts(run_id,kind,delivery_status,detail_json,observed_at) VALUES ('historic-run','RUN_SUMMARY','DELIVERED','{}',?)", ((NOW-timedelta(days=40)).isoformat(),))
+    late = svc.observe_alert_sources(batch.cursor)
+    assert any(row.kind == 'notifications' for row in late.facts)
     statuses = svc.source_status()
     assert len(statuses) == len(sources.resources)
     portfolio = next(s for s in statuses if s.resource_id == 'portfolio')

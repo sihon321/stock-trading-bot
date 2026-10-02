@@ -11,11 +11,13 @@ import math
 import sqlite3
 import base64
 import re
+import unicodedata
 
 from . import evidence_contracts as contracts
 from .web_config import checked_path
 from .web_models import (AccountDTO, EvidenceRecord, EvidenceSelection, OverviewDTO,
-                         ResourceScope, SourceEnvelope, PeriodSelection, RecordPage)
+                         ResourceScope, SourceEnvelope, PeriodSelection, RecordPage,
+                         WorkerDTO, AlertSourceBatch)
 
 # Fixed capabilities: table, primary key, durable time and public fields only.
 _HISTORY = {
@@ -28,10 +30,15 @@ _HISTORY = {
     ('portfolio', 'transitions'): ('transition_states', 'id', 'last_observed_at', ('state_identity', 'account_scope_hash', 'ticker', 'event_family', 'broker_subject_id', 'state_code', 'occurrence_count', 'duration_seconds', 'active', 'severity', 'last_notification_status')),
     ('portfolio', 'transition_observations'): ('transition_observations', 'id', 'observed_at', ('state_identity', 'state_code', 'severity')),
     ('portfolio', 'transition_notifications'): ('transition_notifications', 'id', 'observed_at', ('state_identity', 'event_code', 'severity', 'delivery_status', 'failure_category')),
+    ('portfolio', 'divergences'): ('portfolio_divergences', 'id', 'observed_at', ('snapshot_id', 'code', 'severity', 'ticker', 'order_intent_id')),
+    ('portfolio', 'evaluation_events'): ('daily_evaluation_events', 'id', 'observed_at', ('evaluation_id', 'event_type', 'action', 'confidence', 'reason_code')),
+    ('portfolio', 'lease_events'): ('mutation_lease_events', 'id', 'observed_at', ('account_scope_hash', 'event_type', 'from_state', 'to_state', 'origin_cycle_id', 'observer_cycle_id')),
+    ('soak', 'soak_events'): ('soak_events', 'id', 'observed_at', ('campaign_id', 'event_code', 'evidence_class', 'run_id', 'ticker', 'order_intent_id', 'observation_id')),
     ('audit', 'notifications'): ('notification_attempts', 'id', 'observed_at', ('run_id', 'ticker', 'kind', 'delivery_status', 'failure_category')),
     ('soak', 'freezes'): ('soak_ticker_freezes', 'id', 'observed_at', ('freeze_id', 'campaign_id', 'ticker', 'order_intent_id', 'freeze_kind', 'state', 'release_evidence_type', 'release_evidence_id')),
     ('soak', 'campaigns'): ('soak_campaigns', 'campaign_id', 'created_at', ('campaign_id', 'state', 'campaign_kind', 'safety_failure_code', 'availability_failure_code', 'target_eligible_days')),
     ('soak', 'comparisons'): ('soak_comparisons', 'id', 'observed_at', ('comparison_id', 'campaign_id', 'run_id', 'snapshot_id', 'ticker', 'order_intent_id', 'verdict', 'remaining_order_terminal')),
+    ('controller', 'drills'): ('drill_observations', 'id', 'observed_at', ('drill_id', 'observation_type', 'evidence_class', 'primary_run_id', 'reconciliation_id', 'ticker', 'order_intent_id', 'freeze_id')),
 }
 _KINDS = {kind for _, kind in _HISTORY} | {'holdings', 'fills', 'broker_orders'}
 
@@ -44,15 +51,17 @@ def _clean(value):
     # Sanitize before truncation, so a secret spanning the boundary is still removed.
     value = re.sub(r'(?i)\b(?:sk-|ghp_|github_pat_)[a-z0-9_-]+', '[REDACTED]', value)
     value = re.sub(r'(?i)\bBearer\s+[^\s]+', 'Bearer [REDACTED]', value)
-    value = re.sub(r'(?i)\b(?:cano|account(?:_number)?|api[_ -]?key|app[_ -]?key|secret|token|password|cookie|session)[\s:=]+[^\s,;]+', '[REDACTED]', value)
+    value = re.sub(r'(?i)\b(?:cano|account(?:_number)?|api[_ -]?key|app[_ -]?key|app[_ -]?secret|secret|token|password|cookie|session)[\s:=]+[^\s,;]+', '[REDACTED]', value)
+    value = re.sub(r'https?://[^\s]*/api/webhooks/[^\s]+', '[REDACTED]', value)
+    value = re.sub(r'\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b', '[REDACTED]', value)
     value = re.sub(r'\b\d{8,14}(?:-\d{2})?\b', '[REDACTED]', value)
-    value = ''.join(c if ord(c) >= 32 and not (127 <= ord(c) <= 159) else ' ' for c in value)
+    value = ''.join(c if unicodedata.category(c) not in {'Cc', 'Cf', 'Cs'} else ' ' for c in value)
     return value[:4096]
 
 
 def _wire_record(resource, kind, row, key, stamp, fields, *, snapshot_id=None, source_ids=(), completeness='COMPLETE'):
     rid = f'{kind}:{row[key]}'
-    if len(rid) > 512 or _clean(rid) != rid or any(_clean(str(v)) != str(v) for v in source_ids):
+    if len(rid) > 512 or _clean(rid) != rid or any(len(str(v)) > 128 or _clean(str(v)) != str(v) for v in source_ids):
         raise EvidenceUnavailable('INVALID_SOURCE_ID')
     projected = tuple((name, _clean(row[name])) for name in fields)
     if sum(len(str(v).encode()) + len(k) for k, v in projected) > 10000:
@@ -174,6 +183,15 @@ def _bounded_rows(conn, query, args=()):
     return rows
 
 
+def _table_source(table):
+    if table == 'portfolio_divergences':
+        return '(SELECT d.*,s.observed_at FROM portfolio_divergences d JOIN portfolio_snapshots s ON s.snapshot_id=d.snapshot_id)'
+    if table == 'daily_evaluations':
+        # Canonical prompts are deliberately absent even from the fetched SQL rows.
+        return '(SELECT evaluation_id,trading_date_kst,ticker,canonical_input_hash,account_scope_hash,status,started_at,finalized_at FROM daily_evaluations)'
+    return table
+
+
 class ReadOnlyPortfolioRepository:
     def __init__(self, resource, *, clock=lambda: datetime.now(timezone.utc)):
         if resource.owner != 'portfolio':
@@ -199,7 +217,7 @@ class ReadOnlyPortfolioRepository:
             if any(not isinstance(v, (float, int)) or not math.isfinite(v) or v < 0 for v in amounts):
                 raise EvidenceUnavailable('INVALID_ACCOUNT_TOTAL')
             sid = complete['snapshot_id']
-            env = _envelope(r, now, source_observed_at=_stamp(complete['observed_at']), completeness='COMPLETE')
+            env = _envelope(r, now, source_observed_at=_stamp(complete['observed_at']), completeness='COMPLETE', provenance='saved_broker')
             projected = []
             for kind, table, key in (('holdings', 'portfolio_holdings', 'ticker'),
                                      ('orders', 'portfolio_orders', 'order_id'),
@@ -223,8 +241,9 @@ class ReadOnlyPortfolioRepository:
 
 
 class OperatorEvidenceService:
-    def __init__(self, settings, *, clock=lambda: datetime.now(timezone.utc)):
+    def __init__(self, settings, *, clock=lambda: datetime.now(timezone.utc), shadow_proof_catalog=None):
         self.settings, self.clock = settings, clock
+        self.shadow_proof_catalog = shadow_proof_catalog
         self._cache = OrderedDict()
 
     def _resources(self, scope=None, owner=None):
@@ -242,6 +261,14 @@ class OperatorEvidenceService:
                 self._cache.move_to_end(key)
                 while len(self._cache) > 128:
                     self._cache.popitem(last=False)
+            elif key in self._cache:
+                previous = self._cache[key]
+                env = replace(previous.envelope, query_at=self.clock(), diagnostic_code='NO_CURRENT_COMPLETE_SNAPSHOT')
+                account = replace(previous, envelope=env, latest_attempt_id=account.latest_attempt_id,
+                                  latest_attempt_status=account.latest_attempt_status,
+                                  holdings=tuple(replace(row, envelope=env) for row in previous.holdings),
+                                  orders=tuple(replace(row, envelope=env) for row in previous.orders),
+                                  fills=tuple(replace(row, envelope=env) for row in previous.fills))
             return account
         except EvidenceUnavailable as exc:
             if key in self._cache and str(exc) != 'SCOPE_CONFLICT':
@@ -256,7 +283,7 @@ class OperatorEvidenceService:
 
     def overview(self, scope):
         return OverviewDTO(self.clock(), accounts=tuple(self._account(r) for r in self._resources(scope, 'portfolio')),
-                           unresolved=self._unresolved(scope))
+                           unresolved=self._unresolved(scope), workers=self._workers(scope), sources=self.source_status(scope))
 
     def _project(self, conn, resource, kind, row):
         _, key, time_key, fields = _HISTORY[(resource.owner, kind)]
@@ -285,9 +312,214 @@ class OperatorEvidenceService:
                 if state is None or state[0] != resource.account_hash:
                     raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
                 source_ids.append(row['state_identity'])
+            if kind == 'evaluation_events':
+                evaluation = conn.execute('SELECT account_scope_hash FROM daily_evaluations WHERE evaluation_id=?', (row['evaluation_id'],)).fetchone()
+                if evaluation is None or evaluation[0] != resource.account_hash:
+                    raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
+                source_ids.append(row['evaluation_id'])
+            if kind == 'divergences':
+                snapshot = conn.execute('SELECT account_scope_hash,cycle_id,observation_id FROM portfolio_snapshots WHERE snapshot_id=?', (row['snapshot_id'],)).fetchone()
+                if snapshot is None or snapshot['account_scope_hash'] != resource.account_hash:
+                    raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
+                _check_run(conn, resource, snapshot['cycle_id'])
+                sid = row['snapshot_id']
+                source_ids.extend((snapshot['cycle_id'], snapshot['observation_id']))
         record = _wire_record(resource, kind, row, key, row[time_key], fields,
                               snapshot_id=sid, source_ids=source_ids)
+        extra = []
+        if kind in {'candidates', 'evaluation_events'}:
+            detail = _json(row['detail_json'])
+            allowed = ('rank', 'screen_reason') if kind == 'candidates' else ('reason', 'provider', 'model', 'attempt', 'attempts')
+            if isinstance(detail, dict):
+                extra.extend((name, _clean(detail[name])) for name in allowed
+                             if name in detail and (detail[name] is None or type(detail[name]) in {str, int, float, bool}))
+        if kind == 'evaluations':
+            event = conn.execute('SELECT id,action,confidence,reason_code,detail_json,observed_at FROM daily_evaluation_events WHERE evaluation_id=? AND event_type IN (?,?) ORDER BY id DESC LIMIT 1',
+                (row['evaluation_id'], 'SIGNAL_FINALIZED', 'LLM_UNAVAILABLE')).fetchone()
+            if event:
+                detail = _json(event['detail_json'])
+                extra.extend((name, _clean(event[name])) for name in ('action', 'confidence', 'reason_code'))
+                extra.append(('reason', _clean(detail.get('reason')) if isinstance(detail, dict) else None))
+                record = replace(record, envelope=replace(record.envelope, source_observed_at=_stamp(event['observed_at'])),
+                    selection=replace(record.selection, source_ids=record.selection.source_ids + (f'evaluation_events:{event["id"]}',)))
+        if kind == 'orders':
+            provenance = 'saved_broker_progression' if row['event_type'] in {'BROKER_OBSERVED', 'RECONCILED'} else 'saved_local_intent'
+            record = replace(record, envelope=replace(record.envelope, provenance=provenance))
+        if extra:
+            # Multiple reason fields remain bounded together, including fixed evidence metadata.
+            values = record.fields + tuple(extra)
+            if sum(len(str(value).encode()) for _, value in values) > 10000:
+                values = tuple((key, value[:512] if isinstance(value, str) else value) for key, value in values)
+            record = replace(record, fields=values)
         return replace(record, envelope=replace(record.envelope, query_at=self.clock()))
+
+    def _workers(self, scope=None):
+        workers = []
+        for resource in self._resources(scope, 'portfolio'):
+            try:
+                with _transaction(resource) as conn:
+                    lifecycle = conn.execute("SELECT * FROM transition_states WHERE account_scope_hash=? AND event_family='INTRADAY_LIFECYCLE' ORDER BY julianday(last_observed_at) DESC,id DESC LIMIT 1", (resource.account_hash,)).fetchone()
+                    lease = conn.execute('SELECT state,heartbeat_at,cycle_id,command FROM mutation_leases WHERE account_scope_hash=?', (resource.account_hash,)).fetchone()
+                    # Outer-cycle identity comes from the linked snapshot, never iteration.cycle_id.
+                    observation = conn.execute('''SELECT w.iteration_id,w.terminal_status,s.snapshot_id,s.cycle_id,
+                        s.observation_id,o.id,o.observed_at,o.detail_json
+                        FROM watch_observations o JOIN watch_iterations w ON w.iteration_id=o.iteration_id
+                        JOIN portfolio_snapshots s ON s.snapshot_id=w.snapshot_id
+                        WHERE s.account_scope_hash=?
+                        ORDER BY julianday(o.observed_at) DESC,o.id DESC LIMIT 1''', (resource.account_hash,)).fetchone()
+                    ids, sid, observed, cadence = [], None, None, None
+                    state, expected = 'UNKNOWN', None
+                    if lifecycle:
+                        state = lifecycle['state_code']
+                        ids.append(lifecycle['state_identity'])
+                        observed = _stamp(lifecycle['last_observed_at'])
+                        if state in {'STARTED', 'RUNNING'}:
+                            expected, state = True, 'RUNNING'
+                        elif state in {'STOPPED', 'RELEASED'}:
+                            expected, state = False, 'STOPPED'
+                        elif state in {'FAILED', 'INTERRUPTED', 'LEASE_LOST'}:
+                            expected, state = False, 'FAILED'
+                    if observation:
+                        _check_run(conn, resource, observation['cycle_id'])
+                        sid = observation['snapshot_id']
+                        ids.extend((observation['iteration_id'], observation['cycle_id'], observation['observation_id'], str(observation['id'])))
+                        watched_at = _stamp(observation['observed_at'])
+                        observed = max(observed, watched_at) if observed else watched_at
+                        detail = _json(observation['detail_json'])
+                        recorded = detail.get('cadence_seconds') if isinstance(detail, dict) else None
+                        # A documented per-observation cadence is not trading configuration.
+                        if type(recorded) in {int, float} and math.isfinite(recorded) and 0 < recorded <= 86400:
+                            cadence = float(recorded)
+                        if observation['terminal_status'] in {'FAILED', 'INTERRUPTED'}:
+                            state, expected = 'FAILED', False
+                    lease_time = _stamp(lease['heartbeat_at']) if lease else None
+                    if lease and lease['state'] == 'RELEASED':
+                        state, expected = 'STOPPED', False
+                    elif lease and lease['state'] in {'LOST', 'RECOVERY_BLOCKED'}:
+                        state, expected = 'FAILED', False
+                    freshness = 'UNKNOWN'
+                    if expected is False and state == 'STOPPED':
+                        freshness = 'NOT_EXPECTED'
+                    elif expected is True and cadence is not None and observed is not None:
+                        age = (self.clock() - observed).total_seconds()
+                        if age < 0:
+                            raise EvidenceUnavailable('FUTURE_SOURCE_TIME')
+                        freshness = 'FRESH' if age <= max(180, 3 * cadence) else 'STALE'
+                    env = _envelope(resource, self.clock(), source_observed_at=observed,
+                        freshness=freshness, completeness='COMPLETE' if observation else 'UNKNOWN')
+                    workers.append(WorkerDTO(env, f'{resource.id}:intraday', state, expected,
+                                             cadence, lease_time, tuple(ids), sid))
+            except EvidenceUnavailable as exc:
+                workers.append(WorkerDTO(_envelope(resource, self.clock(), query_status='FAILED', diagnostic_code=str(exc)), f'{resource.id}:intraday'))
+        return tuple(workers)
+
+    def source_status(self, scope=None):
+        statuses = []
+        for resource in self._resources(scope):
+            try:
+                if resource.owner == 'portfolio':
+                    statuses.append(self._account(resource).envelope)
+                    continue
+                if resource.owner in {'audit', 'soak', 'controller'}:
+                    with _transaction(resource) as conn:
+                        stamps = []
+                        for (owner, _), (table, _, time_key, _) in _HISTORY.items():
+                            if owner == resource.owner:
+                                stamp = conn.execute(f'SELECT {time_key} FROM {table} ORDER BY julianday({time_key}) DESC LIMIT 1').fetchone()
+                                if stamp:
+                                    stamps.append(_stamp(stamp[0]))
+                        statuses.append(_envelope(resource, self.clock(), source_observed_at=max(stamps, default=None)))
+                    continue
+                path = checked_path(resource.path)
+                if not path.is_file():
+                    raise EvidenceUnavailable('SOURCE_MISSING')
+                if path.stat().st_size > 10 * 1024 * 1024:
+                    raise EvidenceUnavailable('SOURCE_BYTE_BOUND')
+                # Pure saved verifiers; never prepare/run a replay, backtest or shadow.
+                if resource.owner == 'replay':
+                    from .reporting import load_replay_results
+                    load_replay_results((path,))
+                elif resource.owner == 'backtest':
+                    from .backtest_reporting import load_backtest_result
+                    load_backtest_result(path)
+                elif resource.owner == 'shadow':
+                    from .shadow_reporting import load_shadow_result
+                    load_shadow_result(path, proof_catalog=self.shadow_proof_catalog)
+                else:
+                    raise EvidenceUnavailable('UNSUPPORTED_SOURCE_OWNER')
+                # File mtime/browser query is never a producer observation time.
+                statuses.append(replace(_envelope(resource, self.clock(), completeness='COMPLETE'), schema_version=1))
+            except (EvidenceUnavailable, ValueError, OSError, TypeError, KeyError):
+                statuses.append(_envelope(resource, self.clock(), query_status='FAILED', diagnostic_code='SOURCE_UNAVAILABLE'))
+        return tuple(statuses)
+
+    def observe_alert_sources(self, cursor=None):
+        previous = {}
+        if cursor:
+            try:
+                if len(cursor) > 65536:
+                    raise ValueError()
+                doc = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if doc['registry'] != _identity(tuple((r.id, r.account_hash, r.target) for r in self._resources())):
+                    raise ValueError()
+                previous = doc['streams']
+                if not isinstance(previous, dict) or len(previous) > 1024:
+                    raise ValueError()
+                for key, value in previous.items():
+                    if (not isinstance(key, str) or len(key) > 128 or not isinstance(value, list)
+                            or len(value) != 2 or not isinstance(value[0], str) or len(value[0]) != 64
+                            or type(value[1]) is not int or not 0 <= value[1] <= 10000):
+                        raise ValueError()
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                raise ValueError('invalid alert source cursor') from None
+        facts = []
+        kinds = {'transitions', 'transition_observations', 'transition_notifications', 'lease_events',
+                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs'}
+        for resource in self._resources():
+            try:
+                with _transaction(resource) as conn:
+                    for (owner, kind), (table, key, _, _) in _HISTORY.items():
+                        if owner == resource.owner and kind in kinds:
+                            rows = _bounded_rows(conn, f'SELECT * FROM {table} ORDER BY {key} LIMIT 10001')
+                            for row in rows:
+                                facts.append(self._project(conn, resource, kind, row))
+                    if resource.owner == 'portfolio':
+                        rows = _bounded_rows(conn, '''SELECT d.*,s.observed_at FROM portfolio_divergences d
+                            JOIN portfolio_snapshots s ON s.snapshot_id=d.snapshot_id
+                            WHERE s.account_scope_hash=? ORDER BY d.id LIMIT 10001''', (resource.account_hash,))
+                        for row in rows:
+                            facts.append(self._project(conn, resource, 'divergences', row))
+            except EvidenceUnavailable:
+                continue
+        scopes = {(r.account_hash, r.target) for r in self._resources()}
+        for account, target in sorted(scopes):
+            facts.extend(self._unresolved(ResourceScope(account, target)))
+        # Producer timestamps may collide or be backdated. Stream content checkpoints
+        # also detect in-place transition-state updates; absence is never recovery.
+        groups = {}
+        for row in facts:
+            if row.envelope.source_observed_at is not None:
+                groups.setdefault(f'{row.resource_id}:{row.kind}', {})[row.record_id] = row
+        positions, selected = dict(previous), []
+        for stream in sorted(groups):
+            rows = sorted(groups[stream].values(), key=lambda row: (
+                row.envelope.source_observed_at, row.record_id))
+            digest = _identity(tuple((row.record_id, row.envelope.source_observed_at,
+                                      row.fields, row.selection.source_ids) for row in rows))
+            old = previous.get(stream)
+            offset = old[1] if old and old[0] == digest else 0
+            count = min(100 - len(selected), len(rows) - offset)
+            if count > 0:
+                selected.extend(rows[offset:offset + count])
+                offset += count
+            positions[stream] = [digest, offset]
+            if len(selected) == 100:
+                break
+        next_cursor = base64.urlsafe_b64encode(json.dumps({'registry': _identity(tuple((r.id, r.account_hash, r.target) for r in self._resources())), 'streams': positions}, separators=(',', ':')).encode()).decode()
+        if len(next_cursor) > 65536:
+            raise EvidenceUnavailable('ALERT_CURSOR_BOUND')
+        return AlertSourceBatch(self.clock(), tuple(selected), self._workers(),
+                                self.source_status(), next_cursor)
 
     def list_records(self, kind, scope, period=None, cursor=None, limit=50):
         if kind not in _KINDS or type(limit) is not int or not 1 <= limit <= 100:
@@ -295,7 +527,8 @@ class OperatorEvidenceService:
         period = period or PeriodSelection.for_days(self.clock())
         if not isinstance(period, PeriodSelection):
             raise ValueError('invalid period')
-        selection = _identity(kind, scope, period.start.isoformat(), period.end.isoformat())
+        snapshot_bindings = tuple((r.id, self._account(r).snapshot_id) for r in self._resources(scope, 'portfolio')) if kind in {'holdings', 'fills', 'broker_orders', 'orders'} else ()
+        selection = _identity(kind, scope, period.start.isoformat(), period.end.isoformat(), snapshot_bindings)
         after = None
         if cursor:
             try:
@@ -325,6 +558,7 @@ class OperatorEvidenceService:
                     envelopes.append(account.envelope)
                 continue
             table, key, time_key, _ = spec
+            query_source = _table_source(table)
             try:
                 with _transaction(resource) as conn:
                     where = f'julianday({time_key})>=julianday(?) AND julianday({time_key})<julianday(?)'
@@ -332,10 +566,10 @@ class OperatorEvidenceService:
                     if resource.owner == 'portfolio' and 'account_scope_hash' in contracts.PORTFOLIO_REPORT_SCHEMA[table]:
                         where += ' AND account_scope_hash=?'
                         args.append(resource.account_hash)
-                    if conn.execute(f'SELECT 1 FROM {table} WHERE julianday({time_key}) IS NULL LIMIT 1').fetchone():
+                    if conn.execute(f'SELECT 1 FROM {query_source} WHERE julianday({time_key}) IS NULL LIMIT 1').fetchone():
                         raise EvidenceUnavailable('INVALID_SOURCE_TIME')
                     # Validate all selected attribution rather than silently count mixed rows.
-                    selected = _bounded_rows(conn, f'SELECT * FROM {table} WHERE {where} ORDER BY julianday({time_key}),{key} LIMIT 10001', args)
+                    selected = _bounded_rows(conn, f'SELECT * FROM {query_source} WHERE {where} ORDER BY julianday({time_key}),{key} LIMIT 10001', args)
                     projected = [self._project(conn, resource, kind, row) for row in selected]
                     if total is not None:
                         total += len(projected)
@@ -352,7 +586,7 @@ class OperatorEvidenceService:
                             tail_where += f" AND (julianday({time_key})>julianday(?) OR (julianday({time_key})=julianday(?) AND (? || CAST({key} AS TEXT))>?))"
                             tail_args.extend((after_time, after_time, kind + ':', after_id))
                         tail_args.append(limit + 1)
-                        tail_rows = conn.execute(f'SELECT * FROM {table} WHERE {tail_where} ORDER BY julianday({time_key}),CAST({key} AS TEXT) LIMIT ?', tail_args).fetchall()
+                        tail_rows = conn.execute(f'SELECT * FROM {query_source} WHERE {tail_where} ORDER BY julianday({time_key}),CAST({key} AS TEXT) LIMIT ?', tail_args).fetchall()
                         records.extend(self._project(conn, resource, kind, row) for row in tail_rows)
                     else:
                         records.extend(projected)
@@ -391,7 +625,7 @@ class OperatorEvidenceService:
                 raise ValueError('invalid kind for owner')
             table, pk, _, _ = spec
             with _transaction(resource) as conn:
-                row = conn.execute(f'SELECT * FROM {table} WHERE {pk}=?', (key,)).fetchone()
+                row = conn.execute(f'SELECT * FROM {_table_source(table)} WHERE {pk}=?', (key,)).fetchone()
                 record = self._project(conn, resource, kind, row) if row else None
         if record is None:
             raise EvidenceUnavailable('RECORD_NOT_FOUND')
