@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .backtest_evidence import BacktestRun, DecisionEvidence, checked_float
 from .backtest_costs import cost_profile, effective_rule, round_tick
 from .backtest_fills import FILL_VERSION, model_session_fills, opening_cutoff
 from .backtest_inputs import decision_view, resolve_backtest_window
@@ -21,44 +22,6 @@ from .indicators import calculate_technicals
 from .risk import DailyLossState, RiskConfig
 from .shadow_models import ShadowSnapshot, canonical_json, strict_json
 from .screener import ScreenerConfig, screen_candidates
-
-
-class DecisionEvidence(Frozen):
-    session: date
-    ticker: str
-    action: str
-    reason: str
-    selected: bool
-    risk_override: bool
-    intent_id: str | None = None
-    quantity: int = 0
-
-
-class BacktestRun(Frozen):
-    manifest: dict
-    calendar: tuple[Session, ...]
-    corporate_actions: tuple[CorporateAction, ...]
-    cost_rules: tuple[CostRule, ...]
-    tick_rules: tuple[TickRule, ...]
-    benchmark: tuple[BenchmarkPoint, ...]
-    intents: tuple[OpenIntent, ...]
-    sessions: tuple[SessionEvidence, ...]
-    fills: tuple[FillEvidence, ...]
-    decisions: tuple[DecisionEvidence, ...]
-    expiries: tuple[dict, ...]
-    cash_events: tuple[dict, ...]
-    open_intents: tuple[OpenIntent, ...]
-    initial_marks: tuple[Bar, ...]
-    initial_equity: Amount | None
-    final_coverage: CoverageStatus
-    limitations: tuple[str, ...]
-
-
-def checked_float(value: Decimal) -> float:
-    number = float(value)
-    if not math.isfinite(number) or abs(Decimal(str(number))-value) > max(Decimal('.00000001'),abs(value)*Decimal('1e-15')):
-        raise BacktestInputError('UNSAFE_POLICY_FLOAT_BRIDGE')
-    return number
 
 
 class _PolicyBroker:
@@ -75,7 +38,7 @@ class _PolicyBroker:
 
 def code_identity() -> str:
     root = Path(__file__).parent
-    names = ('backtest_models','backtest_inputs','backtest_costs','backtest_fills','backtest_ledger','backtest_engine','backtest_reporting','domain','execution','risk','signal_parser','trade_signal','screener','indicators','data_models')
+    names = ('backtest_models','backtest_inputs','backtest_costs','backtest_fills','backtest_ledger','backtest_engine','backtest_evidence','backtest_reporting','domain','execution','risk','signal_parser','trade_signal','screener','indicators','data_models')
     digest = hashlib.sha256()
     for name in names:
         digest.update(name.encode()); digest.update((root/(name+'.py')).read_bytes())
