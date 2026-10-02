@@ -1,5 +1,7 @@
 """Saved report services use synthetic sources and never acquire trading authority."""
 import json
+import csv
+import io
 import subprocess
 import sys
 from dataclasses import replace
@@ -167,3 +169,106 @@ def test_projection_scope_and_period_and_exact_metric_links(setup):
     w=settings.model_copy(update={'registered_resources':tuple(ResourceDescriptor(**vars(r)) for r in conflict.resources)})
     result=type(service)(w).project(ReportRequest(family='daily',resource_id='audit',start=sources.clock().date()))
     assert result.diagnostics==('SCOPE_CONFLICT',)
+
+
+@pytest.fixture
+def artifact_setup(setup):
+    from trading_bot.web_store import WebStore
+    sources,settings,service=setup
+    settings.artifact_root.chmod(0o700)
+    store=WebStore(settings);store.initialize()
+    store.provision_operator('operator','synthetic-test-password-hash',sources.clock())
+    service.store=store
+    return sources,settings,service,store
+
+
+def test_export_three_formats_exact_precision_scope_and_unknown(setup):
+    from trading_bot.web_reports import ReportRequest, serialize_report, ReportRow, ReportMetric
+    from decimal import Decimal
+    sources,_,service=setup
+    projection=service.project(ReportRequest(family='backtest',resource_id='backtest'))
+    projection=replace(projection,rows=projection.rows+(ReportRow('test:000660','test','UNKNOWN',
+        (('ticker','000660'),('number',Decimal('-12.123456789123456789')),('unknown',None),('text','＝1+2'))),))
+    payloads=serialize_report(projection)
+    assert set(payloads)=={'txt','json','csv'}
+    document=json.loads(payloads['json'],parse_float=Decimal)
+    assert document['rows'][-1]['fields']['number']==Decimal('-12.123456789123456789')
+    assert document['rows'][-1]['fields']['text']=='＝1+2'
+    for payload in payloads.values():
+        assert projection.selection.selection_id.encode() in payload
+        assert sources.account_hash.encode() in payload
+        assert b'UNKNOWN' in payload and b'\r' not in payload
+    records=list(csv.DictReader(io.StringIO(payloads['csv'].decode())))
+    assert next(r for r in records if r['key']=='number')['value']=='-12.123456789123456789'
+    assert next(r for r in records if r['key']=='ticker' and r['value'].endswith('000660'))['value']=="'000660"
+    assert next(r for r in records if r['key']=='text')['value'].startswith("'")
+
+
+@pytest.mark.parametrize('text', ['=HYPERLINK("x")','+cmd','-cmd','@SUM(A1)','\t=cmd','\r\n=cmd',
+    '  =cmd','\x00=cmd','\u200b=cmd','＝cmd','＋cmd','－cmd','＠cmd','\uff1d 1'])
+def test_csv_formula_controls_fullwidth_neutralized(text):
+    from trading_bot.web_reports import spreadsheet_text
+    result=spreadsheet_text(text)
+    assert result.startswith("'")
+    assert all(ord(c)>=32 and c not in '\r\n\t' for c in result)
+
+
+def test_artifact_atomic_owned_download_and_audited_source_unchanged(artifact_setup):
+    from trading_bot.web_reports import ReportRequest
+    sources,settings,service,store=artifact_setup
+    before=capture_sources(sources)
+    artifact=service.generate_report(ReportRequest(family='backtest',resource_id='backtest'),actor='operator')
+    assert len(artifact.formats)==3
+    assert artifact.source_selection.resource_id=='backtest'
+    for fmt in artifact.formats:
+        payload=service.load_owned_artifact(fmt.artifact_id,actor='operator')
+        assert payload.format==fmt.format and payload.data
+        with pytest.raises(ValueError):service.load_owned_artifact(fmt.artifact_id,actor='intruder')
+    assert capture_sources(sources)==before
+    with store.connection() as conn:
+        assert [r['result_code'] for r in conn.execute('SELECT * FROM web_actions')]==['ATTEMPTED','SUCCEEDED']
+    assert not list(settings.artifact_root.glob('.report-*'))
+
+
+def test_artifact_bounds_and_failed_audit_no_partial_files(artifact_setup,monkeypatch):
+    from trading_bot.web_reports import ReportRequest, ReportRow, ReportGenerationError
+    sources,settings,service,store=artifact_setup
+    request=ReportRequest(family='backtest',resource_id='backtest')
+    monkeypatch.setattr(service,'settings',settings.model_copy(update={'export_bytes':100}))
+    with pytest.raises(ReportGenerationError):service.generate_report(request,actor='operator')
+    assert not list(settings.artifact_root.iterdir())
+    with store.connection() as conn:
+        assert [r['result_code'] for r in conn.execute('SELECT * FROM web_actions')]==['ATTEMPTED','FAILED']
+    service.settings=settings
+    projection=service.project(request)
+    monkeypatch.setattr(service,'project',lambda _:replace(projection,rows=(ReportRow('bound','test','COMPLETE',()),)*10001))
+    with pytest.raises(ReportGenerationError):service.generate_report(request,actor='operator')
+    assert not list(settings.artifact_root.iterdir())
+
+
+def test_artifact_path_symlink_inode_conflict_and_tampering_rejected(artifact_setup,monkeypatch):
+    from trading_bot.web_reports import ReportRequest, ReportGenerationError
+    from types import SimpleNamespace
+    sources,settings,service,store=artifact_setup
+    request=ReportRequest(family='backtest',resource_id='backtest',formats=('json',))
+    artifact=service.generate_report(request,actor='operator')
+    fmt=artifact.formats[0];path=settings.artifact_root/(fmt.artifact_id+'.json')
+    original=path.read_bytes();path.write_bytes(b'tampered')
+    with pytest.raises(ValueError):service.load_owned_artifact(fmt.artifact_id,actor='operator')
+    path.unlink();path.symlink_to(sources.paths['backtest'])
+    with pytest.raises(ValueError):service.load_owned_artifact(fmt.artifact_id,actor='operator')
+    path.unlink();path.write_bytes(original)
+    monkeypatch.setattr('trading_bot.web_reports.uuid4',lambda:SimpleNamespace(hex=fmt.artifact_id))
+    with pytest.raises(ReportGenerationError):service.generate_report(request,actor='operator')
+    assert path.read_bytes()==original
+    with pytest.raises(ValueError):service.load_owned_artifact('../backtest',actor='operator')
+
+
+def test_export_nonfinite_and_row_byte_caps(setup):
+    from trading_bot.web_reports import ReportRequest, serialize_report, ReportRow
+    _,_,service=setup
+    p=service.project(ReportRequest(family='backtest',resource_id='backtest'))
+    for value in [float('nan'),float('inf')]:
+        with pytest.raises(ValueError):serialize_report(replace(p,rows=(ReportRow('bad','test','COMPLETE',(('v',value),)),)))
+    with pytest.raises(ValueError):serialize_report(p,max_bytes=10)
+    with pytest.raises(ValueError):serialize_report(replace(p,rows=p.rows*10001))
