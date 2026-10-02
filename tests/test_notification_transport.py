@@ -91,3 +91,14 @@ def test_transport_compatibility_reexports_factory_and_noop():
     client = Client([SimpleNamespace(status_code=204)])
     built = build_notifier(make_settings(discord_webhook_url=SecretStr(SECRET)), client=client)
     assert isinstance(built, DiscordNotifier) and built.send("safe summary") is True
+
+
+def test_transport_httpx_request_logging_redacts_webhook_without_network(caplog):
+    import httpx
+    caplog.set_level(logging.INFO)
+    request_logger = logging.getLogger("httpx")
+    original_filters = tuple(request_logger.filters)
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(204))) as client:
+        assert notifier(client).send("safe summary") is True
+    assert "sentinel-secret" not in caplog.text
+    assert tuple(request_logger.filters) == original_filters
