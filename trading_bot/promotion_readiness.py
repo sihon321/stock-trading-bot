@@ -7,7 +7,7 @@ from enum import StrEnum
 import hashlib
 import math
 
-from .replay import canonical_json_bytes
+from .replay_evidence import canonical_json_bytes
 
 
 class ReadinessState(StrEnum):

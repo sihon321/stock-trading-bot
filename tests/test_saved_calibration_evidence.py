@@ -1,6 +1,7 @@
 """Saved advisory reductions must not acquire execution or writer capabilities."""
 
 import hashlib
+from contextlib import closing
 import json
 import sqlite3
 import subprocess
@@ -27,8 +28,10 @@ class Reject(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Reject())
 def deny(*args, **kwargs):
     raise AssertionError('saved reader acquired socket/write capability')
-socket.socket = socket.create_connection = deny
+socket.create_connection = socket.getaddrinfo = deny
 def audit(event, args):
+    if event.startswith('socket.'):
+        deny()
     if event == 'open':
         mode, flags = args[1:3]
         if (isinstance(mode, str) and any(c in mode for c in 'wax+')) or (
@@ -141,7 +144,7 @@ def _calibration_sources(tmp_path):
     connect_portfolio_store(paths[0]).close()  # Independently owned extra primary tables.
     _run(*paths, index=1)
     _run(*paths, index=2, status=RunStatus.FAILED)
-    with soak_store.connect_soak_store(paths[1]) as conn:
+    with closing(soak_store.connect_soak_store(paths[1])) as conn:
         soak_store.designate_day(conn, campaign_id="campaign-1", trading_date="2026-07-03",
                                 run_id="missing-primary", run_kind="RUN", terminal=True,
                                 credit_state="CREDITED")
@@ -151,7 +154,7 @@ def _calibration_sources(tmp_path):
 def _source_inventory(paths):
     result = {}
     for path in paths:
-        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as conn:
             result[str(path)] = (
                 path.read_bytes(), conn.execute("PRAGMA user_version").fetchone()[0],
                 tuple(conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")),
@@ -170,6 +173,7 @@ def _saved_evaluations():
 def test_saved_calibration_load_build_render_in_fresh_child(tmp_path):
     paths = _calibration_sources(tmp_path)
     before = _source_inventory(paths)
+    files_before = set(tmp_path.iterdir())
     result = _child(LOAD_ROWS + '''
 from dataclasses import asdict
 from trading_bot.calibration_reporting import (
@@ -207,7 +211,7 @@ print(json.dumps({'id': report.calibration_id, 'text': text}))
         "dde4ef760eff8c04e5df394a89390880fb92cc6e6b795f01bbdfef5f23e82f79"
     )
     assert _source_inventory(paths) == before
-    assert set(tmp_path.iterdir()) == set(paths)
+    assert set(tmp_path.iterdir()) == files_before
 
 
 @pytest.mark.parametrize("owner,corruption", [

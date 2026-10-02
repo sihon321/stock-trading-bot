@@ -9,10 +9,10 @@ import math
 from pathlib import Path
 import re
 import sqlite3
-from typing import Iterator
+from typing import AbstractSet, Iterator, Mapping
 
 from .audit_models import RunStatus
-from .calibration import (
+from .calibration_evidence import (
     CalibrationJudgment,
     CalibrationJudgmentStatus,
     CalibrationSourceCounts,
@@ -23,10 +23,13 @@ from .calibration import (
     baseline_policy,
     judge_variants,
 )
-from .replay import NON_PROFITABILITY_DISCLAIMER, canonical_json_bytes
-from .soak_reporting import _PRIMARY_SCHEMA, _SOAK_SCHEMA
-from .soak_store import SOAK_SCHEMA_VERSION
-from .sqlite_audit import SCHEMA_VERSION
+from .replay_evidence import NON_PROFITABILITY_DISCLAIMER, canonical_json_bytes
+from .evidence_contracts import (
+    PRIMARY_AUDIT_SCHEMA_VERSION as SCHEMA_VERSION,
+    PRIMARY_REPORT_SCHEMA as _PRIMARY_SCHEMA,
+    SOAK_REPORT_SCHEMA as _SOAK_SCHEMA,
+    SOAK_SCHEMA_VERSION,
+)
 
 
 _ACTIONS = frozenset({"BUY", "SELL", "HOLD"})
@@ -184,7 +187,7 @@ class ReadOnlyCalibrationEvidenceRepository:
         connection: sqlite3.Connection,
         *,
         version: int,
-        schema: dict[str, set[str]],
+        schema: Mapping[str, AbstractSet[str]],
         owner: str,
     ) -> None:
         actual_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
