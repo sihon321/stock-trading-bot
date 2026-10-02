@@ -86,8 +86,8 @@ def test_history_kst_pagination_and_detail_selection(tmp_path):
     assert period.start.astimezone(NOW.tzinfo).hour == 15
     # UTC previous day 15:00 is KST midnight and included; upper bound is excluded.
     with sqlite3.connect(sources.paths['audit']) as conn:
-        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,created_at) VALUES ('operator-run','000001','HOLD',?)", (period.start.isoformat(),))
-        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,created_at) VALUES ('operator-run','000002','HOLD',?)", (period.end.isoformat(),))
+        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,risk_override,correlation_id,created_at) VALUES ('operator-run','000001','HOLD',0,'midnight',?)", (period.start.isoformat(),))
+        conn.execute("INSERT INTO decisions(run_id,ticker,final_action,risk_override,correlation_id,created_at) VALUES ('operator-run','000002','HOLD',0,'upper',?)", (period.end.isoformat(),))
     first = svc.list_records('decisions', scope(), period, limit=1)
     assert first.total == 2 and len(first.rows) == 1 and first.cursor
     second = svc.list_records('decisions', scope(), period, first.cursor, 1)
