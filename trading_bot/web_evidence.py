@@ -342,11 +342,12 @@ class OperatorEvidenceService:
                 extra.extend((name, _clean(detail[name])) for name in allowed
                              if name in detail and (detail[name] is None or type(detail[name]) in {str, int, float, bool}))
         if kind == 'evaluations':
-            event = conn.execute('SELECT id,action,confidence,reason_code,detail_json,observed_at FROM daily_evaluation_events WHERE evaluation_id=? AND event_type IN (?,?) ORDER BY id DESC LIMIT 1',
+            event = conn.execute('SELECT id,event_type,action,confidence,reason_code,detail_json,observed_at FROM daily_evaluation_events WHERE evaluation_id=? AND event_type IN (?,?) ORDER BY id DESC LIMIT 1',
                 (row['evaluation_id'], 'SIGNAL_FINALIZED', 'LLM_UNAVAILABLE')).fetchone()
             if event:
                 detail = _json(event['detail_json'])
                 extra.extend((name, _clean(event[name])) for name in ('action', 'confidence', 'reason_code'))
+                extra.append(('terminal_event_type', event['event_type']))
                 extra.append(('reason', _clean(detail.get('reason')) if isinstance(detail, dict) else None))
                 record = replace(record, envelope=replace(record.envelope, source_observed_at=_stamp(event['observed_at'])),
                     selection=replace(record.selection, source_ids=record.selection.source_ids + (f'evaluation_events:{event["id"]}',)))

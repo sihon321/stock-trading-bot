@@ -77,7 +77,9 @@ class AlertDetector:
             state = d.get('status')
             if state not in {'FAILED', 'LLM_UNAVAILABLE', 'SIGNAL_FINALIZED', 'FINALIZED'}:
                 return None
-            unavailable = state == 'FINALIZED' and d.get('reason_code') == 'LLM_UNAVAILABLE'
+            unavailable = state == 'FINALIZED' and d.get('terminal_event_type') == 'LLM_UNAVAILABLE'
+            if state == 'FINALIZED' and d.get('terminal_event_type') not in {'LLM_UNAVAILABLE', 'SIGNAL_FINALIZED'}:
+                return None
             return self._fact(row, 'EVALUATION', 'LLM_UNAVAILABLE' if unavailable else state, 'WARNING',
                 recovery=state in {'SIGNAL_FINALIZED', 'FINALIZED'} and not unavailable)
         if kind in {'orders', 'broker_orders'}:

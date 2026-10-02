@@ -32,6 +32,21 @@ def test_alert_stream_enriches_phase11_subject_and_daily_evaluation(tmp_path):
     assert any(r.kind == 'evaluations' for r in batch.facts)
 
 
+@pytest.mark.parametrize('proof_ticker,valid', [('000660', True), ('005930', False)])
+def test_alert_stream_emits_only_same_subject_terminal_freeze_release(tmp_path, proof_ticker, valid):
+    sources = make_operator_sources(tmp_path)
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("INSERT INTO soak_comparisons(comparison_id,campaign_id,run_id,ticker,order_intent_id,verdict,remaining_order_terminal,detail_json,observed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ('release-proof', 'operator-campaign', 'run-1', proof_ticker, 'historic-intent', 'MATCHED', 1, '{}', NOW.isoformat()))
+        conn.execute("INSERT INTO soak_ticker_freezes(freeze_id,campaign_id,ticker,order_intent_id,freeze_kind,state,prior_transition_id,release_evidence_type,release_evidence_id,detail_json,observed_at) SELECT freeze_id,campaign_id,ticker,order_intent_id,freeze_kind,'RELEASED',id,'COMPARISON','release-proof','{}',? FROM soak_ticker_freezes WHERE state='FROZEN'", (NOW.isoformat(),))
+    before = capture_sources(sources)
+    batch = service(sources).observe_alert_sources()
+    rows = [r for r in batch.facts if r.kind == 'freezes']
+    assert rows[0].data['state'] == ('RELEASED' if valid else 'FROZEN')
+    assert rows[0].data.get('release_validated') is (True if valid else None)
+    assert capture_sources(sources) == before
+
+
 def service(sources):
     settings = WebSettings(operational_db_path=sources.operational_db,
         artifact_root=sources.artifact_root,

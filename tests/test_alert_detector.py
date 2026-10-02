@@ -88,3 +88,10 @@ def test_unvalidated_release_and_generic_cleared_are_not_recovery():
     uncertain = record('orders', order_intent_id='intent', event_type='RECONCILED', broker_status='FILLED', unfilled_qty=0)
     assert AlertDetector().detect(AlertSourceBatch(NOW, (release,))) == ()
     assert not AlertDetector().detect(AlertSourceBatch(NOW, (uncertain,)))[0].positive_recovery
+
+
+def test_finalized_evaluation_uses_saved_event_type_not_generic_status():
+    unavailable = record('evaluations', status='FINALIZED', terminal_event_type='LLM_UNAVAILABLE', reason_code='TIMEOUT')
+    result = AlertDetector().detect(AlertSourceBatch(NOW, (unavailable,)))[0]
+    assert result.normalized_state == 'LLM_UNAVAILABLE' and not result.positive_recovery
+    assert AlertDetector().detect(AlertSourceBatch(NOW, (record('evaluations', status='FINALIZED'),))) == ()
