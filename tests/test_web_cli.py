@@ -133,11 +133,14 @@ def test_mismatched_confirmation_never_provisions(tmp_path, monkeypatch):
     assert WebStore(web_cli.load_settings(path)).get_operator() is None
 
 
-def test_serve_missing_future_app_honest_error(tmp_path):
+def test_serve_missing_future_app_honest_error(tmp_path, monkeypatch):
     path = config_file(tmp_path, cookie_secret='synthetic-cookie-' + 'a' * 32)
     store = WebStore(web_cli.load_settings(path))
     store.initialize()
     store.provision_operator('operator', 'hash', NOW)
+    def unavailable(settings):
+        raise ImportError('synthetic-secret-sentinel')
+    monkeypatch.setattr(web_cli, '_create_app', unavailable)
     result = runner.invoke(web_cli.app, ['serve', '--config', str(path)])
     assert result.exit_code != 0
-    assert 'Traceback' not in result.output
+    assert 'Traceback' not in result.output and 'synthetic-secret-sentinel' not in result.output
