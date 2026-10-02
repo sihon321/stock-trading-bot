@@ -1,27 +1,27 @@
 ---
 phase: 14
 slug: operator-dashboard-alerting
-status: planned
+status: complete
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-10-01
 ---
 
 # Phase 14 — Validation Strategy
 
-> Planned validation contract aligned with approved UI-SPEC and plans 14-01 through 14-14. Nyquist compliance describes complete planning coverage; wave_0_complete remains false. No installed dependency, implementation or product test is represented as complete.
+> Executed automated validation contract for approved UI-SPEC and all 33 tasks. Dependencies, fixtures, focused/browser/package checks and final full regression passed. Phase goal verification and manual-only usability/network checks are tracked separately; this is not a phase-completion claim.
 
 ## Test Infrastructure
 
 | Property | Value |
 |----------|-------|
-| Framework | Existing pytest 8.4.2; planned Flask test client and pytest-playwright browser extra |
+| Framework | pytest 8.4.2; installed Flask 3.1.3 test client and pytest-playwright 0.9.0 / Playwright 1.63.0 |
 | Config file | `pyproject.toml`; shared existing fixtures in `tests/conftest.py` |
 | Current baseline command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_reporting.py tests/test_soak_reporting.py tests/test_phase11_transitions.py tests/test_shadow_reporting.py` |
 | Planned quick command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_evidence.py tests/test_web_auth.py tests/test_web_security.py tests/test_web_reports.py tests/test_alert_store.py tests/test_alert_observer.py tests/test_web_capabilities.py` |
 | Full suite command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` |
 | Planned browser command | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/browser/test_operator_ui.py --browser chromium` |
-| Baseline observation | Researcher reports 73 existing focused tests passed in 3.39s; future focused/browser latency must be measured during execution |
+| Actual observation | Final full suite: 1412 passed in 320.01s; focused results and browser group splits below |
 
 The planned commands require their listed modules and web/browser dependencies to be created first. Do not call a missing-test command and interpret collection failure as product verification. Do not skip browser coverage merely because backend tests pass. Browser installation and package verification follow the research artifact's explicit dependency setup protocol.
 
@@ -64,9 +64,9 @@ All 33 task IDs are explicit below. Each owning task creates its missing tests a
 | 14-11-T1 | 14-11 | 6 | FUT-03, UI-01, UI-02, OPSV-01 | T14-CSRF, T14-EXPORT | Implement saved validation pages and report generation/download — Replay/backtest/Shadow/Soak/calibration/readiness list/record/evidence render safely with exact source/metric denominator selectors and named unavailable variants. | unit/integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_report_routes.py tests/test_web_reports.py` | Implemented; backend and real Chromium refresh tests passed | passed |
 | 14-11-T2 | 14-11 | 6 | FUT-03, UI-01, UI-02, OPSV-01 | T14-ACK, T14-CSRF | Wire active/history incident views and read-only acknowledgement — INFO/WARNING/CRITICAL active all-date and selectable history show occurrence/duration/source/read/recovery/delivery states separately. | unit/integration | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_alert_routes.py tests/test_web_security.py` | Implemented; backend and real Chromium refresh tests passed | passed |
 | 14-11-T3 | 14-11 | 6 | FUT-03, UI-01, UI-02, OPSV-01 | T14-CLIENT, T14-XSS | Implement saved-only refresh, dirty-form preservation and expiry handling — Visible-page timers fetch every 30s, no overlap, abort after 10s; hidden tabs pause and resume with one read; manual button reuses read. | browser E2E | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/browser/test_operator_refresh.py --browser chromium` | Implemented; backend and real Chromium refresh tests passed | passed |
-| 14-12-T1 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-AUTHORITY, T14-CSRF, T14-DISCLOSURE | Prove route security and fresh-process capability absence — Fresh child starts without shared conftest and importing/creating/rendering web/report/observer services triggers no forbidden import/constructor/socket/mutating-source operation. | adversarial integration/subprocess | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_capabilities.py tests/test_web_security.py tests/test_operator_integration.py` | New test file(s) absent; created by this task after dependencies | pending |
-| 14-12-T2 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-CLIENT | Verify full desktop/mobile/system-theme operator flows in Chromium — 1280px desktop and 390px/320px mobile discover every required screen/list/detail/evidence and every export/read action in both system themes. | browser E2E | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/browser/test_operator_ui.py --browser chromium` | New test file(s) absent; created by this task after dependencies | pending |
-| 14-12-T3 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-VPN | Document exact local/private operations and prove installed package resources — Wheel installed into temporary isolated target contains every native template/static resource and independent entry point imports without checkout/trading config. | adversarial integration/subprocess | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_packaging.py tests/test_web_cli.py tests/test_alert_cli.py` | New test file(s) absent; created by this task after dependencies | pending |
+| 14-12-T1 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-AUTHORITY, T14-CSRF, T14-DISCLOSURE | Prove route security and fresh-process capability absence — Fresh child starts without shared conftest and importing/creating/rendering web/report/observer services triggers no forbidden import/constructor/socket/mutating-source operation. | adversarial integration/subprocess | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_capabilities.py tests/test_web_security.py tests/test_operator_integration.py` | Implemented; fresh-child, actual Chromium and installed-wheel checks passed | passed |
+| 14-12-T2 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-CLIENT | Verify full desktop/mobile/system-theme operator flows in Chromium — 1280px desktop and 390px/320px mobile discover every required screen/list/detail/evidence and every export/read action in both system themes. | browser E2E | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/browser/test_operator_ui.py --browser chromium` | Implemented; fresh-child, actual Chromium and installed-wheel checks passed | passed |
+| 14-12-T3 | 14-12 | 7 | FUT-03, UI-01, UI-02, OPSV-01 | T14-VPN | Document exact local/private operations and prove installed package resources — Wheel installed into temporary isolated target contains every native template/static resource and independent entry point imports without checkout/trading config. | adversarial integration/subprocess | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_web_packaging.py tests/test_web_cli.py tests/test_alert_cli.py` | Implemented; fresh-child, actual Chromium and installed-wheel checks passed | passed |
 
 | 14-13-T1 | 14-13 | 2 | UI-02, FUT-03 | T14-AUTHORITY, T14-INTEGRITY | Separate calibration DTOs/policy catalog/judgments from replay evaluation; clean-child pure import/judgment gates and unchanged evaluate_variants execution API. | subprocess + regression | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_saved_calibration_evidence.py tests/test_calibration.py` | Implemented; focused and integration regressions passed; see plan SUMMARY | passed |
 | 14-13-T2 | 14-13 | 2 | UI-02, FUT-03 | T14-AUTHORITY, T14-INTEGRITY, T14-JUDGMENT | Rewire calibration/readiness to pure evidence/query contracts; separate per-family clean-child import/build/render gates preserve canonical IDs, exact denominators, nine checks and source bytes. | subprocess + regression | `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_saved_calibration_evidence.py tests/test_calibration_reporting.py tests/test_promotion_readiness.py tests/test_report_cli.py` | Implemented; focused and integration regressions passed; see plan SUMMARY | passed |
@@ -82,14 +82,14 @@ Dependency graph: Wave 1 = 14-01 (package gate), 14-03 (pure core/query contract
 
 Explicit setup commands after 14-01 package verification: `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pip install --user -e '.[web,browser]'`; `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m playwright install chromium`. No installation has been performed by planning. Browser tests requested by their plan fail explicitly if infrastructure is absent. Each new test file is created by its owning task; empty stubs do not count as proof.
 
-- [x] Planning contract maps all 33 tasks to actual plans/waves/threats; execution setup remains incomplete.
-- [ ] Add web dependencies and browser extra using reviewed versions; no installation has been performed by planning/research.
-- [ ] Create isolated saved audit/portfolio/soak/replay/backtest/shadow fixtures with exact linked IDs, schema ownership, account/target scope, positive and deliberately broken provenance, missing sources and incomplete placeholders.
-- [ ] Provide fake clock, temporary operational/session/alert store and fake transport fixtures independent of credential-bearing production setup.
-- [ ] Add meaningful tests in all listed modules alongside the implementation that satisfies them; empty test stubs do not establish coverage.
-- [ ] Build the fresh-process capability harness without imports from the credential-bearing shared production conftest. Check constructor attempts and filesystem authority as well as module names.
-- [ ] Register the browser marker and isolated local-server harness; provision a Chromium browser through the reviewed browser setup path. Backend success is not a substitute for browser verification.
-- [ ] Execute setup and measure quick-suite/browser latency; document actual commands/results without treating planned tests as passes.
+- [x] All 33 mapped tasks implemented and verified; dependency, fixture and browser setup completed.
+- [x] Owner-reviewed exact web/browser dependencies installed under the local setup protocol.
+- [x] Create isolated saved audit/portfolio/soak/replay/backtest/shadow fixtures with exact linked IDs, schema ownership, account/target scope, positive and deliberately broken provenance, missing sources and incomplete placeholders.
+- [x] Provide fake clock, temporary operational/session/alert store and fake transport fixtures independent of credential-bearing production setup.
+- [x] Add meaningful tests in all listed modules alongside the implementation that satisfies them; empty test stubs do not establish coverage.
+- [x] Build the fresh-process capability harness without imports from the credential-bearing shared production conftest. Check constructor attempts and filesystem authority as well as module names.
+- [x] Register the browser marker and isolated local-server harness; provision a Chromium browser through the reviewed browser setup path. Backend success is not a substitute for browser verification.
+- [x] Execute setup and measure quick-suite/browser latency; document actual commands/results without treating planned tests as passes.
 
 ## Manual-Only Verifications
 
@@ -107,9 +107,9 @@ Optional private-network acceptance is distinct from automated application corre
 - [x] Setup dependencies cover missing frameworks/fixtures/browser; each owning task creates its tests before verification.
 - [x] No watch-mode test commands.
 - [x] Actual task/plan/wave and threat IDs replace pending mapping references.
-- [ ] Focused feedback latency target is measured and met or a documented split is used.
+- [x] Focused feedback latency target is measured and met or a documented split is used.
 - [x] FUT-03/UI-01/UI-02/OPSV-01 and D-01 through D-16 have concrete task coverage; multi-source audit is in 14-12-PLAN.md.
-- [x] nyquist_compliant describes planning coverage only; actual setup/latency/results and wave_0_complete remain pending.
+- [x] nyquist_compliant and wave_0_complete now include actual setup and all task checks; focused browser groups keep feedback under 60s, while the full suite intentionally includes every regression.
 
 **Approval:** Plans and verification mapping passed independent checking before execution. Implementation results are tracked below; phase-wide product verification remains pending. No product verification was run by the planner.
 
@@ -163,3 +163,14 @@ Optional private-network acceptance is distinct from automated application corre
 - First full wave regression found four integration-test failures: an independent Playwright sync launch nested under the browser plugin session loop, and three old XSS assertions rejecting the newly fixed packaged script. A fresh-process real Chromium launch and exact fixed-script allowlist preserved the negative security checks. Related selection: 68 passed in 19.11s; fix commit cee28cb.
 - Parent full regression after the integration fix: 1378 passed in 122.58s. Schema drift passed; structure-map advisory skipped.
 - Completed plans: 13/14. Final fresh-process capability, all-screen/theme/mobile/browser, installed-package and human usability verification remain pending.
+
+### Wave 7 and Final Regression Completed — 2026-10-02
+
+- 14-12 fresh-process capability/security/integration: 48 passed in 26.53s. All eight AVAILABLE report families and three formats, views/details/APIs/ack/observer/CLI were exercised under before-import traps and per-action source inventories.
+- Actual Chromium all-screen suite: all 16 cases passed across 17 destinations, detail/evidence/metric selectors, 1280/390/320 widths, both system themes, keyboard/zoom/contrast, no-JS actions/downloads and independent sessions. Focused groups were split under 60s (largest measured group 59.58s); existing refresh selection: 12 passed in 15.79s.
+- Actual computed UI defects were fixed narrowly: tiny link target minimum width and a static expanded-state override on the native menu. Approved colors/navigation/tokens remain unchanged; UI contract: 53 passed in 2.73s.
+- Offline wheel/isolated installed runtime/runbook and independent CLI selection: 27 passed in 3.45s. No checkout fallback, network or owner deployment. Optional private HTTPS and readability remain human-only checks.
+- 14-12 resumed after a second provider quota interruption once current usage allowed execution, preserving completed T1/T2 commits. All 14 SUMMARY files are committed.
+- Parent final full regression: PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q — 1412 passed in 320.01s, including all browser cases and all 37 extant test-file references from prior phase verifications.
+- Wave drift checks passed (structure-map advisory skipped). execute:post and verify:post have no active review/security hooks; their gates were evaluated, with no bypass.
+- All 14 plans and 33 automated task checks complete. Fresh goal-backward verification is next; Phase 14 remains in progress until its result and any required human acceptance are handled.
