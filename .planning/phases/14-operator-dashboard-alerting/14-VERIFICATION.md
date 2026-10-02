@@ -1,35 +1,20 @@
 ---
 phase: 14-operator-dashboard-alerting
-verified: 2026-10-02T09:45:35Z
-status: gaps_found
-score: 34/36 must-haves verified
+verified: 2026-10-02T10:08:10Z
+status: human_needed
+score: 36/36 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-verification_head: 9ac4f28477ec256e47d7b99e0188e2a0ff171590
-gaps:
-  - truth: "Every displayed total drills down to durable source details and preserves UNKNOWN/INCOMPLETE states rather than smoothing them away."
-    status: failed
-    reason: "활성 알림을 전역 LIMIT 100으로 먼저 자른 뒤 등록 원천/계좌/대상과 CRITICAL을 필터링한다. 합성 101건은 100으로 표시되고, 더 최근의 다른 범위 100건은 해당 범위의 실제 CRITICAL 1건을 0으로 숨긴다. 헤더 링크도 정확한 CRITICAL/범위 선택을 보존하지 않는다."
-    artifacts:
-      - path: trading_bot/web_app.py
-        issue: "operational_view의 active_incidents/critical_count 계산에서 범위·심각도 필터보다 LIMIT이 먼저 적용됨."
-      - path: trading_bot/templates/operator/base.html
-        issue: "critical-count가 범위·심각도 선택 없이 /alerts로 이동함."
-    missing:
-      - "등록된 원천·계좌·대상·활성·심각도 조건을 먼저 적용한 정확한 합계 또는 확인 불가 시 UNKNOWN."
-      - "합계와 동일 선택을 유지하는 제한된 구성 행 페이지·상세 링크."
-      - "101건 이상 및 다른 등록/미등록 계좌·대상이 앞선 경우의 합계/페이지 회귀 테스트."
-  - truth: "D-09: Visible tabs read saved evidence every 30 seconds with manual refresh, no overlap and 10-second timeout; browser query time never overwrites source observation time."
-    status: failed
-    reason: "저장 증거 새로고침 성공 시 source-status와 operator-evidence만 교체한다. 실제 Chromium에서 CRITICAL 0건 화면을 연 뒤 1건을 저장하고 수동 새로고침해도 헤더는 0건이다. 같은 시점의 새 GET HTML은 1건이다."
-    artifacts:
-      - path: trading_bot/static/operator.js
-        issue: "refresh/apply/replaceStatus가 헤더 critical-count를 갱신하지 않음."
-      - path: tests/browser/test_operator_refresh.py
-        issue: "조회 횟수/시간/본문/초안은 검증하지만 새 CRITICAL 합계의 헤더 갱신은 검증하지 않음."
-    missing:
-      - "성공한 동일 원천 선택의 응답으로 헤더 안전 요약도 갱신하는 연결."
-      - "새 알림·복구·범위 변경 후 자동/수동 새로고침의 헤더 수와 구성 행 일치 테스트."
+verification_head: a1fc4836c55c3db6a2c82d574c014575b58d1882
+re_verification:
+  previous_status: gaps_found
+  previous_score: 34/36
+  gaps_closed:
+    - "G-1: 정확한 등록 범위 CRITICAL 합계와 동일 구성 행/상세 선택"
+    - "G-2: saved refresh의 안전 헤더 합계·링크 갱신"
+  gaps_remaining: []
+  regressions: []
+gaps: []
 human_verification:
   - test: "한국어 운영 화면의 시각적 사용성 검토"
     expected: "안전 개요의 우선순위, 네 탐색 그룹, 모바일 상세, 밝음/어두움 테마에서 미해결 000660·UNKNOWN·INCOMPLETE·원천 관측 경과를 색에 의존하지 않고 이해할 수 있다."
@@ -43,18 +28,20 @@ human_verification:
 
 **Phase Goal:** Operators can use an authenticated responsive web application to inspect portfolio, decision, order, validation, report, and worker-health evidence and handle non-trading operational workflows without granting the web process trade authority.
 
-**검증 시각:** 2026-10-02T09:45:35Z  
-**상태:** gaps_found  
-**재검증:** 아니오 — 기존 14-VERIFICATION.md가 없는 최초 검증  
-**기준:** HEAD `9ac4f28477ec256e47d7b99e0188e2a0ff171590`
+**검증 시각:** 2026-10-02T10:08:10Z
+**상태:** human_needed
+**재검증:** 예 — 최초 두 gap의 수정 후 좁은 독립 재검증
+**기준:** HEAD `a1fc4836c55c3db6a2c82d574c014575b58d1882`
 
-목표 달성은 아직 입증되지 않았다. 화면·저장 보고서·인증·비거래 권한 경계는 실질적으로 구현되었지만, 안전 헤더가 잘못된 CRITICAL 합계를 표시하며 성공한 새로고침에도 이전 합계를 유지한다. 두 결함을 수정하고 재검증하기 전에는 다음 단계로 진행하지 않는다. SUMMARY의 완료 문구를 증거로 사용하지 않았다.
+두 구현 결함이 해소되어 36/36 자동 검증 진실이 VERIFIED이다. 정확한 CRITICAL 합계와 동일 구성 행 선택, 성공한 새로고침의 헤더 갱신을 독립적으로 확인했다. 한국어 시각 사용성 수용이 남아 전체 상태는 human_needed이다. SUMMARY의 완료 문구를 구현 증거로 대체하지 않았다.
 
 ## 검증 범위와 증거 출처
 
 AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN과 SUMMARY, D-01–D-16 CONTEXT, 승인된 UI-SPEC, RESEARCH의 실제 위험, VALIDATION의 실행 관측 및 11/12/13 VERIFICATION을 대조했다. 프로젝트 skill 인덱스에는 이번 코드 검증에 추가 적용할 품질 rules가 없다. 현재 GSD 실행 단계의 검증 산출물만 작성했으며 코드·테스트·STATE·ROADMAP·REQUIREMENTS·VALIDATION은 변경하지 않았다.
 
-실제 부모 실행 증거는 최종 전체 명령 `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q`의 **1412 passed / 320.01s**이다. 이 실행은 최종 소스 변경 후 이루어졌으며 Chromium UI 16건·refresh 12건과 이전 검증에 참조된 현존 37개 테스트 파일을 포함한다. 전체 suite를 반복하지 않았다. 테스트 본문과 실제 호출 경로를 읽고, 본 검증 프로세스에서 별도 capability probe와 상태 불변식 spot-check를 실행했다. 전체 회귀 통과를 합계 정확성의 증거로 대체하지 않았다.
+최초 검증 당시 부모 실행 증거는 전체 명령 `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q`의 **1412 passed / 320.01s**이다. 이 최초 실행은 당시 최종 소스 변경 후 이루어졌으며 Chromium UI 16건·refresh 12건과 이전 검증에 참조된 현존 37개 테스트 파일을 포함한다. 전체 suite를 반복하지 않았다. 테스트 본문과 실제 호출 경로를 읽고, 본 검증 프로세스에서 별도 capability probe와 상태 불변식 spot-check를 실행했다. 전체 회귀 통과를 합계 정확성의 증거로 대체하지 않았다.
+
+이번에는 기존 보고서(commit 4c7fa73), 14-12-SUMMARY/14-VALIDATION의 마지막 follow-up 및 RED 1af0c88/GREEN e457357의 실제 변경을 대조했다. 현재 마지막 소스/테스트 변경 후 부모 전체 실행은 **1418 passed / 336.19s**, 관련 route/security/UI/browser는 **153 passed / 50.23s**, 추가 경계는 **7 passed / 6.91s**이다. 검증자는 전체 suite를 반복하지 않고 아래 네 named tests(첫 항목 네 parameter cases)를 별도 실행하여 **7 passed / 7.12s**를 확인했다. 변경 없는 기존 34개 VERIFIED는 변경 영향만 검토했다.
 
 실행 인터프리터는 Python 3.14.3이다. `requires-python >=3.10`만으로 StrEnum이 필요한 3.10 호환성을 주장하지 않는다. 운영자 원천 DB·.env·자격 증명·KIS·LLM·실제 Discord를 사용하지 않았고 서비스/배포/거래를 실행하지 않았다. 결함 재현은 TemporaryDirectory의 합성 원천과 운영 DB, Flask test client 및 모든 요청을 test-client 응답으로 fulfill하는 Chromium route를 사용했다. 재현용 서버는 시작하지 않았다.
 
@@ -67,9 +54,9 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | # | 진실 | 판정 | 실제 증거 |
 |---|---|---|---|
 | 1 | SC-1: 한국어 PC/모바일에서 계좌·보유·후보·판단·주문·체결·실행·보고서·Replay·Soak·보정·준비도·작업 상태를 확인한다. | VERIFIED | `web_app.OPERATIONAL_VIEWS`, validation/report/alert routes, `base.html`의 17개 경로; `test_every_destination_detail_theme_contrast_and_mobile_targets`가 1280/390/320×두 테마에서 실제 이동·상세를 검사. 백테스트/Shadow도 포함. |
-| 2 | SC-2: 표시 합계가 정확한 durable 구성 증거로 연결되고 UNKNOWN/INCOMPLETE를 유지한다. | FAILED — BLOCKER | 계좌/보고서 구성 선택은 연결되지만 `web_app.py`의 CRITICAL 합계는 전역 첫 100건에 제한된다. 실제 101→100, 다른 범위 100건+해당 범위 1건→0 재현. G-1. |
+| 2 | SC-2: 표시 합계가 정확한 durable 구성 증거로 연결되고 UNKNOWN/INCOMPLETE를 유지한다. | VERIFIED | 새 incident_selection이 등록 resource/account/target·active·severity 조건을 COUNT/LIMIT 전에 적용한다. 정확한101건/혼합 범위/같은 구성 페이지와 상세/UNKNOWN 독립 행동 검사 통과. G-1 해소. |
 | 3 | SC-3: 보고서 생성·수출·알림 읽음이 인증·권한·CSRF·감사 기록을 요구한다. | VERIFIED | 전역 `guard`, `generate_report`, `owned_artifact`, `acknowledge_alert`; route/method/expired/download 보안 matrix와 actor-owned artifacts·transactional action audit. |
-| 4 | SC-4: 심각도 기반 중복 제거·증거 연결 알림이 실패/오래된 작업·미해결 주문·래치·브로커 차이를 포괄한다. | VERIFIED | `AlertDetector.detect/_record/_worker`, `AlertStore.observe`, saved stream/subject joins; detector family/strict stale boundary/positive recovery, episode/revision/producer receipt 테스트. 헤더 표시 결함은 #2/#34에 별도 실패. |
+| 4 | SC-4: 심각도 기반 중복 제거·증거 연결 알림이 실패/오래된 작업·미해결 주문·래치·브로커 차이를 포괄한다. | VERIFIED | `AlertDetector.detect/_record/_worker`, `AlertStore.observe`, saved stream/subject joins; detector family/strict stale boundary/positive recovery, episode/revision/producer receipt 테스트. 헤더 합계/갱신도 #2/#34에서 재검증 통과. |
 | 5 | SC-5: 웹은 주문·live LLM·정책 쓰기·비밀 표시·실거래 활성화·안전 면제 권한이 없고 local/private가 기본이다. | VERIFIED | 독립 `WebSettings`, pure saved import graph, registered resource/path topology, global route capability matrix; 본 검증의 fresh child 8 surface·전 원천 불변성 probe 통과. |
 | 6 | 새 패키지는 명시적인 소유자 검증 후 승인된 일곱 pin으로만 설치된다. | VERIFIED | 부모가 제공한 직접 사용자 승인 provenance, 14-01의 차단 checkpoint, pyproject의 exact pins 및 `test_operator_setup` 설치 metadata. SUMMARY 자체만으로 런타임 정확성을 판정하지 않음. |
 | 7 | 독립 합성 fixture/browser harness가 broker/LLM/Discord 없이 귀속된 증거를 검증한다. | VERIFIED | `operator_fixtures`, `capability_probe`, browser conftest; test-owned writer는 child 밖, child는 shared conftest 없이 guard를 먼저 설치. |
@@ -85,10 +72,10 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | 17 | D-08: PC/휴대폰 세션·logout은 독립이고 password reset은 모두 폐기한다. | VERIFIED | 별도 opaque reference rows, reset transaction; auth tests와 real Chromium independent-context boundary tests. |
 | 18 | operational schema만 쓰고 source owner/version/schema/data/bytes를 변경하지 않는다. | VERIFIED | mode=ro/query_only·owner version·fixed schema·독립 transactions; WebStore/AlertStore의 별도 metadata; 본 검증 전 surface source inventory/bytes 동일. |
 | 19 | D-10: 실패/불완전 읽기는 과거 완전 관측·원천 시간/age를 유지하고 unknown 금액은 0이 아니다. | VERIFIED | `ReadOnlyPortfolioRepository.account`, `_account` cache와 immutable envelope replace; 본 검증 cache-time 테스트 및 incomplete_zero_cash/failed-source browser 테스트. |
-| 20 | D-12: 기본 오늘은 KST이며 기간 필터가 all-date 000660·활성 위험을 숨기지 않는다. | VERIFIED | `PeriodSelection`, `_unresolved`, safety blocks 별도; today/custom native route/browser tests. G-1은 알림 개수 한도에서 별도로 위험을 숨기는 결함. |
+| 20 | D-12: 기본 오늘은 KST이며 기간 필터가 all-date 000660·활성 위험을 숨기지 않는다. | VERIFIED | `PeriodSelection`, `_unresolved`, safety blocks 별도; today/custom native route/browser tests. 새 활성 합계/페이지도 all-date 조건을 유지한다. |
 | 21 | 계좌·대상·원천 시간이 확실히 귀속되고 snapshot constituent/watch joins가 정확하다. | VERIFIED | same snapshot_id holdings/orders/fills, watch_iterations.snapshot_id join, `_check_run` scope conflict rejection; 본 검증 worker join/strict stale boundary 통과. |
 | 22 | D-16: TXT/JSON/CSV가 IDs·scope·정밀도·분모·UNKNOWN·모의/advisory 의미와 안전한 spreadsheet profile을 보존한다. | VERIFIED | `serialize_report`, Decimal exact JSON, CSV NFKC/control/formula-prefix neutralization·identity-as-text; actual download parsing 및 byte/row/period caps. |
-| 23 | 모든 validation metric은 excluded/unknown 포함 동일 선택의 constituent rows로 연결된다. | VERIFIED | `SavedReportProjection.metric_detail`, constituent ID subset checks, `_daily/_replay/_backtest/_shadow/_soak/_calibration/_readiness`; same selector/native metric links. 헤더 CRITICAL은 이 서비스 밖이며 #2 실패. |
+| 23 | 모든 validation metric은 excluded/unknown 포함 동일 선택의 constituent rows로 연결된다. | VERIFIED | `SavedReportProjection.metric_detail`, constituent ID subset checks, `_daily/_replay/_backtest/_shadow/_soak/_calibration/_readiness`; same selector/native metric links. 헤더 CRITICAL 선택도 #2에서 재검증 통과. |
 | 24 | D-14: durable source occurrence만 count하고 worsening/recurrence는 새 unread revision/episode다. | VERIFIED | unique observation key·active subject index·ordered reduction; episode historical/backdated/revision tests 및 본 검증 end-to-end recurrence 통과. |
 | 25 | D-15: 읽음은 actor/server time/optional note를 저장하고 reminder만 중지하며 복구/동결을 해제하지 않는다. | VERIFIED | expected_revision CAS·append-only ack·next_reminder NULL; conflict note retention/positive recovery/recurrent unread 테스트 및 본 검증 통과. |
 | 26 | D-13: Phase11 소유 delivery는 link하고 재전송하지 않으며 missing receipt는 UNKNOWN이다. | VERIFIED | producer event/attempt unique keys, `_receipts`, link_producer_delivery; late receipt/recurrence/producer ownership 테스트. |
@@ -99,15 +86,15 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | 31 | D-02: 모바일·no-JS에서도 모든 화면/상세/수출/읽음 기능을 사용할 수 있다. | VERIFIED | 같은 SSR native routes/forms, table/card facts; real Chromium 390/320·no-JS navigation·downloads/ack tests. 사람의 한국어 가독성 수용은 별도. |
 | 32 | D-03: 네 그룹의 17개 목적지를 PC/모바일 메뉴에서 찾을 수 있다. | VERIFIED | base fixed paths와 guarded route registry; actual navigation matrix·native summary Space/Enter·JS aria toggle tests. |
 | 33 | D-04: system light/dark·text/icon·대비·44px·keyboard·200% 확대가 작동한다. | VERIFIED | approved CSS tokens/media/focus/reduced motion; 실제 computed 4.5:1 text/3:1 controls·targets·local scroll·zoom 검증. 정적 token 존재만으로 통과시키지 않음. |
-| 34 | D-09: 30초/수동 saved refresh가 요약을 갱신하고 timeout/no overlap/source time 분리를 지킨다. | FAILED — BLOCKER | 타이머/timeout/source-time 동작은 기존 테스트로 입증되었으나 actual Chromium 수동 성공 후 헤더 0→0, 동일 GET 새 HTML 1 재현. G-2. |
+| 34 | D-09: 30초/수동 saved refresh가 요약을 갱신하고 timeout/no overlap/source time 분리를 지킨다. | VERIFIED | replaceStatus가 same-origin /alerts 링크를 검증해 같은 헤더 노드의 text/href를 갱신한다. 실제 Chromium 수동 worsening·30초 recovery·scope 변경·dirty deferred 갱신 통과. 기존 timeout/no overlap/source time 증거 유지. G-2 해소. |
 | 35 | D-10: dirty form·focus·selection·disclosure·scroll·last success 및 expiry/back hide/no POST replay를 보존한다. | VERIFIED | operator.js dirty/defer/apply·AbortController·restorePending·sessionEnded; 12개 real refresh tests가 실제 DOM·fake time·action failure를 검사. |
-| 36 | 기존 평가 API는 실행 측에 남고 saved 소비자의 schema/identity/UNKNOWN 계약은 fail closed다. | VERIFIED | calibration.evaluate_variants의 original replay path, shadow preparation strict execution checks, legacy re-export, saved family owner-schema/forged-link tests; 이전11–13 regression은 전체1412 실행에 포함. |
+| 36 | 기존 평가 API는 실행 측에 남고 saved 소비자의 schema/identity/UNKNOWN 계약은 fail closed다. | VERIFIED | calibration.evaluate_variants의 original replay path, shadow preparation strict execution checks, legacy re-export, saved family owner-schema/forged-link tests; 이전11–13 regression은 현재 전체1418 실행에도 포함. |
 
-**점수:** 34/36 진실 VERIFIED. 두 FAILED는 동작이 없는 불확실성이 아니라 실제 잘못된 결과이다. PRESENT_BEHAVIOR_UNVERIFIED는 0이며 override는 없다. `passed`로 판정하지 않는다.
+**점수:** 36/36 진실 VERIFIED. 두 초기 FAILED는 해소되었다. PRESENT_BEHAVIOR_UNVERIFIED는 0이며 override는 없다. 미수용된 사람 항목 때문에 전체 상태는 human_needed이며 `passed`로 판정하지 않는다.
 
 ### PLAN must-have 추적
 
-각 배열의 번호는 PLAN frontmatter의 truths 순서다. 같은 ROADMAP 계약/구현 진실을 반복하는 항목은 위 번호로 중복 제거했다. 전 단계 E2E 주장은 해당 구성 진실의 실패를 상속하므로 task-complete로 통과시키지 않는다.
+각 배열의 번호는 PLAN frontmatter의 truths 순서다. 같은 ROADMAP 계약/구현 진실을 반복하는 항목은 위 번호로 중복 제거했다. 전 단계 E2E 주장은 실제 구성 진실/행동 증거로 판단하며 task-complete만으로 통과시키지 않는다.
 
 | PLAN | truths → 위 항목 | 결과 |
 |---|---|---|
@@ -116,19 +103,19 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | 14-03 | 1→9; 2→10 | VERIFIED |
 | 14-04 | 1→11; 2→12; 3→13/22 | VERIFIED |
 | 14-05 | 1→14; 2→15; 3→16; 4→17; 5→18 | VERIFIED |
-| 14-06 | 1→19; 2→2/21/23; 3→20; 4→21 | 2 FAILED(G-1), 나머지 VERIFIED |
+| 14-06 | 1→19; 2→2/21/23; 3→20; 4→21 | VERIFIED — G-1 해소 |
 | 14-07 | 1→22; 2→9; 3→23 | VERIFIED |
 | 14-08 | 1→24; 2→25; 3→26 | VERIFIED |
 | 14-09 | 1→27; 2→28; 3→4; 4→29 | VERIFIED |
 | 14-10 | 1→30; 2→31; 3→32; 4→33; 5→21/23; 6→3 | VERIFIED (운영 source totals와 안전 헤더 #2는 구분) |
-| 14-11 | 1→34; 2→19/35; 3→27; 4→25/3; 5→22/3; 6→1/23/12 | 1 FAILED(G-2), 나머지 VERIFIED |
-| 14-12 | 1→1–36; 2→14/17; 3→31; 4→33; 5→5/18 | 1 FAILED(G-1/G-2), 나머지 구현 VERIFIED; 시각/선택적 네트워크 human 항목 별도 |
+| 14-11 | 1→34; 2→19/35; 3→27; 4→25/3; 5→22/3; 6→1/23/12 | VERIFIED — G-2 해소 |
+| 14-12 | 1→1–36; 2→14/17; 3→31; 4→33; 5→5/18 | 구현 VERIFIED — G-1/G-2 해소; 시각/선택적 네트워크 human 항목 별도 |
 | 14-13 | 1→9; 2→10/22; 3→18/36 | VERIFIED |
 | 14-14 | 1→31/32; 2→33; 3→7/1 | VERIFIED |
 
 ### 필수 산출물 — 존재·실질 구현·연결
 
-`verify.artifacts`를 14개 PLAN에 각각 실행했다. 선언된 87개 artifact 참조는 모두 존재하며 도구의 line/pattern 검사는 통과한다. 이것만으로 목표를 통과시키지 않았다. 아래 호출/데이터 흐름을 별도로 확인했고 web_app/JS의 구현 결함을 명시했다. 테스트 파일은 해당 test/fixture의 실제 호출·assertion과 pytest 수집/최종 실행 연결을 확인했다.
+`verify.artifacts`를 14개 PLAN에 각각 실행했다. 선언된 87개 artifact 참조는 모두 존재하며 도구의 line/pattern 검사는 통과한다. 이것만으로 목표를 통과시키지 않았다. 아래 호출/데이터 흐름을 별도로 확인했고 web_app/JS의 초기 구현 결함과 현재 해소 근거를 명시했다. 테스트 파일은 해당 test/fixture의 실제 호출·assertion과 pytest 수집/최종 실행 연결을 확인했다.
 
 | 산출물 | 실질 구현/사용 연결 | 판정 |
 |---|---|---|
@@ -142,10 +129,10 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | web_reports.py; test_web_reports/test_web_report_routes | eight fixed saved families·same selection·three serializers·owned atomic artifacts·rollback | VERIFIED |
 | alert_models.py/alert_store.py/notification_transport.py/notifier.py; store/transport tests | stable episode/revision/ack/outbox/compatibility notifier·sanitized bounded transport | VERIFIED |
 | alert_detector.py/alert_config.py/alert_observer.py/alert_cli.py; detector/observer/CLI tests | durable fact detection·foreground ownership/claims/stop·credential-free status | VERIFIED |
-| web_app.py; login/overview/list/detail/validation/reports/alerts templates; routes/security/alert-route tests | guarded SSR/API, authenticated native actions and source details; CRITICAL summary LIMIT/filter order defect | 구현 존재·연결됨, G-1 BLOCKER |
-| base.html/macros.html/operator.css; test_web_ui_contract | 17-route shell·escaped bounded facts·responsive system themes·44px native targets | VERIFIED; critical-count selector link는 G-1 |
-| operator.js; browser/test_operator_refresh | saved fetch cadence/abort/cache/dirty/expiry DOM wiring; header summary update 없음 | 구현 존재·연결됨, G-2 BLOCKER |
-| test_web_capabilities/test_web_security/test_operator_integration/browser/test_operator_ui | 실제 호출 before-import/negative source invariance/security/mobile/contrast assertions | VERIFIED; CRITICAL 합계/헤더 refresh missing assertion은 G-1/G-2 |
+| web_app.py; login/overview/list/detail/validation/reports/alerts templates; routes/security/alert-route tests | guarded SSR/API, native actions/source details; 등록 triple 조건의 exact COUNT/bounded page | VERIFIED — G-1 해소 |
+| base.html/macros.html/operator.css; test_web_ui_contract | 17-route shell·escaped bounded facts·responsive system themes·44px native targets | VERIFIED; critical-count는 같은 범위·CRITICAL/active selector 보존 |
+| operator.js; browser/test_operator_refresh | saved cadence/abort/cache/dirty/expiry DOM wiring; 같은 헤더 node 갱신 | VERIFIED — G-2 해소 |
+| test_web_capabilities/test_web_security/test_operator_integration/browser/test_operator_ui | 실제 호출 before-import/negative source invariance/security/mobile/contrast assertions | VERIFIED; exact totals/헤더 refresh 회귀 assertion 추가 |
 | docs/operator-runbook.md/test_web_packaging | exact local/private config·independent monitor lifecycle·offline installed wheel | VERIFIED; 실제 network/한국어 사용성은 human |
 
 ### 핵심 연결
@@ -158,7 +145,7 @@ PLAN의 key-links 46개는 대부분 `"portfolio snapshot totals"`, `"every scre
 | shared pure schema/DTO→saved consumers | reporting/backtest/shadow/calibration/soak imports→pure contracts/validators, compatibility re-exports | WIRED |
 | snapshot totals→holdings/orders/fills | ReadOnlyPortfolioRepository.account(sid)→same snapshot_id→EvidenceSelection→native list/record/evidence | WIRED |
 | watch iteration→portfolio snapshot/worker | watch_iterations.snapshot_id JOIN snapshots→source observation/cadence→WorkerDTO | WIRED |
-| all-date unresolved/safety→overview/orders/alerts | _unresolved/_safety_blocks separate from period→overview/orders; detector streams→episodes | WIRED; header subset selection는 G-1 |
+| all-date unresolved/safety→overview/orders/alerts | _unresolved/_safety_blocks separate from period→overview/orders; detector streams→episodes | WIRED; 새 header exact selection도 확인 |
 | registered report request→saved builders→exact metrics | fixed ReportRequest/catalog→project→family builder→metric_detail same ID selection | WIRED |
 | actor-owned artifact→generated bytes/download | pinned dir_fd·opaque sealed ID→metadata+audit transaction→load_owned_artifact→guarded download | WIRED |
 | durable observation→episode/revision/read | unique source key·subject→observe→expected_revision ack→actor/time/note, source unchanged | WIRED |
@@ -167,7 +154,7 @@ PLAN의 key-links 46개는 대부분 `"portfolio snapshot totals"`, `"every scre
 | explicit alerts CLI→foreground lifecycle | once/watch/status→independent monitor; request factory has no start invocation | WIRED |
 | every page/action→auth/CSRF/audit | global before_request + method guards→saved routes/actions + store audit | WIRED |
 | native shell→secure pages→Chromium/package | extends base/macros+packaged CSS/JS→17 routes→mobile/no-JS/installed-wheel probes | WIRED |
-| saved refresh response→safety header | JSON/rendered_html→replaceStatus/apply; .critical-count는 교체 대상 밖 | NOT_WIRED — G-2 |
+| saved refresh response→safety header | JSON/rendered_html→replaceStatus→same-node critical-count text/href; dirty defer에도 적용 | WIRED — G-2 해소 |
 
 ### 데이터 흐름 — Level 4
 
@@ -178,12 +165,12 @@ PLAN의 key-links 46개는 대부분 `"portfolio snapshot totals"`, `"every scre
 | workers/source metadata | lifecycle/expectation/cadence/actual observation/lease age | saved transitions/watch/snapshot joins; lease 단독으로 건강을 증명하지 않음; no observation/cadence→UNKNOWN | FLOWING |
 | validation/report metrics | result rows/denominators/exclusions/unknowns | validated saved files/readonly owners + registered proof facts→metric constituent selection | FLOWING; missing proof typed UNKNOWN |
 | alerts/detail | subject/revision/count/duration/read/recovery/attempt history | operational episodes + append-only durable source sequence + source ID links | FLOWING |
-| overview/header CRITICAL | active count/incident links | operational query result limited100→scope filtering→count | FLOWING, 합계 오류 — G-1 |
-| JS refreshed header CRITICAL | stale initial count | API produces new HTML; header count DOM not consumed | DISCONNECTED — G-2 |
+| overview/header CRITICAL | active count/incident links | 등록 triple/active/severity→readonly exact COUNT→same-selector bounded page/detail | FLOWING — G-1 해소 |
+| JS refreshed header CRITICAL | new saved count/link | API rendered HTML→replaceStatus→기존 header node 갱신 | FLOWING — G-2 해소 |
 
-빈 Jinja extension block·initial nullable field·unknown model/rank/mark·없어진 source·미등록 saved proof는 stub으로 판정하지 않았다. 실제 reader가 가능한 데이터를 채우며 unavailable을 구체적으로 표시한다. 합계 결함은 데이터가 없는 stub이 아니라 실제 source selection/DOM wiring 오류이다. 원천들마다 독립 관측·트랜잭션이며 한 번의 cross-database atomic snapshot이라고 주장하지 않는다.
+빈 Jinja extension block·initial nullable field·unknown model/rank/mark·없어진 source·미등록 saved proof는 stub으로 판정하지 않았다. 실제 reader가 가능한 데이터를 채우며 unavailable을 구체적으로 표시한다. 초기 합계 결함은 source selection/DOM wiring 오류였으며 이번에 수정·재검증했다. 원천들마다 독립 관측·트랜잭션이며 한 번의 cross-database atomic snapshot이라고 주장하지 않는다.
 
-### 행동 spot-check와 실제 실패 재현
+### 행동 spot-check 및 초기 실패 재현 이력
 
 접두어 `P = PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q`.
 
@@ -196,11 +183,25 @@ PLAN의 key-links 46개는 대부분 `"portfolio snapshot totals"`, `"every scre
 | crash uncertainty/no duplicate | `P tests/test_alert_observer.py::test_crash_after_send_stays_unknown_no_duplicate` | 같은 실행 | PASS |
 | read→worsen→positive recovery→recurrence/producer ownership | `P tests/test_operator_integration.py::test_web_read_worsening_positive_recovery_recurrence_and_producer_ownership` | 같은 실행 | PASS |
 | artifact partial publish rollback | `P tests/test_web_reports.py::test_artifact_partial_publish_failure_rolls_back_metadata_safely` | 같은 실행 | PASS |
-| 101 distinct active CRITICAL | TemporaryDirectory + registered portfolio subjects + AlertStore.observe + authenticated Flask GET / | SQL COUNT=101; HTTP200; HTML `미해결 CRITICAL · 100` | FAIL — G-1 |
+| 101 distinct active CRITICAL | TemporaryDirectory + registered portfolio subjects + AlertStore.observe + authenticated Flask GET / | SQL COUNT=101; HTTP200; HTML `미해결 CRITICAL · 100` | 초기 FAIL — G-1 (현재 해소) |
 | newer unrelated scope100 + valid scoped1 | same fixture; scoped saved subject first, clock+1s then foreign/real100 | HTTP200; actual scoped1; HTML `미해결 CRITICAL · 0` | FAIL — G-1 |
-| safety header consumes successful refresh | real Chromium, page.route fulfill of test-client responses (no server); initial0→save1→manual button→success status | header0 remains; same fresh GET HTML1 | FAIL — G-2 |
+| safety header consumes successful refresh | real Chromium, page.route fulfill of test-client responses (no server); initial0→save1→manual button→success status | header0 remains; same fresh GET HTML1 | 초기 FAIL — G-2 (현재 해소) |
 
-실제 browser 28건의 기존 테스트 본문을 검토했다. cadence/timeout/hidden/no overlap/dirty/focus/disclosure/cache/expiry/no-POST-replay는 직접 상태를 assert한다. 하지만 `test_visible_cadence_manual_and_source_time`는 account 화면의 request 수/시간/본문을 검사하며 CRITICAL 헤더 변화는 검사하지 않는다. 따라서 그 테스트의 PASS는 G-2를 반증하지 못한다.
+실제 browser 28건의 기존 테스트 본문을 검토했다. cadence/timeout/hidden/no overlap/dirty/focus/disclosure/cache/expiry/no-POST-replay는 직접 상태를 assert한다. 최초 `test_visible_cadence_manual_and_source_time`만으로는 G-2를 반증할 수 없었다. 새 회귀 테스트가 실제 안전 헤더 전환을 직접 assert하며 이번 독립 실행에서 통과했다.
+
+
+### 현재 독립 재검증 — G-1/G-2 해소
+
+동일 `P` 명령에 아래 네 nodes와 `--browser chromium`을 지정했다. 결과 **7 passed / 7.12s**, exit0이다. 첫 실행의 잘못 추정한 browser node 이름은 collection exit4였고 올바른 node로 재실행했으며, 수집 오류는 행동 증거에 포함하지 않았다.
+
+| Test node | 직접 확인한 동작 | 결과 |
+|---|---|---|
+| `tests/test_web_alert_routes.py::test_critical_total_exact_scoped_and_all_pages` | same 범위101; newer 다른 등록 원천/미등록/계좌·target 혼합 각 scoped1; COUNT 전에 등록 triple 필터; all-date CRITICAL active selector·bounded page·모든 unique 구성 detail·source bytes 불변 | 4 cases PASS |
+| `tests/test_web_alert_routes.py::test_critical_storage_failure_is_unknown_and_filters_are_validated` | storage 실패 header UNKNOWN/ALERT_STORAGE_UNAVAILABLE, invalid severity/active400 | PASS |
+| `tests/browser/test_operator_refresh.py::test_critical_header_tracks_saved_worsening_recovery_and_scope` | 실제 Chromium header1→manual worsening2→30초 recovery1→audit scope0; 같은 CRITICAL/resource 링크 | PASS |
+| `tests/browser/test_operator_refresh.py::test_dirty_note_focus_disclosure_scroll_and_explicit_refresh` | dirty auto defer 중 header2; draft/focus/selection/disclosure/scroll/기존revision 보존; explicit refresh 후 새revision과draft 유지 | PASS |
+
+`incident_selection`은 owner 검증 후 parameterized 등록 resource_id/account_hash/target와 active/severity를 SQL WHERE에 먼저 적용한다. COUNT/page IDs는 같은 readonly operational read transaction이며 active는 기간 제한을 적용하지 않는다. 저장소 오류는 UNKNOWN이다. cross-owner/source/detail 읽기 전체의 atomic snapshot을 주장하지 않는다. `replaceStatus`는 응답 href의 same-origin `/alerts`를 검증하고 같은 헤더 node의 text/href를 dirty defer 이전에도 갱신한다. 인증/CSRF·source readers·report serializers/artifact rollback·detector/observer/평가 API는 이 수정에서 변경되지 않았다.
 
 ### Probe 실행
 
@@ -209,7 +210,7 @@ PLAN의 key-links 46개는 대부분 `"portfolio snapshot totals"`, `"every scre
 | Probe | 본 검증 실행 | 결과 | 판정 |
 |---|---|---|---|
 | fresh supported surface/source invariance | `P tests/test_web_capabilities.py::test_fresh_supported_surface_and_each_source_owner_invariant` | **1 passed / 19.04s**, child마다 before-import guard. factory/routes/all eight AVAILABLE families×TXT/JSON/CSV/ack/observer once+watch stop/status/CLI/malformed/missing source의 8 surface 실행 | PASS |
-| existing per-family saved contracts | 최종1412 실제 실행의 evidence/saved backtest/Shadow/calibration/soak named tests와 child code를 대조 | canonical identity·strict version/links·forgery·same-source inventories 검사 확인 | PASS — 부모 최종 실행 evidence, 본 검증 suite 반복 없음 |
+| existing per-family saved contracts | 최초1412 및 현재1418 실제 실행의 evidence/saved backtest/Shadow/calibration/soak named tests와 child code를 대조 | canonical identity·strict version/links·forgery·same-source inventories 검사 확인 | PASS — 부모 최종 실행 evidence, 본 검증 suite 반복 없음 |
 
 ### 요구사항 커버리지
 
@@ -217,10 +218,10 @@ PLAN 전체 frontmatter의 요구사항 합집합은 FUT-03/UI-01/UI-02/OPSV-01�
 
 | 요구사항 | 선언 PLAN | 구현 증거/의미 | 판정 |
 |---|---|---|---|
-| FUT-03 | 02/03/04/06/07/10/11/12/13/14 | authenticated Korean saved account/decision/order/report/health review가 구현됨. 안전 요약 count 및 refresh가 사실과 불일치 | BLOCKED — G-1/G-2 |
-| UI-01 | 02/04/06/07/10/11/12/14 | 17 destinations·source/detail·mobile/theme objective proof 존재. 정확한 표시 합계 contract와 header refresh가 실패 | BLOCKED — G-1/G-2; 한국어 visual usability human |
+| FUT-03 | 02/03/04/06/07/10/11/12/13/14 | authenticated Korean saved account/decision/order/report/health review가 구현됨. 안전 요약 exact count/refresh도 독립 재검증 통과 | SATISFIED — G-1/G-2 해소 |
+| UI-01 | 02/04/06/07/10/11/12/14 | 17 destinations·source/detail·mobile/theme objective proof 존재. 정확한 표시 합계와 header refresh 회귀 검사 통과 | SATISFIED — 한국어 visual usability human pending |
 | UI-02 | 01–14 | global authentication/authorization/CSRF/audit·read-only saved actions·authority absence·source-byte invariance·secure local/private config | SATISFIED (실제 optional private network 수용은 조건부 human) |
-| OPSV-01 | 02/06/08/09/11/12 | durable severity/dedup/evidence-linked occurrence/worsening/recovery/critical reminders·producer ownership·explicit observer 구현 입증 | SATISFIED — detector/delivery 경로; 안전 헤더 표시 결함은 FUT-03/UI-01에 명시 |
+| OPSV-01 | 02/06/08/09/11/12 | durable severity/dedup/evidence-linked occurrence/worsening/recovery/critical reminders·producer ownership·explicit observer 구현 입증 | SATISFIED — detector/delivery 경로; 안전 헤더도 동일 범위 합계/refresh 확인 |
 
 ### 금지사항과 안전 회귀
 
@@ -234,33 +235,31 @@ PLAN artifact/key-file 집합(79개 경로)의 source/test 텍스트에서 unref
 
 | 파일/위치 | 패턴 | 심각도 | 영향 |
 |---|---|---|---|
-| web_app.py operational_view active_incidents/critical_count | 전역 LIMIT 후 권한/범위/심각도 필터 | BLOCKER | 많은 다른 범위 사건이 해당 범위 위험을0으로 숨김; 실제101건을100으로 단정 |
-| operator.js replaceStatus/apply/refresh | 본문은 refresh되지만 헤더 안전 합계는 initial SSR DOM에 남음 | BLOCKER | 성공한 읽음 뒤에도 새 위험/복구 합계가 오래된 값으로 보임 |
-| browser/test_operator_refresh.py visible cadence case | request/source time/body PASS가 header summary 전환을 검사하지 않음 | WARNING | 전체1412 green이 실제 header refresh 동작을 보증하지 않음 |
-| pyproject.toml requires-python | metadata>=3.10 및 실제 StrEnum/runtime 간 범위 차이 | INFO | 실제 검증은3.14.3만; 지원하지 않은 interpreter 동작을 주장하지 않음 |
+| web_app.py / operator.js | 최초 LIMIT/filter order와 header wiring 결함 | 해소된 이력 | 현재 exact selector/count 및 실제 header 전환 회귀 tests 통과 |
+| pyproject.toml requires-python | metadata>=3.10 및 실제 StrEnum/runtime 간 범위 차이 | INFO | 실제 검증은3.14.3만; 지원하지 않은 interpreter 통과를 주장하지 않음 |
 
-Inversion/Confirmation Bias Counter를 적용해 (1) 합계가 제한/범위에서 실패할 가능성, (2) 새로고침의 본문 테스트가 헤더를 놓칠 가능성, (3) 실패/uncertain dispatch가 자동 복구/재전송될 가능성을 대조했다. 앞의 두 건은 실제 실패로 입증했고 세 번째는 crash UNKNOWN·no replay·positive source recovery 행동 테스트로 반증했다. 단순히 테스트 총수에 기대어 PASS하지 않았다.
+최초 반례는 보고서 commit4c7fa73와 RED1af0c88에 보존된다. GREENe457357의 실제 수정과 이번 독립 행동 실행이 두 반례를 해소했다. 이번 수정 diff에서 새 debt marker/stub/금지된 source write/raw secret를 발견하지 않았다. 기존 34개 VERIFIED의 변경 영향 검토와 부모 최종1418 회귀에서 새로운 회귀는 발견되지 않았다.
 
 ## 사람 확인 필요 — WARNING
 
 ### 1. 한국어 운영 화면의 시각적 사용성
 
-**검사:** 결함 수정 후 현실적인 저장 증거로 안전 개요·네 탐색 그룹·계좌/주문/검증 상세를 PC와 휴대폰에서 밝음/어두움 테마로 검토한다. 000660, UNKNOWN/INCOMPLETE, stale/failed와 원천 시각을 읽는다.  
-**기대:** 색 없이 위험과 증거 한계를 이해하며 상세·보고서·읽음 작업을 찾을 수 있다.  
+**검사:** 현실적인 저장 증거로 안전 개요·네 탐색 그룹·계좌/주문/검증 상세를 PC와 휴대폰에서 밝음/어두움 테마로 검토한다. 000660, UNKNOWN/INCOMPLETE, stale/failed와 원천 시각을 읽는다.
+**기대:** 색 없이 위험과 증거 한계를 이해하며 상세·보고서·읽음 작업을 찾을 수 있다.
 **사람이 필요한 이유:** computed contrast/44px/keyboard/zoom 통과는 실제 한국어 이해/사용성 수용을 대신하지 않는다. 14-12 PLAN과 VALIDATION이 끝 단계 사람 확인으로 명시했다.
 
 ### 2. 조건부 실제 사설 휴대폰 접속
 
-**검사:** 소유자가 별도로 VPN/HTTPS/인증서/방화벽/host-origin-single proxy를 명시 구성한 경우에만 runbook의 실제 모바일 데이터→사설 VPN→HTTPS 체크를 수행한다. PC 세션을 유지한 채 휴대폰 로그인·독립 logout·12h 만료를 확인한다.  
-**기대:** 사설 경로+앱 인증이 모두 필요하고 인증서 오류를 우회하지 않으며 공개 접근은 생기지 않는다.  
+**검사:** 소유자가 별도로 VPN/HTTPS/인증서/방화벽/host-origin-single proxy를 명시 구성한 경우에만 runbook의 실제 모바일 데이터→사설 VPN→HTTPS 체크를 수행한다. PC 세션을 유지한 채 휴대폰 로그인·독립 logout·12h 만료를 확인한다.
+**기대:** 사설 경로+앱 인증이 모두 필요하고 인증서 오류를 우회하지 않으며 공개 접근은 생기지 않는다.
 **사람이 필요한 이유:** 이 검증은 actual network topology/phone provisioning을 다루지 않는다. 선택적 배포가 없는 상태 자체는 구현 gap이 아니며 이 항목은 거래·LLM·Discord 발송 권한을 추가하지 않는다.
 
-## Gap 요약과 후속 경계
+## 현재 결론과 후속 경계
 
-G-1은 정확한 CRITICAL 범위 합계/constituent 선택, G-2는 그 합계의 성공한 refresh DOM 소비 연결이다. 두 건은 동일 안전 요약에서 드러나지만 서버 선택과 클라이언트 갱신이라는 별도 원인이므로 각각 고쳐야 한다. report/export/ack/observer의 금지 권한 경계와 소스 불변성 검증은 유지해야 한다.
+G-1의 정확한 CRITICAL 범위 합계/구성 선택과 G-2의 성공한 refresh DOM 연결은 해소되었다. 현재 열린 구현 gap은 없으며 canonical `gaps: []`이다. 기존 report/export/ack/observer의 권한 부재와 원천 불변성 경계도 유지된다.
 
-후속 ROADMAP Phase15의 unattended scheduling/leader locking/worker recovery/pause·kill과 Phase16의 manual real-money pilot는 이 합계·DOM 오류를 구현한다고 구체적으로 약속하지 않는다. G-1/G-2는 뒤 단계로 유보하지 않았다. `roadmap.analyze`는 활성 v1.1 구간만 반환해14 이후를 생략하므로 전체 ROADMAP 원문15/16 성공 기준도 직접 확인했다. 현재 Phase14를 complete로 표시하거나 문서를 commit하지 않았다. 구조화한 gaps는 `$gsd-plan-phase --gaps` 또는 승인된 좁은 수정 뒤 재검증의 입력이다.
+초기 결함은 Phase15/16로 유보하지 않고 이 단계 안에서 수정했다. 한국어 시각 사용성 수용과 명시 구성된 경우에만 실제 사설 phone 확인은 미완료이므로 `human_needed`이다. phase.complete/다른 planning 문서/commit은 변경하지 않았다.
 
 ---
 
-_검증자: gsd-verifier · 독립 goal-backward 검증 · 2026-10-02T09:45:35Z_
+_검증자: gsd-verifier · 좁은 독립 재검증 · 2026-10-02T10:08:10Z_

@@ -182,3 +182,9 @@ Optional private-network acceptance is distinct from automated application corre
 - Related routes/security/UI/Chromium: 153 passed in 50.23s. Additional boundary selection: 7 passed in 6.91s, covering 101 constituents, newer registered/unregistered/foreign subjects, manual and automatic state changes, scope change and preserved dirty drafts.
 - Final full regression after the last change: `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q` — **1418 passed in 336.19s**. This includes the 37 extant prior-phase test references and all Chromium cases. Schema drift still has no drift; execute:post/verify:post have no active hooks.
 - All implementation plans remain executed; independent gap re-verification and required human acceptance remain the phase completion gates.
+
+### Re-verification and Human Acceptance Gate — 2026-10-02
+
+- Independent re-verification at `a1fc483`: **36/36 VERIFIED, gaps: [], human_needed**. Both G-1/G-2 resolved; independent narrow boundary/Chromium execution: **7 passed in 7.12s**.
+- Canonical `verification.status` confirms human_needed. Required Korean visual usability and conditionally configured actual private phone access are persisted in 14-UAT.md. Optional unconfigured private deployment is not an implementation gap.
+- Phase checkbox, requirement completion and phase advance remain pending until UAT acceptance; the 14/14 executed plans and 1418-test automated result do not substitute for that human check.
