@@ -132,7 +132,7 @@ def safe_return_path(value, app):
     paths = {path for path, _ in OPERATIONAL_VIEWS.values()} | RESERVED_GET_PATHS
     if parsed.path not in paths:
         return '/'
-    allowed = {'period', 'start', 'end', 'target', 'resource_id', 'cursor', 'eval_cursor', 'limit', 'selection_id'}
+    allowed = {'period', 'start', 'end', 'target', 'resource_id', 'cursor', 'eval_cursor', 'page', 'limit', 'selection_id'}
     if any(k not in allowed or len(v) > 2048 for k, v in query):
         return '/'
     return parsed.path + ('?' + urlencode(query) if query else '')
@@ -309,7 +309,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 data[name] = f'{data[name]:,}주'
         if isinstance(data.get('confidence'), (int, float)):
             data['confidence'] = f'{data["confidence"]:.2f}'
-        back = contextual_url(parent or OPERATIONAL_VIEWS.get(record.kind, ('/orders', ''))[0], context)
+        back = contextual_url(parent or OPERATIONAL_VIEWS.get(record.kind, ('/orders', ''))[0], context,
+            cursor=context.get('cursor'), page=context.get('page_number'))
         return dict(**data, id=record.record_id, resource_id=record.resource_id,
             kind=record.kind, fields=fields, source=source_presentation(record.envelope, record.record_id),
             source_ids=record.selection.source_ids, selection_id=record.selection.selection_id,

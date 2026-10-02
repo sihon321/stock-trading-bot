@@ -150,3 +150,18 @@ def test_routes_escape_untrusted_text_and_daily_evaluation_evidence(saved_web):
     assert '&lt;script&gt;' in response.text and attack not in response.text
     response = client.get('/decisions')
     assert 'daily-evaluation' in response.text and 'secret-prompt' not in response.text
+
+
+def test_detail_back_preserves_second_page_cursor(saved_web):
+    _, client, _ = saved_web
+    first = client.get('/runs?period=custom&start=2026-08-01&end=2026-10-02&limit=1')
+    from bs4 import BeautifulSoup
+    page = BeautifulSoup(first.text, 'html.parser')
+    second_url = next(a['href'] for a in page.select('.pagination a') if '다음 페이지' in a.text)
+    second = client.get(second_url)
+    page = BeautifulSoup(second.text, 'html.parser')
+    detail = client.get(page.select_one('.routine-table a')['href'])
+    page = BeautifulSoup(detail.text, 'html.parser')
+    back = page.select_one('.breadcrumb a')['href']
+    assert 'cursor=' in back and 'page=2' in back
+    assert 'operator-run' in client.get(back).text
