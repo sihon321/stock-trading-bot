@@ -1,5 +1,6 @@
 """Pure saved-DTO rendering contracts; product browser proof belongs to 14-12."""
 from pathlib import Path
+import re
 
 from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -143,3 +144,66 @@ def test_escape_macro_rejects_source_driven_navigation(url):
     page = macro('{{ ui.link(url, "상세 보기") }}', url=url)
     assert not page.select("a[href]")
     assert "원천 연결을 확인할 수 없습니다." in page.text
+
+
+def css_text():
+    path = ROOT / "trading_bot/static/operator.css"
+    assert path.exists(), "approved native stylesheet must exist"
+    return path.read_text()
+
+
+def test_tokens_exact_approved_spacing_typography_and_dimensions():
+    css = css_text()
+    tokens = dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", css))
+    for name, value in {"xs": 4, "sm": 8, "md": 16, "lg": 24, "xl": 32,
+                        "2xl": 48, "3xl": 64}.items():
+        assert tokens[f"--space-{name}"] == f"{value}px"
+    for name, value in {"body": 16, "label": 14, "heading": 20, "display": 28}.items():
+        assert tokens[f"--font-{name}"] == f"{value}px"
+    for name, value in {"sidebar-width": "240px", "header-height": "64px",
+                        "content-max": "1440px", "viewport-min": "320px",
+                        "target-min": "44px", "row-min": "56px",
+                        "radius-card": "8px", "radius-control": "4px"}.items():
+        assert tokens[f"--{name}"] == value
+    assert set(re.findall(r"font-weight:\s*(\d+)", css)) <= {"400", "600"}
+    assert "system-ui" in css and '"Apple SD Gothic Neo"' in css and '"Malgun Gothic"' in css
+
+
+def test_theme_exact_approved_light_dark_and_semantic_pairs():
+    css = css_text()
+    light, dark = css.split("@media (prefers-color-scheme: dark)", 1)
+    palettes = [
+        {"background": "#F8FAFC", "surface": "#FFFFFF", "accent": "#1D4ED8",
+         "destructive": "#B91C1C", "text": "#0F172A", "muted": "#475569",
+         "divider": "#CBD5E1", "control-border": "#64748B", "accent-foreground": "#FFFFFF",
+         "info-text": "#1D4ED8", "info-bg": "#EFF6FF", "warning-text": "#92400E",
+         "warning-bg": "#FFFBEB", "critical-text": "#B91C1C", "critical-bg": "#FEF2F2",
+         "recovery-text": "#166534", "recovery-bg": "#F0FDF4"},
+        {"background": "#0B1220", "surface": "#172033", "accent": "#93C5FD",
+         "destructive": "#FCA5A5", "text": "#F1F5F9", "muted": "#CBD5E1",
+         "divider": "#334155", "control-border": "#94A3B8", "accent-foreground": "#0B1220",
+         "info-text": "#93C5FD", "info-bg": "#172554", "warning-text": "#FDE68A",
+         "warning-bg": "#332B12", "critical-text": "#FCA5A5", "critical-bg": "#3F151C",
+         "recovery-text": "#86EFAC", "recovery-bg": "#122C1C"},
+    ]
+    for section, palette in zip((light, dark), palettes):
+        tokens = dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", section))
+        assert {name: tokens[f"--{name}"] for name in palette} == palette
+    assert "color-scheme: light dark" in css
+    assert not any(x in css for x in ("@import", "https://", "@font-face", "data-theme", "opacity:", "gradient", "box-shadow"))
+
+
+def test_responsive_focus_numeric_scroll_and_motion_contract():
+    css = css_text()
+    assert "@media (min-width: 1024px)" in css
+    assert "@media (min-width: 768px) and (max-width: 1023px)" in css
+    assert "@media (max-width: 767px)" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    for fact in ("font-variant-numeric: tabular-nums", "text-align: right",
+                 "overflow-x: auto", ":focus-visible", "outline: 2px solid var(--accent)",
+                 "outline-offset: 4px", "scroll-margin", "scroll-padding",
+                 "overflow-wrap: anywhere", "text-decoration: underline",
+                 "transition: none", "animation: none"):
+        assert fact in css
+    assert re.search(r"\.routine-table\s*\{\s*display:\s*none", css)
+    assert re.search(r"\.record-cards\s*\{\s*display:\s*grid", css)
