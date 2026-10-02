@@ -258,3 +258,69 @@ def test_reminder_worsened_revision_old_queue_suppressed_and_new_unread(store):
     again = store.observe(fact("again", 2000, severity="CRITICAL"))
     assert again.episode_id != episode.episode_id and not again.acknowledged
     assert again.next_reminder_at == store.clock.now + timedelta(minutes=30)
+
+
+def test_delivery_same_producer_event_shared_across_recurrence_and_backdated_attempt(store):
+    first = store.observe(fact(delivery_owner="producer", producer_event_id="state:STATE_BEGIN"))
+    store.link_producer_delivery(first.episode_id, 1, "OCCURRENCE", source_owner="phase11",
+        resource_id="portfolio", producer_event_id="state:STATE_BEGIN",
+        producer_attempt_id="attempt-new", state="FAILED", at=NOW + timedelta(seconds=10))
+    store.link_producer_delivery(first.episode_id, 1, "OCCURRENCE", source_owner="phase11",
+        resource_id="portfolio", producer_event_id="state:STATE_BEGIN",
+        producer_attempt_id="attempt-old", state="DELIVERED", at=NOW)
+    assert store.list_attempts(first.episode_id)[0].state == "FAILED"
+    with pytest.raises(ValueError):
+        store.link_producer_delivery(first.episode_id, 1, "OCCURRENCE", source_owner="phase11",
+            resource_id="wrong-resource", producer_event_id="state:STATE_BEGIN", at=NOW)
+    store.observe(fact("recovery", 11, positive_recovery=True, recovery_proof_id="proof", delivery_owner="producer"))
+    again = store.observe(fact("again", 12, delivery_owner="producer", producer_event_id="state:STATE_BEGIN"))
+    linked = store.list_attempts(again.episode_id)
+    assert len(linked) == 1 and linked[0].state == "FAILED"
+    assert linked[0].event_key == store.list_attempts(first.episode_id)[0].event_key
+    assert store.pending_deliveries() == ()
+
+
+def test_schema_delivery_upgrade_is_atomic_and_preserves_web_metadata(tmp_path):
+    from trading_bot.alert_store import _V1
+    path = tmp_path / "operation.db"
+    with sqlite3.connect(path) as conn:
+        for statement in _V1:
+            conn.execute(statement)
+    path.chmod(0o600)
+    alerts = AlertStore(path)
+    with pytest.raises(RuntimeError, match="migration"):
+        alerts.initialize(fail_after_step="outbox")
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT version FROM phase14_alert_metadata").fetchone() == (1,)
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='alert_outbox'").fetchone() is None
+    alerts.initialize()
+    assert alerts.list_incidents() == ()
+
+
+def test_episode_historical_insert_is_counted_without_false_recurrence(store):
+    episode = store.observe(fact())
+    store.observe(fact("recovery", 10, positive_recovery=True, recovery_proof_id="proof"))
+    saved = store.observe(fact("historic", 1))
+    assert not saved.active and saved.episode_id == episode.episode_id
+    assert saved.occurrence_count == 3
+    assert len(store.list_incidents()) == 1
+
+
+def test_episode_backdated_observation_stays_in_closed_episode_after_recurrence(store):
+    first = store.observe(fact())
+    store.observe(fact("recovery", 10, positive_recovery=True, recovery_proof_id="proof"))
+    again = store.observe(fact("again", 20))
+    saved = store.observe(fact("historic", 1))
+    assert saved.episode_id == first.episode_id and not saved.active
+    assert saved.occurrence_count == 3
+    assert store.get_incident(again.episode_id).occurrence_count == 1
+
+
+def test_reminder_only_current_critical_and_reworsening_creates_unread_revision(store):
+    first = store.observe(fact(severity="CRITICAL"))
+    store.acknowledge(first.episode_id, 1, "operator")
+    lower = store.observe(fact("lower", 1))
+    assert lower.severity == "WARNING" and lower.next_reminder_at is None
+    worse = store.observe(fact("critical-again", 2, severity="CRITICAL"))
+    assert worse.revision == 2 and not worse.acknowledged
+    assert len(store.due_reminders(NOW + timedelta(minutes=30))) == 1
