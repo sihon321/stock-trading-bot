@@ -115,7 +115,7 @@ def test_private_proxy_requires_https_fixed_peer_and_count(web, tmp_path):
     client = app.test_client()
     assert client.get('/login', base_url='http://operator.test').status_code == 400
     headers = {'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'operator.test', 'X-Forwarded-For': '10.0.0.3'}
-    response = client.get('/login', base_url='http://operator.test', headers=headers)
+    response = app.test_client().get('/login', base_url='http://operator.test', headers=headers)
     assert response.status_code == 200
     assert 'Secure;' in response.headers['Set-Cookie']
     assert client.get('/login', base_url='http://operator.test', headers=headers,

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>{{ title|forceescape }} · 운영 증거</title><link rel="stylesheet" href="/static/operator.css"></head>
+<body><main id="main-content" tabindex="-1"><h1>{{ title|forceescape }}</h1>
+{% if error %}<div id="error-summary" role="alert" tabindex="-1"><p>{{ error|forceescape }}</p>{% if error_code %}<p>{{ error_code|forceescape }}</p>{% endif %}</div>{% endif %}
+<p>전용 운영자 계정으로 로그인하세요. KIS·LLM 자격 증명은 입력하지 마세요.</p>
+<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token|forceescape }}"><input type="hidden" name="return_to" value="{{ return_to|forceescape }}">
+<label for="username">운영자 계정</label><input id="username" name="username" autocomplete="username" required maxlength="64">
+<label for="password">비밀번호</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+<button class="primary" type="submit">로그인</button></form>
+<p>로그인은 최대 12시간 유지됩니다. PC와 휴대폰 세션은 각각 만료됩니다.</p><p>비밀번호 재설정은 실행 PC의 로컬 설정 명령에서 진행하세요.</p>
+</main></body></html>
