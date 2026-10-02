@@ -1,0 +1,8 @@
+{% extends "operator/base.html" %}{% import "operator/macros.html" as ui %}
+{% block breadcrumb %}{{ ui.link(back_url, '목록으로 돌아가기') }} / <span>{{ title|forceescape }}</span>{% endblock %}
+{% block content %}<article class="card"><h2>{{ row.id|forceescape }}</h2><p>기록 유형: {{ row.kind|forceescape }} · 증거 구분: {{ row.provenance|forceescape }}</p><p>정확한 선택 ID: {{ row.selection_id|forceescape }} · 분자 {{ row.numerator if row.numerator is not none else 'UNKNOWN' }} / 분모 {{ row.denominator if row.denominator is not none else 'UNKNOWN' }}</p>
+{% if row.get('ticker') == '000660' and row.kind in ['orders','freezes'] %}{{ ui.message('ambiguity') }}{% endif %}
+{% if row.kind == 'orders' %}<p>로컬 의도·접수 기록과 브로커 관측은 서로 다른 증거입니다. 확정 체결은 별도 체결 기록을 확인하세요.</p>{% endif %}
+<dl>{% for label,value in fields.items() %}<dt>{{ label|forceescape }}</dt><dd>{{ value|forceescape }}</dd>{% endfor %}</dl>
+<h3>원천 연결 ID</h3><ul>{% for source_id in row.source_ids %}<li>{{ ui.link(row.evidence_url, source_id) }}</li>{% else %}<li>UNKNOWN · 연결된 원천 ID 없음</li>{% endfor %}</ul>
+{{ ui.link(row.evidence_url, '정제된 원천 증거') }}{{ ui.evidence_details(fields) }}{{ ui.link(back_url,'목록으로 돌아가기') }}</article>{% endblock %}

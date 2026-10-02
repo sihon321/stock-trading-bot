@@ -24,8 +24,11 @@
 {%- endmacro %}
 
 {% macro link(url, label='상세 보기') -%}
-{% set roots = ['alerts','workers','account','holdings','candidates','decisions','orders','fills','runs','reports','validation'] %}
-{% if url is string and url.startswith('/') and not url.startswith('//') and '\\' not in url and ':' not in url and '..' not in url and '\n' not in url and '\r' not in url and '\t' not in url and '%' not in url.split('?')[0] and (url == '/' or url.split('/')[1].split('?')[0] in roots) %}
+{% set roots = ['alerts','workers','account','holdings','candidates','decisions','orders','fills','runs','reports','validation','records','evidence'] %}
+{% set path = url.split('?')[0] if url is string else '' %}
+{% set decoded = path.replace('%3A', ':').replace('%3a', ':') %}
+{% set durable = path.split('/')[1] in ['records','evidence'] if path.startswith('/') and path != '/' else false %}
+{% if url is string and url|length <= 8192 and url.startswith('/') and not url.startswith('//') and '\\' not in url and ('\u0000' not in url) and '..' not in url and '\n' not in url and '\r' not in url and '\t' not in url and '%' not in decoded and (':' not in path or durable) and (url == '/' or url.split('/')[1].split('?')[0] in roots) %}
 <a class="evidence-link" href="{{ url|forceescape }}">{{ label|forceescape }}</a>
 {% else %}<span class="helper">원천 연결을 확인할 수 없습니다. 상태는 UNKNOWN입니다. 등록된 원천과 연결된 ID를 확인하세요.</span>{% endif %}
 {%- endmacro %}

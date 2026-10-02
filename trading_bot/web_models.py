@@ -159,6 +159,7 @@ class OverviewDTO:
     workers: tuple[WorkerDTO, ...] = ()
     sources: tuple[SourceEnvelope, ...] = ()
     atomic_cross_store: bool = False
+    safety_blocks: tuple[EvidenceRecord, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,20 @@
+{% extends "operator/base.html" %}{% import "operator/macros.html" as ui %}
+{% block source_status %}<p>화면 조회: {{ source.get('queried_at', 'UNKNOWN')|forceescape }} · 원천별 독립 관측</p>{% endblock %}
+{% block refresh_fields %}{% for key, value in params.items() %}<input type="hidden" name="{{ key|forceescape }}" value="{{ value|forceescape }}">{% endfor %}{% endblock %}
+{% block content %}
+<section id="safety" class="risk-panel"><h2>모든 날짜의 미해결 주문·활성 알림</h2>
+{% for row in safety_blocks %}<article class="card">{{ ui.badge('CRITICAL','저장된 안전 차단') }}<h3>{{ row.id|forceescape }}</h3><p>안전 실패: {{ row.get('safety_failure_code','UNKNOWN')|forceescape }} · 가용성 실패: {{ row.get('availability_failure_code','UNKNOWN')|forceescape }}</p><p>캠페인 상태 변화는 안전 래치 해제를 증명하지 않습니다.</p>{{ ui.source_metadata(row.source) }}{{ ui.link(row.detail_url) }}</article>{% endfor %}
+{{ ui.link(risk_url, '정확한 구성 · 미해결 주문 ' ~ (risk_total if risk_total is not none else 'UNKNOWN') ~ '건') }}
+<div class="safety-grid">{% for row in risk_rows %}<article class="card">{{ ui.badge('WARNING', '미확정 · 안전 차단') }}
+{% if row.get('ticker') == '000660' %}{{ ui.message('ambiguity') }}{% endif %}
+<p>{{ row['id']|forceescape }} · {{ row['kind']|forceescape }} · {{ row['provenance']|forceescape }}</p>
+{{ ui.source_metadata(row['source']) }}{{ ui.link(row['detail_url']) }}</article>{% endfor %}</div>
+{% if not risk_rows %}{{ ui.message('no_success' if risk_total is none else 'empty') }}{% endif %}
+{% for episode in active_incidents %}<article class="card">{{ ui.badge(episode.severity.value, episode.severity.value) }}<a href="/alerts/{{ episode.episode_id|forceescape }}">활성 알림 {{ episode.episode_id|forceescape }}</a></article>{% endfor %}
+</section>
+<section id="health"><h2>작업·알림 관측 상태</h2><div class="summary-grid">{% for worker in workers %}<article class="card"><h3>{{ worker.id|forceescape }}</h3>{{ ui.badge(worker.state) }}<dl><dt>실행 기대</dt><dd>{{ worker.expected_running if worker.expected_running is not none else 'UNKNOWN' }}</dd><dt>문서화된 주기(초)</dt><dd>{{ ui.amount(worker.cadence_seconds) }}</dd><dt>리스 경과(초)</dt><dd>{{ ui.amount(worker.lease_age_seconds) }}</dd><dt>최근 반복·원천 ID</dt><dd>{{ worker.source_ids|join(' · ')|forceescape }}</dd></dl>{{ ui.source_metadata(worker.source) }}{{ ui.link(worker.detail_url) }}</article>{% endfor %}
+<article class="card"><h3>알림 관측기</h3>{{ ui.badge(observer.state) }}<p>관측 heartbeat 경과(초): {{ ui.amount(observer.heartbeat_age_seconds) }}</p><p>관측 시작: {{ observer.started_at|default('UNKNOWN', true)|forceescape }} · 관측 종료: {{ observer.stopped_at|default('UNKNOWN', true)|forceescape }}</p><p>알림은 별도로 시작한 관측기가 실행되는 동안만 동작합니다. 리스 시각은 실행 건강이나 복구 권한을 보장하지 않습니다.</p>{{ ui.link('/workers', '작업 상태 상세') }}</article></div></section>
+<section id="source-times"><h2>원천 관측 시각</h2>{% for source in sources %}<article class="card">{{ ui.source_metadata(source) }}<p>증거 구분: {{ source.provenance|forceescape }} · 스키마: {{ source.schema_owner|forceescape }}/{{ source.schema_version|forceescape }}</p></article>{% else %}{{ ui.message('missing') }}{% endfor %}</section>
+<section id="accounts"><h2>계좌·보유 요약</h2><div class="account-grid">{% for account in accounts %}<article class="card"><h3>스냅샷 {{ account.snapshot_id|default('UNKNOWN', true)|forceescape }}</h3><dl><dt>가용 현금</dt><dd>{{ ui.amount(account.available_cash, '원') }}</dd><dt>총 평가액</dt><dd>{{ ui.amount(account.total_evaluation, '원') }}</dd><dt>미실현 손익</dt><dd>{{ ui.amount(account.unrealized_value, '원') }}</dd><dt>최근 시도 완전성</dt><dd>{{ account.latest_attempt_status|forceescape }}</dd></dl>{{ ui.source_metadata(account.source) }}{{ ui.link(account.holdings_url, '정확한 구성 · 보유 ' ~ (account.holdings_count if account.holdings_count is not none else 'UNKNOWN') ~ '건') }}{{ ui.link(account.detail_url) }}</article>{% else %}{{ ui.message('no_success') }}{% endfor %}</div></section>
+<section id="activity"><h2>최근 저장 실행</h2>{{ ui.records_table('최근 실행', [{'key':'id','label':'실행 기록 ID'}, {'key':'status','label':'상태'}, {'key':'resource_id','label':'원천 ID'}], activity_rows, 'activity-records') }}{{ ui.link('/runs', '실행 이력') }}</section>
+{% endblock %}

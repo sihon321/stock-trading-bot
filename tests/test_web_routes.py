@@ -101,7 +101,7 @@ def test_pagination_kst_authorization_and_hostile_bounded_errors(saved_web):
     assert page.status_code == 200
     assert 'operator-run' in page.text
     assert 'historic-run' not in page.text
-    for path in ['/runs?limit=101', '/orders?period=all', '/holdings?target=evil',
+    for path in ['/runs?limit=101', '/orders?period=all', '/holdings?target=evil', '/holdings?target=real',
                  '/runs?resource_id=unregistered', '/runs?period=custom&start=2025-01-01&end=2026-10-02',
                  '/records/unregistered/runs%3Aoperator-run', '/evidence/audit/invalid']:
         assert client.get(path).status_code in {400, 404}
@@ -134,3 +134,19 @@ def test_overview_safety_latch_visible_without_started_observer(saved_web):
     assert response.status_code == 200
     assert 'BROKER_DIVERGENCE' in response.text
     assert 'NOT_STARTED' in response.text
+
+
+def test_routes_escape_untrusted_text_and_daily_evaluation_evidence(saved_web):
+    import sqlite3
+    from operator_fixtures import ACCOUNT_HASH, NOW
+    _, client, sources = saved_web
+    attack = '<script>alert(1)</script>'
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute('UPDATE decisions SET order_reason=?', (attack,))
+        conn.execute("INSERT INTO daily_evaluations(evaluation_id,trading_date_kst,ticker,provenance_json,canonical_input,canonical_input_hash,account_scope_hash,status,started_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ('daily-evaluation', '2026-10-02', '005930', '[]', b'secret-prompt', 'b'*64, ACCOUNT_HASH, 'STARTED', NOW.isoformat()))
+    response = client.get('/records/audit/decisions%3A1')
+    assert response.status_code == 200
+    assert '&lt;script&gt;' in response.text and attack not in response.text
+    response = client.get('/decisions')
+    assert 'daily-evaluation' in response.text and 'secret-prompt' not in response.text

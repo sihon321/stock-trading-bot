@@ -283,7 +283,57 @@ class OperatorEvidenceService:
 
     def overview(self, scope):
         return OverviewDTO(self.clock(), accounts=tuple(self._account(r) for r in self._resources(scope, 'portfolio')),
-                           unresolved=self._unresolved(scope), workers=self._workers(scope), sources=self.source_status(scope))
+                           unresolved=self._unresolved(scope), workers=self._workers(scope), sources=self.source_status(scope),
+                           safety_blocks=self._safety_blocks(scope))
+
+    def _safety_blocks(self, scope):
+        """Positive persisted campaign latches, independent of observer/date filters.
+
+        Campaign completion or missing rows never clears an irreversible latch.
+        Creation time is not substituted for an absent latch observation event.
+        """
+        records = []
+        for resource in self._resources(scope, 'soak'):
+            cache_key = ('safety_blocks', resource.id)
+            try:
+                with _transaction(resource) as conn:
+                    rows = _bounded_rows(conn, "SELECT * FROM soak_campaigns WHERE safety_failure_code IS NOT NULL OR availability_failure_code IS NOT NULL ORDER BY campaign_id LIMIT 10001")
+                    projected = []
+                    for row in rows:
+                        record = self._project(conn, resource, 'campaigns', row)
+                        code = 'SAFETY_FAILURE_LATCHED' if row['safety_failure_code'] else 'AVAILABILITY_BUDGET_EXCEEDED'
+                        proof = conn.execute("SELECT * FROM soak_events WHERE campaign_id=? AND event_code=? ORDER BY id DESC LIMIT 1", (row['campaign_id'], code)).fetchone()
+                        linked = proof is not None
+                        if proof and proof['run_id']:
+                            linked = False
+                            for primary in self._resources(ResourceScope(resource.account_hash, resource.target), 'audit'):
+                                try:
+                                    with _transaction(primary) as audit:
+                                        if audit.execute('SELECT 1 FROM runs WHERE run_id=?', (proof['run_id'],)).fetchone():
+                                            _check_run(audit, primary, proof['run_id'])
+                                            linked = True
+                                except EvidenceUnavailable:
+                                    continue
+                        record = replace(record, envelope=replace(record.envelope,
+                            source_observed_at=_stamp(proof['observed_at']) if proof else None,
+                            completeness='COMPLETE' if linked else 'UNKNOWN',
+                            diagnostic_code=None if linked else 'BROKEN_SOURCE_LINK'),
+                            selection=replace(record.selection, source_ids=(f'soak_events:{proof["id"]}',) if proof else ()))
+                        projected.append(record)
+                    # Latches cannot disappear from a successful query either.
+                    seen = {row.record_id for row in projected}
+                    projected.extend(replace(row, envelope=replace(row.envelope, query_at=self.clock(),
+                        completeness='UNKNOWN', diagnostic_code='LATCH_SOURCE_MISSING'))
+                        for row in self._cache.get(cache_key, ()) if row.record_id not in seen)
+                    self._cache[cache_key] = tuple(projected)
+                    self._cache.move_to_end(cache_key)
+                    while len(self._cache) > 128:
+                        self._cache.popitem(last=False)
+                    records.extend(projected)
+            except EvidenceUnavailable as exc:
+                records.extend(replace(row, envelope=replace(row.envelope, query_at=self.clock(),
+                    query_status='FAILED', diagnostic_code=str(exc))) for row in self._cache.get(cache_key, ()))
+        return tuple(records)
 
     def _project(self, conn, resource, kind, row):
         _, key, time_key, fields = _HISTORY[(resource.owner, kind)]
