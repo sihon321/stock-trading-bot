@@ -59,6 +59,24 @@ def scope():
     return ResourceScope(ACCOUNT_HASH, 'mock')
 
 
+def test_overview_all_date_safety_latch_without_observer_and_failed_cache(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    old = (NOW - timedelta(days=400)).isoformat()
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("UPDATE soak_campaigns SET created_at=?, safety_failure_code='BROKER_DIVERGENCE',state='FAILED' WHERE campaign_id='operator-campaign'", (old,))
+    before = capture_sources(sources)
+    reader = service(sources)
+    overview = reader.overview(scope())
+    assert overview.safety_blocks[0].data['safety_failure_code'] == 'BROKER_DIVERGENCE'
+    assert overview.safety_blocks[0].record_id == 'campaigns:operator-campaign'
+    assert overview.safety_blocks[0].envelope.source_observed_at is None  # creation != latch time
+    assert capture_sources(sources) == before
+    sources.paths['soak'].rename(sources.paths['soak'].with_suffix('.missing'))
+    cached = reader.overview(scope()).safety_blocks[0]
+    assert cached.envelope.query_status == 'FAILED'
+    assert cached.data['safety_failure_code'] == 'BROKER_DIVERGENCE'
+
+
 def test_account_snapshot_exact_and_immutable(tmp_path):
     sources = make_operator_sources(tmp_path)
     before = capture_sources(sources)

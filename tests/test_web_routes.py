@@ -123,3 +123,14 @@ def test_cache_retains_historical_source_time_on_failure(saved_web):
     assert '2026-10-02 10:00:00 KST' in failed.text
     assert '2026-10-02 10:10:00 KST' in failed.text
     assert 'historic-freeze' not in first  # account does not merge risk/account records
+
+
+def test_overview_safety_latch_visible_without_started_observer(saved_web):
+    import sqlite3
+    _, client, sources = saved_web
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("UPDATE soak_campaigns SET safety_failure_code='BROKER_DIVERGENCE',state='FAILED' WHERE campaign_id='operator-campaign'")
+    response = client.get('/')
+    assert response.status_code == 200
+    assert 'BROKER_DIVERGENCE' in response.text
+    assert 'NOT_STARTED' in response.text

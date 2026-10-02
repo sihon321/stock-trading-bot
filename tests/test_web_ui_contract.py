@@ -115,6 +115,21 @@ def test_macro_table_and_mobile_cards_share_facts_and_safe_detail_links():
     assert len(page.select('a[href="/holdings/holding-1"]')) == 2
 
 
+@pytest.mark.parametrize('url', ['/records/audit/orders%3A1?back=%2Forders%3Fperiod%3D7d',
+                                '/evidence/portfolio/holdings%3Aoperator-snapshot%3A005930'])
+def test_macro_canonical_encoded_saved_record_links(url):
+    page = macro('{{ ui.link(url) }}', url=url)
+    assert page.a['href'] == url
+
+
+@pytest.mark.parametrize('url', ['//evil.test', '/records/audit/..%2Fsecret', '/evidence/audit/%252e%252e',
+                                '/records/audit/%00', '/records/audit/%0a', '/evidence/audit/%5csecret',
+                                '/records/audit/%2F%2Fevil.test', '/records/audit/../secret',
+                                '/orders:evil', 'https://evil.test', '/records/audit/one\\two'])
+def test_macro_canonical_links_reject_encoded_escape_and_traversal(url):
+    assert not macro('{{ ui.link(url) }}', url=url).a
+
+
 def test_macro_filter_pagination_and_evidence_bounds():
     page = macro('{{ ui.period_filter("/runs", "today", "mock") }}'
                  '{{ ui.pagination(2, none, "/runs?page=1", "/runs?page=3") }}'
