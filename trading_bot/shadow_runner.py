@@ -3,22 +3,12 @@ from __future__ import annotations
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from dataclasses import dataclass
+from .shadow_evidence import ShadowExecution
 from .shadow_models import *
 from .shadow_store import ShadowJournal
 from .shadow_providers import build_shadow_provider, validate_provider_profile, validate_shadow_request
 from .shadow_inputs import shadow_code_identity, validate_shadow_preparation
 from .shadow_budget import ShadowBudget
-
-
-@dataclass(frozen=True)
-class ShadowExecution:
-    manifest: ShadowManifest
-    run_id: str
-    status: str
-    observations: tuple
-    events: tuple
-    stop_reason: str | None = None
 
 
 def _attributed(o,m,run_id,a):

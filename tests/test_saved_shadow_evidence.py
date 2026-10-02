@@ -32,7 +32,7 @@ def proof_catalog(saved):
         news_hash=shadow_content_hash(strict_json(m.news_document_json)),
         code_revision=m.code_revision, code_content_hash=m.code_content_hash,
         inventory=inventory,
-        comparisons=tuple(compare_shadow_action(units[o.unit_id], o) for o in saved.observations),
+        comparisons=tuple(compare_shadow_action(units[o.unit_id], o).model_dump() for o in saved.observations),
         events_hash=shadow_content_hash(strict_json(saved.events_document_json)),
         observations_hash=shadow_content_hash([o.model_dump(mode='json') for o in saved.observations]),
     )
