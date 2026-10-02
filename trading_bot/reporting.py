@@ -20,8 +20,11 @@ from .audit_models import (
     RunStatus,
     TickerOutcomeCode,
 )
-from .sqlite_audit import SCHEMA_VERSION
-from .replay import (
+from .evidence_contracts import (
+    PRIMARY_AUDIT_SCHEMA_VERSION as SCHEMA_VERSION,
+    AUDIT_REPORT_SCHEMA,
+)
+from .replay_evidence import (
     NON_PROFITABILITY_DISCLAIMER,
     ReplayCheck,
     ReplayCount,
@@ -165,21 +168,7 @@ REASON_EXPLANATIONS_KO: Mapping[str, str] = MappingProxyType({
     ReasonCode.UNKNOWN_MARKET_STATE.value: "시장 상태를 확정할 수 없습니다",
 })
 
-_REQUIRED_SCHEMA: Mapping[str, frozenset[str]] = {
-    "runs": frozenset({
-        "run_id", "started_at", "run_kind", "status", "trading_date_kst", "target"
-    }),
-    "decisions": frozenset({"id", "run_id", "ticker", "final_action", "confidence"}),
-    "ticker_outcomes": frozenset({
-        "id", "run_id", "ticker", "outcome_code", "reason_code",
-        "order_intent_id", "final_order_state",
-    }),
-    "order_events": frozenset({"id", "order_intent_id", "event_type"}),
-    "notification_attempts": frozenset({
-        "id", "run_id", "ticker", "kind", "delivery_status",
-        "failure_category", "observed_at",
-    }),
-}
+_REQUIRED_SCHEMA = AUDIT_REPORT_SCHEMA
 
 
 def _bounded(value: object, *, limit: int = 96, default: str = "UNKNOWN") -> str:
