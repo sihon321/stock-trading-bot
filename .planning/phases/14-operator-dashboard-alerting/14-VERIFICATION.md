@@ -1,11 +1,13 @@
 ---
 phase: 14-operator-dashboard-alerting
 verified: 2026-10-02T10:08:10Z
-status: human_needed
+status: passed
 score: 36/36 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
 verification_head: a1fc4836c55c3db6a2c82d574c014575b58d1882
+human_acceptance_recorded: 2026-10-03
+human_acceptance_source: 14-UAT.md
 re_verification:
   previous_status: gaps_found
   previous_score: 34/36
@@ -17,9 +19,12 @@ re_verification:
 gaps: []
 human_verification:
   - test: "한국어 운영 화면의 시각적 사용성 검토"
+    result: passed
     expected: "안전 개요의 우선순위, 네 탐색 그룹, 모바일 상세, 밝음/어두움 테마에서 미해결 000660·UNKNOWN·INCOMPLETE·원천 관측 경과를 색에 의존하지 않고 이해할 수 있다."
     why_human: "Chromium의 계산된 대비·레이아웃·키보드·200% 확대 증거는 존재하지만 운영자가 한국어 문구와 현실적인 저장 증거의 읽기 편의성을 수용했는지는 자동화로 판정할 수 없다. 14-12에서 이 확인을 단계 말에 유보했다."
   - test: "조건부: 소유자가 사설 VPN/HTTPS를 명시적으로 구성한 경우 실제 휴대폰 모바일 데이터 접속 확인"
+    applicability: not_configured_yet
+    disposition: deferred_until_Tailscale_deployment
     expected: "사설 경로로만 접속하고 정상 HTTPS 인증서를 사용한다. 앱 로그인이 필수이고 Secure/HttpOnly/SameSite cookie 및 PC/휴대폰 독립 세션·로그아웃·절대 12시간 만료가 유지된다. 기본 PC loopback과 공개 미노출도 확인한다."
     why_human: "실제 VPN·인증서·방화벽·휴대폰은 합성 로컬 테스트 밖이다. 선택적 미구성 배포는 구현 gap이 아니며 휴대폰 도달성·실제 배포를 검증했다고 주장하지 않는다."
 ---
@@ -29,11 +34,11 @@ human_verification:
 **Phase Goal:** Operators can use an authenticated responsive web application to inspect portfolio, decision, order, validation, report, and worker-health evidence and handle non-trading operational workflows without granting the web process trade authority.
 
 **검증 시각:** 2026-10-02T10:08:10Z
-**상태:** human_needed
+**상태:** passed — 현재 적용 사용자 확인 완료, 선택적 Tailscale 배포 수용은 구성 후 확인
 **재검증:** 예 — 최초 두 gap의 수정 후 좁은 독립 재검증
 **기준:** HEAD `a1fc4836c55c3db6a2c82d574c014575b58d1882`
 
-두 구현 결함이 해소되어 36/36 자동 검증 진실이 VERIFIED이다. 정확한 CRITICAL 합계와 동일 구성 행 선택, 성공한 새로고침의 헤더 갱신을 독립적으로 확인했다. 한국어 시각 사용성 수용이 남아 전체 상태는 human_needed이다. SUMMARY의 완료 문구를 구현 증거로 대체하지 않았다.
+두 구현 결함이 해소되어 36/36 자동 검증 진실이 VERIFIED이다. 정확한 CRITICAL 합계와 동일 구성 행 선택, 성공한 새로고침의 헤더 갱신을 독립적으로 확인했다. 2026-10-03 사용자가 한국어 화면 사용성을 수용했고 향후 외부 접속 방식으로 Tailscale을 선택했다. 현재 미구성인 실제 접속 항목은 원래 조건에 따라 적용 범위 밖의 배포 후 수용 검사로 보존하여 전체 상태를 passed로 확정했다. 실제 Tailscale 접속을 통과했다고 주장하지 않는다.
 
 ## 검증 범위와 증거 출처
 
@@ -90,7 +95,7 @@ AGENTS.md, config, REQUIREMENTS, 전체 ROADMAP의 14/15/16 경계, 14개 PLAN�
 | 35 | D-10: dirty form·focus·selection·disclosure·scroll·last success 및 expiry/back hide/no POST replay를 보존한다. | VERIFIED | operator.js dirty/defer/apply·AbortController·restorePending·sessionEnded; 12개 real refresh tests가 실제 DOM·fake time·action failure를 검사. |
 | 36 | 기존 평가 API는 실행 측에 남고 saved 소비자의 schema/identity/UNKNOWN 계약은 fail closed다. | VERIFIED | calibration.evaluate_variants의 original replay path, shadow preparation strict execution checks, legacy re-export, saved family owner-schema/forged-link tests; 이전11–13 regression은 현재 전체1418 실행에도 포함. |
 
-**점수:** 36/36 진실 VERIFIED. 두 초기 FAILED는 해소되었다. PRESENT_BEHAVIOR_UNVERIFIED는 0이며 override는 없다. 미수용된 사람 항목 때문에 전체 상태는 human_needed이며 `passed`로 판정하지 않는다.
+**점수:** 36/36 진실 VERIFIED. 두 초기 FAILED는 해소되었다. PRESENT_BEHAVIOR_UNVERIFIED는 0이며 override는 없다. 현재 적용 사용자 확인이 수용되어 passed로 확정했고, 미구성인 선택적 실제 Tailscale 접속 검사는 배포 후 조건부 항목으로 보존했다.
 
 ### PLAN must-have 추적
 
@@ -240,15 +245,19 @@ PLAN artifact/key-file 집합(79개 경로)의 source/test 텍스트에서 unref
 
 최초 반례는 보고서 commit4c7fa73와 RED1af0c88에 보존된다. GREENe457357의 실제 수정과 이번 독립 행동 실행이 두 반례를 해소했다. 이번 수정 diff에서 새 debt marker/stub/금지된 source write/raw secret를 발견하지 않았다. 기존 34개 VERIFIED의 변경 영향 검토와 부모 최종1418 회귀에서 새로운 회귀는 발견되지 않았다.
 
-## 사람 확인 필요 — WARNING
+## 사람 확인 결과 — 2026-10-03
 
 ### 1. 한국어 운영 화면의 시각적 사용성
+
+**결과:** PASS. 사용자는 검토 화면 제시 후 “좋아 완료 된거야?”라고 응답했고 14-UAT.md에 수용을 기록했다.
 
 **검사:** 현실적인 저장 증거로 안전 개요·네 탐색 그룹·계좌/주문/검증 상세를 PC와 휴대폰에서 밝음/어두움 테마로 검토한다. 000660, UNKNOWN/INCOMPLETE, stale/failed와 원천 시각을 읽는다.
 **기대:** 색 없이 위험과 증거 한계를 이해하며 상세·보고서·읽음 작업을 찾을 수 있다.
 **사람이 필요한 이유:** computed contrast/44px/keyboard/zoom 통과는 실제 한국어 이해/사용성 수용을 대신하지 않는다. 14-12 PLAN과 VALIDATION이 끝 단계 사람 확인으로 명시했다.
 
 ### 2. 조건부 실제 사설 휴대폰 접속
+
+**적용 여부:** 현재 미구성으로 비적용. 사용자는 “vpn은 아니고 tailscale 이용해서 밖에서도 폰이나 맥으로 접속하게 할려고 하거든”이라고 향후 접속 방식을 선택했다. 실제 Tailscale/HTTPS 구성과 휴대폰·맥 접속 검증은 배포 후 수행한다. 조건부 항목을 실제 접속 PASS로 기록하지 않았다.
 
 **검사:** 소유자가 별도로 VPN/HTTPS/인증서/방화벽/host-origin-single proxy를 명시 구성한 경우에만 runbook의 실제 모바일 데이터→사설 VPN→HTTPS 체크를 수행한다. PC 세션을 유지한 채 휴대폰 로그인·독립 logout·12h 만료를 확인한다.
 **기대:** 사설 경로+앱 인증이 모두 필요하고 인증서 오류를 우회하지 않으며 공개 접근은 생기지 않는다.
@@ -258,7 +267,7 @@ PLAN artifact/key-file 집합(79개 경로)의 source/test 텍스트에서 unref
 
 G-1의 정확한 CRITICAL 범위 합계/구성 선택과 G-2의 성공한 refresh DOM 연결은 해소되었다. 현재 열린 구현 gap은 없으며 canonical `gaps: []`이다. 기존 report/export/ack/observer의 권한 부재와 원천 불변성 경계도 유지된다.
 
-초기 결함은 Phase15/16로 유보하지 않고 이 단계 안에서 수정했다. 한국어 시각 사용성 수용과 명시 구성된 경우에만 실제 사설 phone 확인은 미완료이므로 `human_needed`이다. phase.complete/다른 planning 문서/commit은 변경하지 않았다.
+초기 결함은 Phase15/16로 유보하지 않고 이 단계 안에서 수정했다. 2026-10-03 현재 적용 한국어 사용성 UAT가 수용되어 passed로 확정했다. 미구성인 Tailscale 외부 접속의 실제 장치 수용 검사는 배포 후 항목으로 남는다. 독립 검증의 기존 실행 근거와 소스 기준 HEAD는 보존했으며, 부모가 사용자 수용 결과만 추가했다.
 
 ---
 

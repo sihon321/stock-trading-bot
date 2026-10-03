@@ -339,6 +339,8 @@ setup은 숨겨진 입력으로 12자 이상의 전용 운영자 암호를 두 �
 
 ### 선택적 사설 VPN/HTTPS 접속
 
+소유자는 2026-10-03 향후 외부 휴대폰·맥 접속 방식으로 **Tailscale**을 선택했다. 이는 이 절의 사설망 경로에 해당한다. 구성 후보는 `휴대폰/맥 → Tailscale 사설망 → Tailscale Serve HTTPS → 로컬 운영자 웹`이다. [Tailscale Serve 공식 문서](https://tailscale.com/docs/features/tailscale-serve)는 같은 tailnet 기기에서 로컬 서비스를 HTTPS로 접근하는 방법을 설명한다. 실제 서버의 고정 host/origin, 신뢰할 단일 proxy peer와 전달 헤더를 기존 웹 보안 설정에 맞추고 앱 로그인은 유지한다. 이 문서는 실제 Tailscale 연동이 완료되거나 외부 접속이 검증됐다고 주장하지 않는다. 구성 후 휴대폰 모바일 데이터와 외부 맥에서 아래 실제 접속 수용 검사를 수행한다.
+
 외부 휴대폰 접속은 소유자가 선택·설정한 **사설 VPN 경로와 HTTPS 종료점**에서만 사용한다. VPN 접속도 애플리케이션 로그인을 대체하지 않는다. 이 문서는 VPN 사업자를 선택하거나 배포하지 않으며 실제 휴대폰 도달성을 확인했다고 주장하지 않는다. 공개 DNS/port forwarding/public listener를 설정하지 않는다.
 
 VPN 인터페이스가 실제로 `10.42.0.2`이고 HTTPS proxy가 같은 PC의 `127.0.0.1`에서 upstream에 접속한다고 소유자가 확인한 경우, web.json에 다음 명시적 값들을 더한다. 주소는 설명용이므로 실제 사설 주소·인증서 이름과 일치시킨다.

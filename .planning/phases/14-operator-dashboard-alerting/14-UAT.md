@@ -1,19 +1,16 @@
 ---
-status: testing
+status: complete
 phase: 14-operator-dashboard-alerting
 source: [14-VERIFICATION.md]
 started: 2026-10-02T10:15:38Z
-updated: 2026-10-03T08:57:16Z
+updated: 2026-10-03T09:02:19Z
+applicable_tests: 1
+excluded_conditionals: 1
 ---
 
 ## Current Test
 
-number: 2
-name: 조건부 사설 VPN/HTTPS 휴대폰 접속 확인
-expected: |
-  사설 VPN/HTTPS를 구성했다면 실제 휴대폰에서 사설 경로·HTTPS·로그인·독립 세션 동작을 확인한다.
-  구성하지 않았다면 이 항목은 비적용으로 기록한다. 현재 해당 접속을 구성해 사용 중인지 확인한다.
-awaiting: user response
+[testing complete]
 
 ## Tests
 
@@ -23,20 +20,27 @@ result: pass
 reported: "좋아 완료 된거야?"
 confirmed_at: 2026-10-03T08:57:16Z
 
-### 2. 조건부: 명시 구성한 사설 VPN/HTTPS의 실제 휴대폰 접속
-expected: 소유자가 사설 VPN/HTTPS를 구성한 경우에만 실제 휴대폰 모바일 데이터로 사설 경로와 정상 HTTPS 인증서, 필수 앱 로그인, Secure/HttpOnly/SameSite cookie, PC/휴대폰 독립 세션·로그아웃·절대 12시간 만료를 확인한다. 기본 PC loopback 및 공개 미노출도 확인한다. 해당 구성을 사용하지 않으면 비적용으로 기록하며 배포를 새로 요구하지 않는다.
-result: [pending]
-
 ## Summary
 
-total: 2
+total: 1
 passed: 1
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
+
+## Conditional Deployment Acceptance — Not Applicable to Current UAT
+
+original_test: 2
+name: 명시 구성한 사설망/HTTPS의 실제 휴대폰·맥 접속
+applicability: not_configured_yet
+disposition: deferred_until_deployment
+reported: "vpn은 아니고 tailscale 이용해서 밖에서도 폰이나 맥으로 접속하게 할려고 하거든"
+reason: 사용자는 향후 외부 접속 방식을 Tailscale로 선택했다. 앞으로 구성하려는 웹 접속으로 이해하며, 현재 배포된 접속을 확인했다고 해석하지 않는다. 원래 조건은 사설 HTTPS 접속을 실제 구성한 경우에만 적용되므로 현재 적용 테스트에서 제외하고 여기 보존한다. 이는 실패/차단 항목이나 실제 접속 PASS가 아니다.
+expected_after_configuration: 휴대폰 모바일 데이터와 외부 맥에서 Tailscale 사설 경로·정상 HTTPS·필수 앱 로그인·Secure/HttpOnly/SameSite cookie·독립 세션·로그아웃·절대 12시간 만료 및 공개 미노출을 확인한다.
+follow_up: 운영자 웹의 loopback 원천에 Tailscale Serve HTTPS를 연결할 때 실제 host/origin/proxy 전달과 장치 접근 권한을 검증하고 이 배포 수용 검사를 수행한다.
 
 ## Review Evidence
 
@@ -46,4 +50,4 @@ blocked: 0
 - [모바일 어두운 테마 합성 화면](/Users/oceano/.codex/visualizations/2026/10/01/01a0f795-7dd9-7990-8247-4f1071982ed4/phase14-uat-2026-10-03/operator-overview-390-dark.png)
 - [320px 모바일 밝은 테마 합성 화면](/Users/oceano/.codex/visualizations/2026/10/01/01a0f795-7dd9-7990-8247-4f1071982ed4/phase14-uat-2026-10-03/operator-overview-320-light.png)
 
-화면은 합성 데이터 예시이다. 사용자는 2026-10-03 한국어 화면 사용성을 수용했다. 실제 소유자 배포·사설 네트워크 접속은 확인하지 않았으며, 조건부 항목의 적용 여부는 아직 답변 대기 중이다.
+화면은 합성 데이터 예시이다. 사용자는 2026-10-03 한국어 화면 사용성을 수용했다. 현재 적용 항목 1개는 통과했고, 향후 Tailscale 외부 접속 구성의 실제 배포 수용 검사는 별도로 보존했다.
