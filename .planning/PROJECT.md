@@ -11,6 +11,10 @@ and a **trading execution pipeline** (parses the signal and places orders throug
 Built for the owner's own use, safety-first: it validates against the KIS mock (모의투자)
 account before ever touching real money.
 
+An authenticated Korean desktop/mobile web application exposes saved operational and
+validation evidence, reports and alert acknowledgement without granting the web process
+trading authority.
+
 ## Core Value
 
 Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and
@@ -70,6 +74,9 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 
 - [x] FUT-02: optional historical LLM comparisons use a separately bounded, non-executable shadow workflow — validated in Phase 13.
 - [x] GOV-01: shadow provider/model/prompt/schema/input/cost/code facts remain attributable and cannot mutate policy — validated in Phase 13.
+- [x] FUT-03 / UI-01: authenticated Korean desktop/mobile saved evidence review, exact drilldown, reports and worker visibility — validated in Phase 14.
+- [x] UI-02: report/export/acknowledgement require authentication, authorization, CSRF and audit while the web has no trade/live-LLM/policy authority — validated in Phase 14.
+- [x] OPSV-01: durable severity/deduplication/evidence-linked episodes and critical reminders in an explicitly started independent observer — validated in Phase 14.
 
 ### Active
 
@@ -125,6 +132,9 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 | Rules-based stop-loss/take-profit on top of LLM SELL | Safety net independent of LLM judgment | ✓ Shipped — Phase 2 risk net (takes precedence on conflict) |
 | Strict JSON LLM contract, fail-safe on parse error | Programmatic execution requires deterministic, parseable signals | ✓ Shipped — Phase 4 structured output, HOLD on parse failure |
 | D-05: extend direct-REST KIS layer, not adopt `python-kis` | Zero third-party trust in the order path; reuse the shared token manager | ✓ Shipped — Phase 5 `kis_order.py` + `KISBroker` |
+| Saved evidence and separate operator authority for the web | Review/report/export/acknowledgement must not gain trading capabilities | ✓ Verified — Phase 14, 1418 automated tests and Korean visual UAT |
+| Exact alert scope before count and page bounds | CRITICAL totals and durable constituent pages must agree even above 100 incidents | ✓ Verified — Phase 14 independent gap re-verification, 36/36 |
+| Tailscale for future phone/Mac external web access | Owner-selected private access path with HTTPS and application login | Selected 2026-10-03; actual deployment and device acceptance remain future work |
 
 ## Evolution
 
@@ -144,7 +154,7 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-01 after completing Phase 13 — Historical LLM Shadow Evaluation & Model Governance*
+*Last updated: 2026-10-03 after completing Phase 14 — Operator Web UI, Dashboard & Alerting*
 
 ## Phase 12 Validated Capability
 
@@ -154,3 +164,7 @@ Validated in Phase 12: FUT-01 offline chronological multi-ticker portfolio simul
 ## Phase 13 Validated Capability
 
 Validated in Phase 13: FUT-02 / GOV-01 frozen historical sampling and canonical pre-decision comparison; single-shot isolated OpenAI/Claude API adapters with positive reviewed capabilities, shared conservative budgets, owned durable resume/retry and Korean advisory reports. Seven plans completed; 80 shadow cases, 78 backtest cases and 986 total tests pass. Implementation uses fake providers/HTTP and installed offline CLI smoke; no paid run or KIS call performed. Codex CLI and incompatible forced-tool models stay blocked. Model/prompt adoption remains manual, and Phase 9 elapsed-day acceptance remains independent. Next: Phase 14 discussion for Operator Web UI, Dashboard & Alerting.
+
+## Phase 14 Validated Capability
+
+Validated in Phase 14: FUT-03 / UI-01 / UI-02 / OPSV-01. All 14 plans complete; 1418 full regression tests pass and independent implementation verification is 36/36 with no gaps. The owner accepted Korean visual usability on 2026-10-03. Actual external Tailscale phone/Mac acceptance is conditional on a future deployment and was not asserted as a passing live connection. The selected private access approach is recorded in the runbook and UAT follow-up. Next: Phase 15 discussion; Phase 9 Plan 09-08 remains required before unattended trading mutation is enabled.

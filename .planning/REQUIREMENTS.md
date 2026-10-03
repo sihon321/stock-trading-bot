@@ -60,10 +60,10 @@ real-money promotion gates.
 - [x] **FUT-01**: Operator can run a full chronological portfolio backtest with modeled fills, fees, Korean-market taxes, and slippage.
 - [x] **FUT-02**: Operator can optionally compare fixture signals with historical live-LLM decisions under a separate cost-controlled, non-executable workflow.
 - [x] **GOV-01**: Every shadow LLM result is attributable to provider, model, prompt, schema, input snapshot, cost, and code revision and cannot mutate trading policy.
-- [ ] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.
-- [ ] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
-- [ ] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
-- [ ] **OPSV-01**: Operator receives deduplicated, severity-based alerts for stale workers, failed cycles, unresolved orders, safety latches, and broker-state divergence.
+- [x] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.
+- [x] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
+- [x] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
+- [x] **OPSV-01**: Operator receives deduplicated, severity-based alerts for stale workers, failed cycles, unresolved orders, safety latches, and broker-state divergence.
 - [ ] **FUT-04**: Operator can schedule unattended cycles only after manual-operation evidence is sufficient.
 - [ ] **AUTO-01**: Scheduled daily and intraday workers use KRX calendar/session rules, leader locking, durable checkpoints, and idempotent invocation identities so one logical job cannot submit twice.
 - [ ] **AUTO-02**: Operator can pause, resume, inspect health, recover after restart, and activate a global kill switch without losing audit or reconciliation evidence.
@@ -127,10 +127,10 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | FUT-01 | Phase 12 | Planned |
 | FUT-02 | Phase 13 | Complete |
 | GOV-01 | Phase 13 | Complete |
-| FUT-03 | Phase 14 | Planned |
-| UI-01 | Phase 14 | Planned |
-| UI-02 | Phase 14 | Planned |
-| OPSV-01 | Phase 14 | Planned |
+| FUT-03 | Phase 14 | Complete |
+| UI-01 | Phase 14 | Complete |
+| UI-02 | Phase 14 | Complete |
+| OPSV-01 | Phase 14 | Complete |
 | FUT-04 | Phase 15 | Planned |
 | AUTO-01 | Phase 15 | Planned |
 | AUTO-02 | Phase 15 | Planned |
@@ -141,4 +141,4 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 
 ---
 *Requirements defined: 2026-07-11*
-*Last updated: 2026-08-25 after adding the v1.2-v1.3 future roadmap*
+*Last updated: 2026-10-03 after completing Phase 14*

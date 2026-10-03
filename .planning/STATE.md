@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 14
-current_phase_name: operator-dashboard-alerting
-current_plan: 14
-status: verifying
-stopped_at: Phase 14 UAT1 passed; waiting on conditional private VPN/HTTPS phone applicability
-last_updated: "2026-10-03T08:58:16.119Z"
-last_activity: 2026-10-02
-last_activity_desc: Independent re-verification 36/36 with no gaps; Korean usability and conditional private phone UAT pending
+current_phase: 15
+current_phase_name: Unattended Scheduling & Service Resilience
+current_plan: Not started
+status: planning
+stopped_at: Phase 14 complete; ready to discuss Phase 15; Tailscale external deployment acceptance is future work
+last_updated: "2026-10-03T09:06:37.389Z"
+last_activity: 2026-10-03
+last_activity_desc: Phase 14 complete; 14/14 plans, 1418 tests, 36/36 verified; Korean UAT accepted; future Tailscale access recorded
 progress:
   total_phases: 5
   completed_phases: 4
@@ -22,21 +22,21 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-11)
+See: .planning/PROJECT.md (updated 2026-10-03)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 14 — operator-dashboard-alerting
+**Current focus:** Phase 15 — Unattended Scheduling & Service Resilience
 
 ## Current Position
 
-Current Phase: 14
-Current Phase Name: operator-dashboard-alerting
-Current Plan: 14
-Total Plans in Phase: 14
-Phase: 14 (Operator Web UI, Dashboard & Alerting) — IN PROGRESS
-Plan: 14 of 14
-Status: Phase 14 implementation verified — Korean visual UAT passed; conditional private phone UAT applicability pending
-Last activity: 2026-10-02 — Independent re-verification 36/36 with no gaps; Korean usability and conditional private phone UAT pending
+Current Phase: 15
+Current Phase Name: Unattended Scheduling & Service Resilience
+Current Plan: Not started
+Total Plans in Phase: 0
+Phase: 15 (Unattended Scheduling & Service Resilience) — NOT PLANNED; Phase 14 complete
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-03 — Phase 14 complete; 14/14 plans, 1418 tests, 36/36 verified; Korean UAT accepted; future Tailscale access recorded
 
 ## Performance Metrics
 
@@ -63,6 +63,12 @@ Last activity: 2026-10-02 — Independent re-verification 36/36 with no gaps; Ko
 - Phase 14 edited: edited fields: title, goal, requirements, success_criteria; expanded to authenticated responsive web UI with non-trading operational actions
 
 ### Decisions
+
+Phase 14 completion decisions:
+
+- The web consumes saved evidence and exposes report/export/acknowledgement without trading authority.
+- Registered resource/account/target and severity selection precedes exact CRITICAL counts and bounded constituent pages; saved refresh updates the header.
+- Owner accepted Korean visual usability on 2026-10-03 and selected Tailscale for future external phone/Mac access. Actual configured private access requires later device acceptance.
 
 Decisions are logged in PROJECT.md Key Decisions table. Current milestone constraints:
 
@@ -166,7 +172,8 @@ None yet.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Roadmap | Full portfolio backtest, LLM shadow evaluation, dashboard, and unattended scheduling | Phases 12–13 verified; Phases 14–15 not planned | 2026-08-25 roadmap expansion |
+| Roadmap | Full portfolio backtest, LLM shadow evaluation, dashboard, and unattended scheduling | Phases 12–14 verified; Phase 15 not planned | 2026-08-25 roadmap expansion |
+| Deployment | External phone/Mac access using Tailscale and HTTPS | Owner selected; configure and perform actual device acceptance before use | 2026-10-03 |
 | Automation | Automatic policy writes or real-money promotion | Prohibited | v1.1 scoping |
 | Phase 06 P01 | 8min | 3 tasks | 6 files |
 | Phase 06 P02 | 12min | 2 tasks | 4 files |
@@ -193,13 +200,14 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-03T08:58:16.113Z
-Stopped at: Phase 14 UAT1 passed; waiting on conditional private VPN/HTTPS phone applicability
-Resume file: .planning/phases/14-operator-dashboard-alerting/14-UAT.md
+Last session: 2026-10-03T09:06:37.381Z
+Stopped at: Phase 14 complete; ready to discuss Phase 15; Tailscale external deployment acceptance is future work
+Resume file: None
 
 ## Operator Next Steps
 
 - Continue Phase 9 Plan 09-08 elapsed-day KIS mock evidence collection without weakening its acceptance gate.
-- Phase 13 is verified complete (7/7 plans; 80 shadow cases, 78 backtest cases and 986 total tests passed). Run `$gsd-discuss-phase 14` for Operator Web UI, Dashboard & Alerting.
+- Phase 14 is verified complete (14/14 plans; 1418 automated tests; independent 36/36; accepted Korean UI). Run `$gsd-discuss-phase 15` for Unattended Scheduling & Service Resilience.
+- Use Tailscale for future external phone/Mac web access; verify actual private HTTPS/login/session behavior when deployment is configured.
 - Optional paid shadow runs require reviewed model/capability/context/pricing records and dedicated LLM credentials. Codex CLI remains unsupported; no paid acceptance was performed here.
 - Preserve Phase 11 authenticated UAT recorded pass (2026-09-07); Phase 9 elapsed-day acceptance remains independently required.
