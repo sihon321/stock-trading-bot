@@ -40,8 +40,8 @@ blocked: 0
 
 - 독립 재검증: 36/36, gaps: [], human_needed. 전체 자동 검사 1418 passed / 336.19s; 독립 경계 검사 7 passed / 7.12s.
 - [운영 문서](/Users/oceano/Project/Python/auto-trader/stock-trading-bot/docs/operator-runbook.md:279)
-- [PC 밝은 테마 합성 화면](/var/folders/xk/mkg191bs19q22t08wpm3b0k00000gn/T/phase14-review-xxercb1t/operator-overview-1280-light.png)
-- [모바일 어두운 테마 합성 화면](/var/folders/xk/mkg191bs19q22t08wpm3b0k00000gn/T/phase14-review-xxercb1t/operator-overview-390-dark.png)
-- [320px 모바일 밝은 테마 합성 화면](/var/folders/xk/mkg191bs19q22t08wpm3b0k00000gn/T/phase14-review-xxercb1t/operator-overview-320-light.png)
+- [PC 밝은 테마 합성 화면](/Users/oceano/.codex/visualizations/2026/10/01/01a0f795-7dd9-7990-8247-4f1071982ed4/phase14-uat-2026-10-03/operator-overview-1280-light.png)
+- [모바일 어두운 테마 합성 화면](/Users/oceano/.codex/visualizations/2026/10/01/01a0f795-7dd9-7990-8247-4f1071982ed4/phase14-uat-2026-10-03/operator-overview-390-dark.png)
+- [320px 모바일 밝은 테마 합성 화면](/Users/oceano/.codex/visualizations/2026/10/01/01a0f795-7dd9-7990-8247-4f1071982ed4/phase14-uat-2026-10-03/operator-overview-320-light.png)
 
 화면은 합성 데이터 예시이다. 실제 소유자 배포·네트워크 접속·사용성 수용을 통과한 것으로 기록하지 않는다.
