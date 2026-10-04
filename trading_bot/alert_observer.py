@@ -2,16 +2,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass, replace
 from contextlib import contextmanager
 import json
 import sqlite3
 import uuid
 
 from .alert_detector import AlertDetector
-from .alert_models import AlertSubject, DeliveryState, timestamp
+from .alert_models import AlertSubject, AlertSourceFact, Severity, DeliveryState, timestamp
 from .alert_store import AlertStore
 from .notification_transport import DiscordNotifier, NoopNotifier
 from .web_evidence import OperatorEvidenceService
+from .web_models import AlertSourceBatch, SourceEnvelope
+
+
+@dataclass(frozen=True)
+class ScanSourceOutcome:
+    resource_id: str
+    source_owner: str
+    state: str
+    diagnostic_code: str | None = None
 
 
 class ObserverBusy(ValueError):
@@ -37,7 +47,7 @@ class _ObserverStore(AlertStore):
 
 class AlertObserver:
     def __init__(self, settings, *, evidence=None, notifier=None,
-                 clock=lambda: datetime.now(timezone.utc), after_send=None):
+                 clock=lambda: datetime.now(timezone.utc), after_send=None, expectation_producer=None):
         self.settings, self.clock = settings, clock
         self.owner = uuid.uuid4().hex
         self.store = _ObserverStore(settings, clock=clock)
@@ -46,6 +56,39 @@ class AlertObserver:
         # Construct transport lazily only for an explicitly started monitor.
         self.notifier, self.after_send = notifier, after_send
         self._owned = False
+        self.expectation_producer=expectation_producer
+        self.last_source_outcomes=()
+
+    def _source_fact(self, env, now, *, family='SERVICE_SOURCE_UNAVAILABLE'):
+        """Persist availability transitions without poll-time freshness renewal."""
+        if env.target not in {'mock','real','simulated','unknown'}:
+            return None
+        subject=AlertSubject(env.resource_id,env.account_hash,env.target,'ACCOUNT',family,'SOURCE')
+        existing=next((e for e in self.store.list_incidents(active=True,resource_id=env.resource_id)
+            if e.subject==subject),None)
+        healthy=env.query_status=='OK' and env.source_observed_at is not None and env.source_observed_at<=now
+        if healthy:
+            if existing is None or env.source_observed_at<existing.first_observed_at:
+                return None
+            key='source-recovered:'+existing.episode_id+':'+str(int(env.source_observed_at.timestamp()*1000000))
+            return AlertSourceFact(subject,env.schema_owner,key,0,env.source_observed_at,'AVAILABLE',Severity.WARNING,
+                True,key)
+        if env.query_status=='OK':
+            return None
+        stamp=existing.first_observed_at if existing else now
+        key='source-unavailable:'+(existing.episode_id if existing else str(int(stamp.timestamp()*1000000)))+':'+family
+        # First source failure is stable even across process restart. Existing
+        # incident has already recorded it; no repeated occurrence is invented.
+        if existing is not None:
+            return None
+        return AlertSourceFact(subject,env.schema_owner,key,0,stamp,'UNAVAILABLE',Severity.WARNING)
+
+    def _unavailable_sources(self, now):
+        resources=self.settings.registered_resources
+        return tuple(SourceEnvelope(r.id,r.owner,None,r.account_hash,r.target,now,
+            query_status='FAILED',diagnostic_code='SOURCE_UNAVAILABLE') for r in resources) or (
+                SourceEnvelope('observer-source','service',None,'0'*64,'mock',now,
+                    query_status='FAILED',diagnostic_code='SOURCE_UNAVAILABLE'),)
 
     def _initialize(self):
         self.settings.validate_topology()
@@ -147,14 +190,53 @@ class AlertObserver:
 
     def _scan(self, now, stop_event=None):
         self.heartbeat()
-        batch = self.evidence.observe_alert_sources(self.store.get_checkpoint())
-        if any(s.query_status != 'OK' for s in batch.sources
-               if s.schema_owner in {'audit', 'portfolio', 'soak', 'controller'}):
-            raise ObserverEvidenceError('SOURCE_FAILED')
-        for fact in self.detector.detect(batch):
+        # Observer-owned reads stay outside source exception handling: corruption,
+        # failed checkpoints and lost ownership still stop delivery fail-closed.
+        checkpoint=self.store.get_checkpoint()
+        expectation_healthy=True
+        if self.expectation_producer is not None:
+            try:
+                if self.settings.expectation_service_config_path is not None:
+                    from .service_config import protected_file
+                    path=protected_file(self.settings.expectation_service_config_path)
+                    if path!=self.expectation_producer.config_path.absolute():
+                        raise ValueError('registered expectation producer required')
+                records=self.expectation_producer.publish()
+                expectation_healthy=all(r.state!='UNKNOWN' or r.reason_code=='DUE_HISTORY_UNKNOWN' for r in (records or ()))
+            except Exception:
+                expectation_healthy=False
+        elif self.settings.expectation_service_config_path is not None:
+            expectation_healthy=False
+        try:
+            batch = self.evidence.observe_alert_sources(checkpoint)
+        except Exception:
+            batch=AlertSourceBatch(now,sources=self._unavailable_sources(now))
+        failed={s.resource_id for s in batch.sources if s.query_status!='OK'}
+        failed.update(r.resource_id for r in batch.facts if r.envelope.query_status!='OK')
+        self.last_source_outcomes=tuple(ScanSourceOutcome(s.resource_id,s.schema_owner,
+            'UNAVAILABLE' if s.resource_id in failed else 'AVAILABLE',s.diagnostic_code) for s in batch.sources)
+        healthy=replace(batch,facts=tuple(r for r in batch.facts if r.resource_id not in failed),
+            workers=tuple(w for w in batch.workers if w.envelope.resource_id not in failed),
+            service_health=tuple(h for h in batch.service_health if h.envelope.resource_id not in failed))
+        for fact in self.detector.detect(healthy):
             self.store.observe(fact)
-        self._receipts(batch)
-        if batch.cursor is not None:
+        for env in batch.sources:
+            fact=self._source_fact(replace(env,query_status='FAILED') if env.resource_id in failed else env,now)
+            if fact is not None: self.store.observe(fact)
+        if not expectation_healthy:
+            for env in self._unavailable_sources(now):
+                if env.schema_owner=='service':
+                    fact=self._source_fact(env,now,family='EXPECTATION_UNKNOWN')
+                    if fact is not None: self.store.observe(fact)
+        else:
+            for env in batch.sources:
+                if env.schema_owner=='service' and env.resource_id not in failed:
+                    fact=self._source_fact(env,now,family='EXPECTATION_UNKNOWN')
+                    if fact is not None: self.store.observe(fact)
+        self._receipts(healthy)
+        # The existing cursor spans all sources. Retain it on partial reads and
+        # rely on durable receipt/occurrence dedupe rather than skipping lost rows.
+        if batch.cursor is not None and not failed and expectation_healthy:
             self.store.set_checkpoint(batch.cursor)
         self.store.due_reminders(now)
         sent = 0

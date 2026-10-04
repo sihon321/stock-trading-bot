@@ -26,7 +26,37 @@ class AlertDetector:
             fact = self._worker(worker, batch.query_at)
             if fact is not None:
                 facts.append(fact)
+        for health in batch.service_health:
+            facts.extend(self._service_health(health))
         return tuple(sorted(facts, key=lambda f: (f.observed_at, f.sequence, f.source_id)))
+
+    @staticmethod
+    def _service_health(health):
+        env=health.envelope
+        # Attention has an append-only occurrence/reset event. Its projection
+        # appears on each worker but must not duplicate that one saved episode.
+        if health.state=='SERVICE_MANUAL_ATTENTION':
+            return ()
+        if env.query_status=='OK' and health.state=='EXPECTATION_UNKNOWN' and env.source_observed_at is None:
+            subject=AlertSubject(env.resource_id,env.account_hash,env.target,'ACCOUNT','EXPECTATION_UNKNOWN',health.subject_id)
+            return (AlertSourceFact(subject,env.schema_owner,'expectation-missing:'+_saved_id(health.subject_id),
+                0,env.query_at,'UNKNOWN',Severity.WARNING),)
+        if env.query_status!='OK' or env.source_observed_at is None or not health.source_ids:
+            return ()
+        states={'MISSED_SCHEDULE':'MISSED_SCHEDULE','WORKER_STALLED':'WORKER_STALLED',
+                'EXPECTATION_UNKNOWN':'EXPECTATION_UNKNOWN','SERVICE_MANUAL_ATTENTION':'SERVICE_MANUAL_ATTENTION'}
+        family=states.get(health.state)
+        recovery=health.expected_running is True and health.last_progress_at is not None and health.state in {'RUNNING','COMPLETED','TERMINAL'}
+        families=(family,) if family else ('MISSED_SCHEDULE','WORKER_STALLED','EXPECTATION_UNKNOWN') if recovery else ()
+        facts=[]
+        for family in families:
+            subject=AlertSubject(env.resource_id,env.account_hash,env.target,'ACCOUNT',family,
+                health.subject_id if family!='SERVICE_MANUAL_ATTENTION' else 'ATTENTION')
+            key='service-health:'+_saved_id(subject.identity,health.source_ids,env.source_observed_at,health.state)
+            facts.append(AlertSourceFact(subject,env.schema_owner,key,0,env.source_observed_at,
+                'RECOVERED' if recovery else health.state,Severity.CRITICAL if family=='SERVICE_MANUAL_ATTENTION' else Severity.WARNING,
+                recovery,key if recovery else None))
+        return tuple(facts)
 
     @staticmethod
     def _fact(row, family, state, default, *, broker='NONE', ticker=None,
@@ -57,6 +87,21 @@ class AlertDetector:
         env, d, kind = row.envelope, row.data, row.kind
         if env.query_status != 'OK' or env.source_observed_at is None:
             return None
+        if kind=='service_expectation_health' and d.get('state') in {'UNKNOWN','UNAVAILABLE'}:
+            return self._fact(row,'EXPECTATION_UNKNOWN',d['state'],'WARNING',broker=d.get('source_kind') or 'SOURCE')
+        if kind=='service_attention':
+            if d.get('state') not in {'MANUAL_ATTENTION','RESET'}: return None
+            return self._fact(row,'SERVICE_MANUAL_ATTENTION',d['state'],'CRITICAL',broker='ATTENTION',
+                recovery=d['state']=='RESET')
+        if kind=='service_job_events' and d.get('state')=='COMPLETED' and d.get('reason_code') in {'PREP_COMPLETED','PREP_READ_ONLY'}:
+            return self._fact(row,'SERVICE_PREP','COMPLETED','INFO',broker=d.get('job_id') or 'PREP')
+        if kind=='notifications':
+            state=d.get('delivery_status')
+            if state not in {'FAILED','UNKNOWN','DELIVERED'}: return None
+            return self._fact(row,'NOTIFICATION_FAILURE',state,'WARNING',
+                broker=d.get('run_id') or d.get('kind') or 'NOTIFICATION',recovery=state=='DELIVERED')
+        if kind=='candidates' and d.get('reason_code') in {'QUOTE_STALE','STALE_QUOTE','MARKET_DATA_STALE'}:
+            return self._fact(row,'MARKET_DATA_STALE','STALE','WARNING',broker='EXECUTION')
         if kind in {'transition_observations', 'transition_notifications'}:
             if not all(d.get(k) for k in ('state_identity', 'event_family')):
                 return None
@@ -83,6 +128,10 @@ class AlertDetector:
             return self._fact(row, 'EVALUATION', 'LLM_UNAVAILABLE' if unavailable else state, 'WARNING',
                 recovery=state in {'SIGNAL_FINALIZED', 'FINALIZED'} and not unavailable)
         if kind in {'orders', 'broker_orders'}:
+            if d.get('event_type') in {'FRESHNESS_BLOCKED','FRESHNESS_CHECKED'}:
+                recovery=d['event_type']=='FRESHNESS_CHECKED'
+                return self._fact(row,'MARKET_DATA_STALE','FRESH' if recovery else 'STALE','WARNING',
+                    broker='EXECUTION',recovery=recovery)
             broker = d.get('order_intent_id') or d.get('broker_order_id')
             if not broker:
                 return None

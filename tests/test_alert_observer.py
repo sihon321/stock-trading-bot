@@ -289,6 +289,41 @@ def test_expectation_publication_failure_does_not_suppress_existing_outbox(tmp_p
     assert bot.store.get_checkpoint() is None
 
 
+def test_watch_survives_repeated_reader_exception_and_due_reminder(tmp_path):
+    clock=Clock()
+    bot=observer(tmp_path,clock=clock)
+    bot._initialize()
+    episode=bot.store.observe(bot.detector.detect(bot.evidence.batch)[0])
+    def unavailable(cursor): raise OSError('private source path')
+    bot.evidence.observe_alert_sources=unavailable
+    class Stop:
+        waits=0
+        def is_set(self): return self.waits>=3
+        def wait(self,seconds):
+            assert seconds==30 and bot._owned
+            self.waits+=1
+            clock.advance(1799 if self.waits==1 else 1)
+    bot.watch(Stop())
+    assert bot.status()['state']=='STOPPED'
+    assert len([t for t in bot.notifier.sent if 'UNRESOLVED_ORDER' in t])==2
+    assert bot.store.get(episode.episode_id).active
+
+
+def test_failed_partition_recovery_row_cannot_clear_prior_incident(tmp_path):
+    clock=Clock()
+    bot=observer(tmp_path,clock=clock)
+    bot.scan_once()
+    incident=bot.store.list_incidents()[0]
+    clock.advance(30)
+    recovery=record('orders','2',30,order_intent_id='intent',event_type='RECONCILED',
+        broker_status='FILLED',broker_order_id='broker',unfilled_qty=0)
+    failure=replace(recovery.envelope,query_status='FAILED')
+    bot.evidence.batch=AlertSourceBatch(clock(),(recovery,),sources=(failure,),cursor='incomplete')
+    bot.scan_once()
+    assert bot.store.get(incident.episode_id).active
+    assert bot.store.get_checkpoint()=='saved'
+
+
 def test_crash_after_send_stays_unknown_no_duplicate(tmp_path):
     bot = observer(tmp_path, after_send=lambda: (_ for _ in ()).throw(SystemExit()))
     with pytest.raises(SystemExit):

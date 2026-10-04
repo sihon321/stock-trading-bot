@@ -653,6 +653,7 @@ class OperatorEvidenceService:
                         if event: ids.append(f'service_job_events:{event["event_id"]}')
                         if heartbeat: ids.append(f'service_heartbeats:{heartbeat["worker_id"]}')
                         manual=bool(attention and attention['state']=='MANUAL_ATTENTION')
+                        if manual: ids.append(f'service_attention:{attention["event_id"]}')
                         expected={'EXPECTED':True,'NOT_EXPECTED':False,'UNKNOWN':None}.get(current['expected_running'])
                         # Only DUE_HISTORY_UNKNOWN may use prior proven history; an
                         # unavailable current input cannot establish current health.
@@ -677,6 +678,7 @@ class OperatorEvidenceService:
                             elif job:
                                 state=job['state']
                         observed=max(stamp,progress or stamp)
+                        if manual: observed=max(observed,_operational_stamp(attention['observed_at']))
                         if state=='WORKER_STALLED' and heartbeat: observed=max(observed,_operational_stamp(heartbeat['observed_at']))
                         env=_envelope(resource,now,source_observed_at=observed,completeness='COMPLETE',
                             provenance='OBSERVER_DERIVED',diagnostic_code=state if state in {'EXPECTATION_UNKNOWN','MISSED_SCHEDULE','WORKER_STALLED'} else None)
@@ -749,8 +751,9 @@ class OperatorEvidenceService:
             except (ValueError, TypeError, KeyError, UnicodeError):
                 raise ValueError('invalid alert source cursor') from None
         facts = []
+        source_failures={}
         kinds = {'transitions', 'transition_observations', 'transition_notifications', 'lease_events',
-                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events'}
+                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events', 'candidates'}
         kinds.update(kind for _,kind in _OPERATIONAL_HISTORY)
         for resource in self._resources():
             try:
@@ -766,7 +769,8 @@ class OperatorEvidenceService:
                             WHERE s.account_scope_hash=? ORDER BY d.id LIMIT 10001''', (resource.account_hash,))
                         for row in rows:
                             facts.append(self._project(conn, resource, 'divergences', row))
-            except EvidenceUnavailable:
+            except EvidenceUnavailable as exc:
+                source_failures[resource.id]=str(exc)
                 continue
         scopes = {(r.account_hash, r.target) for r in self._resources()}
         for account, target in sorted(scopes):
@@ -795,8 +799,14 @@ class OperatorEvidenceService:
         next_cursor = base64.urlsafe_b64encode(json.dumps({'registry': _identity(tuple((r.id, r.account_hash, r.target) for r in self._resources())), 'streams': positions}, separators=(',', ':')).encode()).decode()
         if len(next_cursor) > 65536:
             raise EvidenceUnavailable('ALERT_CURSOR_BOUND')
+        health=self.service_health()
+        for item in health:
+            if item.envelope.query_status!='OK':
+                source_failures[item.envelope.resource_id]=item.envelope.diagnostic_code or 'SOURCE_UNAVAILABLE'
+        sources=tuple(replace(s,query_status='FAILED',diagnostic_code=source_failures[s.resource_id])
+            if s.resource_id in source_failures else s for s in self.source_status())
         return AlertSourceBatch(self.clock(), tuple(selected), self._workers(),
-                                self.source_status(), next_cursor, self.service_health())
+                                sources, next_cursor, health)
 
     def list_records(self, kind, scope, period=None, cursor=None, limit=50):
         if kind not in _KINDS or type(limit) is not int or not 1 <= limit <= 100:

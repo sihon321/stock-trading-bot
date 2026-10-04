@@ -151,3 +151,121 @@ def test_global_control_owner_scope_mismatch_is_unavailable(tmp_path):
         conn.execute("UPDATE control_request_audit SET scope_hash=?",('f'*64,))
     assert reader.control_states()[0].envelope.query_status=='FAILED'
     assert all(h.state=='EXPECTATION_UNKNOWN' for h in reader.service_health())
+
+
+def test_independent_observer_publishes_exact_date_before_first_runtime_tick(tmp_path):
+    from test_service_schedule import producer_fixture, at
+    from test_alert_observer import Transport
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.alert_observer import AlertObserver
+    producer, _, clock, journal, controls, _=producer_fixture(tmp_path)
+    settings=ObserverSettings(operational_db_path=tmp_path/'observer'/'alerts.db',
+        expectation_service_config_path=producer.config_path,
+        registered_resources=tuple(ResourceDescriptor(id=owner,owner=owner,path=path,
+            account_hash=SCOPE.account_scope_hash,target='mock') for owner,path in (
+            ('service',journal.path),('control',controls.path))))
+    bot=AlertObserver(settings,clock=clock,notifier=Transport(),expectation_producer=producer)
+    def contents():
+        with sqlite3.connect(journal.path) as conn:
+            tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            return {t:tuple(conn.execute(f'SELECT * FROM {t}')) for t in tables-
+                {'service_expectations','service_expectation_health'}}
+    before=contents()
+    control_bytes=controls.path.read_bytes()
+    bot.scan_once()  # 08:40, no runtime/job/heartbeat exists
+    clock.advance(40*60)
+    bot.scan_once()
+    families={e.subject.problem_family for e in bot.store.list_incidents(active=True)}
+    assert {'MISSED_SCHEDULE','WORKER_STALLED'}<=families
+    assert contents()==before and controls.path.read_bytes()==control_bytes
+    # Cross midnight with no trading process and no tomorrow calendar authority.
+    clock.advance(15*3600)
+    bot.scan_once()
+    assert {h.state for h in bot.evidence.service_health()}=={'EXPECTATION_UNKNOWN'}
+    today=clock().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Seoul')).date()
+    notice=session_evidence(day=today).model_copy(update={'source_id':'krx-next-date',
+        'notice_id':'reviewed-next-date','reviewer':'owner'})
+    producer.settings.session_evidence_path.write_text(notice.model_dump_json())
+    clock.advance(8*3600+20*60)
+    bot.scan_once()  # next date 08:40 publishes before new due intervals
+    assert {h.trading_date_kst for h in bot.evidence.service_health()}=={str(today)}
+    clock.advance(40*60)
+    bot.scan_once()
+    assert any(e.active and str(today) in e.subject.broker_subject and
+        e.subject.problem_family=='MISSED_SCHEDULE' for e in bot.store.list_incidents())
+    assert contents()==before
+
+
+@pytest.mark.parametrize('failure', ['session','config','login','control'])
+def test_independent_producer_unknown_inputs_keep_outbox_alive(tmp_path,failure):
+    from test_service_schedule import producer_fixture
+    from test_alert_observer import Transport
+    from test_alert_detector import record
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.alert_observer import AlertObserver
+    from trading_bot.web_models import AlertSourceBatch
+    producer, _, clock, journal, controls, probe=producer_fixture(tmp_path)
+    settings=ObserverSettings(operational_db_path=tmp_path/'observer'/'alerts.db',
+        expectation_service_config_path=producer.config_path,
+        registered_resources=tuple(ResourceDescriptor(id=owner,owner=owner,path=path,
+            account_hash=SCOPE.account_scope_hash,target='mock') for owner,path in (
+            ('service',journal.path),('control',controls.path))))
+    bot=AlertObserver(settings,clock=clock,notifier=Transport(),expectation_producer=producer)
+    bot.start()
+    bot.store.observe(bot.detector.detect(AlertSourceBatch(clock(),(record('orders',order_intent_id='critical'),)))[0])
+    if failure=='session': producer.settings.session_evidence_path.unlink()
+    elif failure=='config': producer.config_path.unlink()
+    elif failure=='login': probe.state='UNKNOWN'
+    else: controls.path.chmod(0o644)
+    bot._scan(clock())
+    assert any('UNRESOLVED_ORDER' in text for text in bot.notifier.sent)
+    assert bot.store.get_checkpoint() is None
+    assert not any(h.state in {'MISSED_SCHEDULE','WORKER_STALLED'} for h in bot.evidence.service_health())
+    bot.stop()
+
+
+def test_saved_execution_quote_and_notification_failures_have_positive_recovery_only():
+    from test_alert_detector import record
+    from trading_bot.alert_detector import AlertDetector
+    from trading_bot.web_models import AlertSourceBatch
+    detector=AlertDetector()
+    stale=record('orders',event_type='FRESHNESS_BLOCKED',broker_status='STALE_QUOTE',
+        order_intent_id='intent',ticker='005930')
+    unknown=record('notifications','2',delivery_status='UNKNOWN',run_id='run')
+    facts=detector.detect(AlertSourceBatch(NOW,(stale,unknown)))
+    assert {f.subject.problem_family for f in facts}=={'MARKET_DATA_STALE','NOTIFICATION_FAILURE'}
+    assert not any(f.positive_recovery for f in facts)
+    assert detector.detect(AlertSourceBatch(NOW+timedelta(hours=18)))==() # overnight absence is not stale
+    fresh=record('orders','3',1,event_type='FRESHNESS_CHECKED',order_intent_id='next-intent',ticker='005930')
+    delivered=record('notifications','4',1,delivery_status='DELIVERED',run_id='run')
+    recovery=detector.detect(AlertSourceBatch(NOW,(fresh,delivered)))
+    assert all(f.positive_recovery for f in recovery)
+    assert {f.subject for f in facts}=={f.subject for f in recovery}
+
+
+def test_stall_recovery_requires_actual_new_progress_and_same_subject(tmp_path):
+    from trading_bot.alert_detector import AlertDetector
+    from trading_bot.alert_store import AlertStore
+    from trading_bot.service_models import LogicalJobKey
+    reader,journal,clock,_=health_fixture(tmp_path)
+    with journal.connection() as conn:
+        conn.execute('INSERT INTO service_generations VALUES(?,?,?,?,?,?,?)',
+            ('generation',SCOPE.account_scope_hash,'mock',__import__('os').getpid(),clock().timestamp(),None,'RUNNING'))
+    clock.advance(3800)
+    detector=AlertDetector(); store=AlertStore(tmp_path/'alert'/'alert.db',clock=clock); store.initialize()
+    for fact in detector.detect(reader.observe_alert_sources()): store.observe(fact)
+    episode=next(e for e in store.list_incidents() if e.subject.problem_family=='WORKER_STALLED')
+    clock.advance(30)
+    journal.heartbeat('service-leader','generation',phase='RUNNING')
+    for fact in detector.detect(reader.observe_alert_sources()): store.observe(fact)
+    assert store.get(episode.episode_id).active # heartbeat without risk progress is not proof
+    key=LogicalJobKey(scope=SCOPE,trading_date_kst=clock().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Seoul')).date(),kind='RISK')
+    job=journal.claim_job(key,due_at=NOW,dispatch_deadline_at=NOW+timedelta(hours=6,minutes=30),owner_generation='generation')
+    journal.append_job_event(job,'RUNNING',reason_code='RISK_OBSERVATION')
+    clock.advance(1)
+    journal.append_job_event(job,'COMPLETED',reason_code='RISK_OBSERVED')
+    for fact in detector.detect(reader.observe_alert_sources()): store.observe(fact)
+    recovered=store.get(episode.episode_id)
+    assert not recovered.active and recovered.recovery_proof_id
+    for fact in detector.detect(reader.observe_alert_sources()): store.observe(fact)
+    assert len([e for e in store.list_incidents() if e.subject==episode.subject])==1
