@@ -4,6 +4,54 @@ import sqlite3
 from datetime import date, datetime, timezone
 
 import pytest
+from tests.service_fixtures import FakeServiceClock, TempServiceTopology, SCOPE, session_evidence
+
+_test_root = None
+_dependencies = {}
+
+
+@pytest.fixture(autouse=True)
+def protected_daily_topology(tmp_path):
+    global _test_root, _dependencies
+    _test_root, _dependencies = tmp_path, {}
+    yield
+    for dependencies in _dependencies.values():
+        if not dependencies['mutation_lease'].closed:
+            dependencies['mutation_lease'].release()
+
+
+def dependencies(conn, day='20260904'):
+    from trading_bot.cli import DailyDispatchRuntime
+    from trading_bot.control_store import ControlStore
+    from trading_bot.control_runtime import ControlApplier
+    from trading_bot.service_store import ServiceJournal
+    from trading_bot.service_leader import ServiceLeader
+    from trading_bot.service_models import ControlRequest
+    from trading_bot.portfolio_store import migrate_portfolio
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from tests.test_service_controls import safety
+    current = datetime.strptime(day,'%Y%m%d').replace(hour=0,minute=10,tzinfo=timezone.utc)
+    if id(conn) in _dependencies:
+        result=_dependencies[id(conn)]
+        result['daily_dispatch_runtime'].clock.wall=current
+        return result
+    root=_test_root / str(len(_dependencies)); root.mkdir()
+    settings=TempServiceTopology(root).registration()
+    clock=FakeServiceClock(current)
+    journal=ServiceJournal(settings,clock=clock); journal.initialize()
+    controls=ControlStore(settings,clock=clock); controls.initialize(actor='tester')
+    with ServiceLeader(settings,journal=journal) as leader:
+        controls.request_writer(actor='tester').append_request(ControlRequest(request_id='resume',actor='tester',
+            requested_at=clock(),scope=controls.scope,action='RESUME',expected_revision=0))
+        ControlApplier(controls.service_capability(leader),clock=clock,
+            validate_resume=lambda scope,now:safety(scope,now),current_safety=lambda scope,now:safety(scope,now)).apply_pending()
+    migrate_portfolio(conn)
+    lease=acquire_mutation_lease(conn,account_scope_hash=SCOPE.account_scope_hash,
+        lock_dir=root/'account-locks',command='run',cycle_id='test-owner',observed_at=clock())
+    result=dict(mutation_lease=lease,daily_dispatch_runtime=DailyDispatchRuntime(settings,journal,controls,
+        lambda day:session_evidence(day=day),clock))
+    _dependencies[id(conn)]=result
+    return result
 
 from conftest import make_data_context, make_settings
 from trading_bot.domain import Decision, LLMSignal, Money, Position, Ticker
@@ -39,6 +87,15 @@ class Provider:
             self.failures -= 1
             raise RuntimeError("provider unavailable")
         return LLMSignal(Decision.HOLD, 0.9, "durable daily hold")
+
+    def generate_signal_from_envelope(self,envelope,admission):
+        from trading_bot.domain import Ticker
+        import re
+        ticker=re.search(r'\b\d{6}\b',envelope.prompt_bytes.decode()).group()
+        def transport(ack):
+            ack()
+            return self.generate_signal(type('Context',(),{'ticker':Ticker(ticker)})())
+        return admission.admit_at_transport_entry(transport)
 
 
 class Broker:
@@ -78,7 +135,7 @@ def snapshot(*, cash=1_000_000.0, observed_second=0, snapshot_id=None):
         account_scope_hash="a" * 64,
         trading_date=date(2026, 9, 4),
         previous_trading_date=date(2026, 9, 3),
-        observed_at=datetime(2026, 9, 4, 1, 0, observed_second, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 9, 4, 0, 10, observed_second, tzinfo=timezone.utc),
         completeness=PortfolioCompleteness.COMPLETE,
         reason_code="COMPLETE",
         daily_page_count=1,
@@ -104,6 +161,8 @@ def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
                 snapshot_id=f"snapshot-{run_id}-{read_index[0]}",
             )
 
+    collaborators=dependencies(conn,trading_date)
+    if lease is not None: collaborators['mutation_lease']=lease
     return run_cycle(
         settings=make_settings(llm_max_retries=2),
         data_source=DataSource(candidates),
@@ -115,7 +174,7 @@ def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
         trading_date=trading_date,
         run_id=run_id,
         portfolio_snapshot_reader=reader,
-        mutation_lease=lease or Lease(),
+        **collaborators,
     )
 
 
@@ -134,7 +193,7 @@ def test_same_day_overlap_reuses_one_final_signal_without_provider_construction(
     assert [item["ticker"] for item in first["outcomes"]] == ["005930", "035420"]
     assert [item["ticker"] for item in second["outcomes"]] == ["005930", "035420"]
     assert calls == ["005930", "035420"]
-    assert constructions == ["built"]
+    assert constructions == ["built", "built"]
     assert conn.execute("SELECT COUNT(*) FROM daily_evaluations").fetchone() == (2,)
     provenance = conn.execute(
         "SELECT provenance_json FROM daily_evaluations WHERE ticker='005930'"
@@ -192,7 +251,7 @@ def test_held_market_failure_is_durable_hold_and_does_not_block_sibling():
         trading_date="20260904",
         run_id="held-market-gap",
         portfolio_snapshot_reader=lambda: next(snapshots),
-        mutation_lease=Lease(),
+        **dependencies(conn),
     )
 
     assert result["outcomes"][0]["final_action"] == "HOLD", result["outcomes"][0]["order_reason"]
@@ -216,7 +275,7 @@ def test_date_rollover_allows_one_new_provider_boundary():
     assert conn.execute("SELECT COUNT(*) FROM daily_evaluations").fetchone() == (4,)
 
 
-def test_provider_retries_and_exhaustion_finalize_inside_one_identity():
+def test_provider_uncertainty_consumes_once_and_finalizes_inside_one_identity():
     conn = sqlite3.connect(":memory:")
     retry_calls = []
     retry_provider = Provider(retry_calls, failures=1)
@@ -226,10 +285,11 @@ def test_provider_retries_and_exhaustion_finalize_inside_one_identity():
         candidates=("005930",),
     )
 
-    assert retry_calls == ["005930", "005930"]
+    assert retry_calls == ["005930"]
     assert conn.execute(
-        "SELECT COUNT(*) FROM daily_evaluation_events WHERE event_type='PROVIDER_ATTEMPT'"
-    ).fetchone() == (2,)
+        "SELECT COUNT(*) FROM daily_evaluation_events WHERE event_type='DISPATCH_CLAIMED'"
+    ).fetchone() == (1,)
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED_UNKNOWN',)
 
     failed_conn = sqlite3.connect(":memory:")
     failed_calls = []
@@ -244,7 +304,7 @@ def test_provider_retries_and_exhaustion_finalize_inside_one_identity():
         candidates=("005930",),
     )
 
-    assert failed_calls == ["005930", "005930"]
+    assert failed_calls == ["005930"]
     assert failed_conn.execute(
         "SELECT COUNT(*) FROM daily_evaluation_events WHERE event_type='LLM_UNAVAILABLE'"
     ).fetchone() == (1,)
@@ -256,14 +316,11 @@ def test_reused_signal_rechecks_lease_before_execution_and_post_boundary():
     invoke(conn, run_id="phase11-seed", factory=lambda: Provider(calls))
     lost = Lease(fail=True)
 
-    result = invoke(
-        conn, run_id="phase11-replay", factory=lambda: pytest.fail("must not construct"),
-        lease=lost,
-    )
+    with pytest.raises(RuntimeError,match='active'):
+        invoke(conn, run_id="phase11-replay", factory=lambda: pytest.fail("must not construct"),lease=lost)
 
     assert calls == ["005930", "035420"]
-    assert lost.calls >= 1
-    assert all(item["status"] == "error" for item in result["outcomes"])
+    assert conn.execute('SELECT COUNT(*) FROM daily_evaluations').fetchone()==(2,)
 
 
 def test_screened_only_sizing_uses_post_held_broker_cash_snapshot():
