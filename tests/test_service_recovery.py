@@ -46,7 +46,8 @@ def runtime_fixture(tmp_path, *, clock=None, inputs_failure=False, barrier=lambd
     work,conn,unused,sequence=account_work_fixture(tmp_path)
     work.clock=clock
     original=work.snapshot_reader
-    work.snapshot_reader=lambda:replace(original(),observed_at=clock())
+    work.snapshot_reader=lambda:replace(original(),observed_at=clock(),
+        trading_date=clock().date(),previous_trading_date=clock().date()-timedelta(days=1))
     original_lease=work.lease_factory
     from trading_bot.mutation_lease import acquire_mutation_lease
     work.lease_factory=lambda:acquire_mutation_lease(conn,account_scope_hash=SCOPE.account_scope_hash,

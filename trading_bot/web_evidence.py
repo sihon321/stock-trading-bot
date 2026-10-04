@@ -649,7 +649,7 @@ class OperatorEvidenceService:
                         ids=[f'service_expectations:{obligation["expectation_id"]}']
                         job=next((j for j in jobs if j['kind']==kind),None)
                         event=conn.execute('SELECT * FROM service_job_events WHERE job_id=? ORDER BY sequence DESC LIMIT 1',(job['job_id'],)).fetchone() if job else None
-                        successful=conn.execute("SELECT * FROM service_job_events WHERE job_id=? AND ((state='RUNNING' AND reason_code IN ('RISK_PROTECTED','RISK_RECONCILED','RECONCILIATION_ONLY')) OR state='COMPLETED') ORDER BY sequence DESC LIMIT 1",(job['job_id'],)).fetchone() if job else None
+                        successful=conn.execute("SELECT * FROM service_job_events WHERE job_id=? AND ((state='RUNNING' AND reason_code IN ('RISK_PROTECTED','RISK_RECONCILED','RECONCILIATION_ONLY')) OR (state='COMPLETED' AND reason_code IN ('PREP_READ_ONLY','DAILY_TERMINAL','RISK_SESSION_TERMINAL'))) ORDER BY sequence DESC LIMIT 1",(job['job_id'],)).fetchone() if job else None
                         progress=_operational_stamp(successful['observed_at']) if successful else None
                         if event: ids.append(f'service_job_events:{event["event_id"]}')
                         if successful and (not event or successful['event_id']!=event['event_id']): ids.append(f'service_job_events:{successful["event_id"]}')

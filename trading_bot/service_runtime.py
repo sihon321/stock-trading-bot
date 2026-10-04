@@ -11,7 +11,9 @@ import hashlib
 import json
 import multiprocessing
 import signal
+import tempfile
 import time
+from pathlib import Path
 from typing import Callable, Protocol
 
 from pydantic import Field, SecretStr
@@ -123,6 +125,15 @@ class ProviderChild:
     result: tuple | None = None
 
 
+@dataclass
+class CollectionChild:
+    process: object
+    directory: object
+    snapshot: object
+    job: object
+    deadline: float
+
+
 @dataclass(frozen=True)
 class AccountTradingBinding:
     """Actual account execution contract, bound by the installed CLI root.
@@ -228,7 +239,7 @@ class ServiceRuntime:
             self.bind_admitted_leader(leader)
         self.validate_resume,self.current_resume_safety=validate_resume,current_resume_safety
         self.schedule=ServiceSchedule(self.scope)
-        self.state='UNSTARTED'; self.child=None; self.last_dispatch_id=None
+        self.state='UNSTARTED'; self.child=None; self.collection=None; self.last_dispatch_id=None
         self.no_new_dispatch=False; self.last_heartbeat=None; self.fresh=None
         self.inputs=(); self.last_risk_slot=None; self.applier=None
         self.active_day=None
@@ -317,10 +328,16 @@ class ServiceRuntime:
 
     def _load_saved_inputs(self):
         day=local(self.clock()).date(); row=self.job('DAILY')
-        if row is None or row['universe_json'] is None: self.inputs=(); return
+        if row is None or row['universe_json'] is None:
+            self.inputs=()
+            if row and any(e['reason_code']=='INPUT_COLLECTION_STARTED' for e in self.journal.list_events(row['job_id'])):
+                # A predecessor consumed first collection; its uncertain inputs
+                # cannot be silently replaced by a different market observation.
+                self._event('DAILY','UNKNOWN','INPUT_COLLECTION_PREDECESSOR_EXIT')
+            return
         result=[]
         for ticker in json.loads(row['universe_json']):
-            evaluation=self.work.conn.execute('SELECT evaluation_id FROM daily_evaluations WHERE trading_date_kst=? AND ticker=? AND account_scope_hash=?',
+            evaluation=self.work.conn.execute('SELECT evaluation_id,provenance_json FROM daily_evaluations WHERE trading_date_kst=? AND ticker=? AND account_scope_hash=?',
                 (str(day),ticker,self.scope.account_scope_hash)).fetchone()
             if evaluation is None: continue  # no saved input cannot be recreated on recovery
             dispatch=load_daily_dispatch(self.work.conn,evaluation[0])
@@ -328,7 +345,7 @@ class ServiceRuntime:
                     or dispatch['dispatch_state']!='NEVER_DISPATCHED'): continue
             envelope=DailyDispatchEnvelope.model_validate_json(dispatch['envelope_json'])
             if envelope.envelope_hash!=dispatch['envelope_hash']: raise RuntimeBlocked('SAVED_INPUT_MISMATCH')
-            result.append(DailyInput(ticker,('HELD',) if ticker in {h.ticker for h in self.fresh.holdings} else ('SCREENED',),envelope))
+            result.append(DailyInput(ticker,tuple(json.loads(evaluation[1])),envelope))
         self.inputs=tuple(result)
 
     def job(self,kind):
@@ -357,6 +374,7 @@ class ServiceRuntime:
         if self.state in ('UNSTARTED','STOPPED'): raise RuntimeBlocked('RUNTIME_NOT_STARTED')
         self.leader.assert_owner(); self.applier.apply_pending(); self.heartbeat()
         if self.state=='RECOVERY_BLOCKED': return None
+        if self.collection is not None: self._poll_collection()
         if self.child is not None: self._poll_child()
         now=local(self.clock()); session=self.policy.session_evidence_provider.for_date(now.date())
         controls=self.controls.reader().effective_state(self.scope)
@@ -423,7 +441,7 @@ class ServiceRuntime:
                     if self.composition.prep_read_only is None: raise RuntimeBlocked('PREP_UNWIRED')
                     self.composition.prep_read_only(); self._event('PREP','COMPLETED','PREP_READ_ONLY')
                 except Exception: self._event('PREP','UNKNOWN','PREP_UNAVAILABLE')
-            elif job.key.kind=='DAILY' and self.child is None and not self.no_new_dispatch:
+            elif job.key.kind=='DAILY' and self.child is None and self.collection is None and not self.no_new_dispatch:
                 self._claim(job)
                 try: self._daily(job)
                 except LeaseBusyError: self._event('DAILY','CLAIMED','ACCOUNT_BUSY')
@@ -448,24 +466,30 @@ class ServiceRuntime:
         row=self.job('DAILY')
         if row['universe_json'] is None:
             if self.work.conn.in_transaction: raise RuntimeBlocked('INPUT_COLLECTION_OWNS_TRANSACTION')
-            # Capture exact first inputs outside ownership; sort held before screened.
-            held=tuple(h.ticker for h in self.fresh.holdings)
+            # Return the operation's fresh snapshot, not cleanup/recovery truth.
+            # Both ownership domains have been released before collection starts.
+            captured=self.work.run(lambda lease,current,budget:current)
+            if (captured.account_scope_hash!=self.scope.account_scope_hash
+                    or captured.trading_date!=job.key.trading_date_kst):
+                raise RuntimeBlocked('DAILY_CAPTURE_SCOPE_MISMATCH')
+            from .service_collection import ProductionInputSource,collection_child
+            if type(self.daily_inputs) is ProductionInputSource:
+                if any(e['reason_code']=='INPUT_COLLECTION_STARTED' for e in self.journal.list_events(row['job_id'])):
+                    raise RuntimeBlocked('FIRST_COLLECTION_ALREADY_CONSUMED')
+                self._event('DAILY','RUNNING','INPUT_COLLECTION_STARTED',(f'snapshot:{captured.snapshot_id}',))
+                self.barrier('COLLECTION_COMMITTED')
+                directory=tempfile.TemporaryDirectory(prefix='service-input-')
+                ctx=multiprocessing.get_context('spawn')
+                process=ctx.Process(target=collection_child,args=(self.daily_inputs,captured,
+                    captured.previous_trading_date,directory.name))
+                try:process.start()
+                except BaseException:directory.cleanup();raise
+                self.collection=CollectionChild(process,directory,captured,job,self.monotonic()+90)
+                self.barrier('COLLECTION_CHILD_STARTED')
+                return
+            held=tuple(h.ticker for h in captured.holdings)
             inputs=tuple(self.daily_inputs.collect(job.key.trading_date_kst,held))
-            if len(inputs)>4096 or len({v.ticker for v in inputs})!=len(inputs) or any(type(v) is not DailyInput for v in inputs):
-                raise RuntimeBlocked('DAILY_INPUT_UNIVERSE_INVALID')
-            order={ticker:index for index,ticker in enumerate(held)}
-            inputs=tuple(sorted(inputs,key=lambda v:(0,order[v.ticker]) if v.ticker in order else (1,inputs.index(v))))
-            self.journal.commit_universe(row['job_id'],tuple(v.ticker for v in inputs))
-            def save(lease,current,budget):
-                for value in inputs:
-                    budget.assert_available()
-                    start_daily_evaluation(self.work.conn,trading_date_kst=job.key.trading_date_kst,
-                        ticker=value.ticker,provenance=value.provenance,canonical_input=value.envelope.prompt_bytes,
-                        account_scope_hash=self.scope.account_scope_hash,execution_target='mock',envelope=value.envelope,
-                        lease=lease,observed_at=self.clock())
-                    self.barrier('INPUT_COMMITTED')
-            self.work.run(save)
-            self.inputs=inputs
+            self._save_inputs(job,captured,inputs)
         if not self.inputs:
             remaining=self._remaining()
             self._event('DAILY','PARTIAL' if remaining else 'COMPLETED',
@@ -510,6 +534,66 @@ class ServiceRuntime:
         self.last_dispatch_id=dispatch['dispatch_id']
         self._event('DAILY','RUNNING','PROVIDER_CHILD_STARTED',(dispatch['evaluation_id'],))
         self.barrier('CHILD_STARTED')
+
+    def _save_inputs(self,job,captured,inputs):
+        if len(inputs)>4096 or len({v.ticker for v in inputs})!=len(inputs) or any(type(v) is not DailyInput for v in inputs):
+            raise RuntimeBlocked('DAILY_INPUT_UNIVERSE_INVALID')
+        held=tuple(h.ticker for h in captured.holdings)
+        order={ticker:index for index,ticker in enumerate(held)}
+        inputs=tuple(sorted(inputs,key=lambda v:(0,order[v.ticker]) if v.ticker in order else (1,inputs.index(v))))
+        row=self.journal.load_job(job.key.logical_id)
+        self.journal.commit_universe(row['job_id'],tuple(v.ticker for v in inputs))
+        def save(lease,current,budget):
+            for value in inputs:
+                budget.assert_available()
+                start_daily_evaluation(self.work.conn,trading_date_kst=job.key.trading_date_kst,
+                    ticker=value.ticker,provenance=value.provenance,canonical_input=value.envelope.prompt_bytes,
+                    account_scope_hash=self.scope.account_scope_hash,execution_target='mock',envelope=value.envelope,
+                    lease=lease,observed_at=self.clock())
+                self.barrier('INPUT_COMMITTED')
+        self.work.run(save)
+        self.inputs=inputs
+
+    def _close_collection(self,child):
+        if child.process.is_alive():child.process.terminate();child.process.join(timeout=.5)
+        if child.process.is_alive():child.process.kill();child.process.join(timeout=.5)
+        if child.process.is_alive():raise RuntimeBlocked('COLLECTION_CHILD_NOT_STOPPED')
+        child.process.join(timeout=.1);child.directory.cleanup();self.collection=None
+
+    def _poll_collection(self,*,force_unknown=False):
+        from .service_collection import RESULT_LIMIT
+        child=self.collection
+        if child is None:return
+        now=local(self.clock());day=child.job.key.trading_date_kst
+        expired=(self.monotonic()>=child.deadline or now.date()!=day
+            or now>=child.job.deadline_at or self.no_new_dispatch)
+        path=Path(child.directory.name)/'result.json'
+        if force_unknown or expired:
+            self._close_collection(child)
+            self._event('DAILY','UNKNOWN','INPUT_COLLECTION_EXPIRED' if expired else 'INPUT_COLLECTION_STOPPED',
+                (f'snapshot:{child.snapshot.snapshot_id}',),day=day)
+            return
+        if not path.exists():
+            if child.process.is_alive():return
+            self._close_collection(child)
+            self._event('DAILY','UNKNOWN','INPUT_COLLECTION_UNKNOWN',day=day);return
+        try:
+            with path.open('rb') as result:payload=result.read(RESULT_LIMIT+1)
+            if len(payload)>RESULT_LIMIT:raise RuntimeBlocked('COLLECTION_RESULT_EXCEEDS_BOUND')
+            saved=json.loads(payload)
+            if set(saved)!={'snapshot_id','inputs'} or saved['snapshot_id']!=child.snapshot.snapshot_id:
+                raise RuntimeBlocked('COLLECTION_RESULT_UNKNOWN')
+            inputs=tuple(DailyInput(ticker,tuple(provenance),DailyDispatchEnvelope.model_validate_json(envelope))
+                for ticker,provenance,envelope in saved['inputs'])
+            expected=self.daily_inputs.prompt.model_dump()
+            if any(any(getattr(v.envelope,key)!=value for key,value in expected.items()) for v in inputs):
+                raise RuntimeBlocked('COLLECTION_IDENTITY_MISMATCH')
+            self._close_collection(child)
+            self._save_inputs(child.job,child.snapshot,inputs)
+            self._event('DAILY','CLAIMED','INPUT_COLLECTION_SAVED',(f'snapshot:{child.snapshot.snapshot_id}',),day=day)
+        except (Exception,AccountWorkTimeout):
+            if self.collection is not None:self._close_collection(child)
+            self._event('DAILY','UNKNOWN','INPUT_COLLECTION_UNKNOWN',day=day)
 
     def _poll_child(self, *, force_unknown=False):
         child=self.child
@@ -581,6 +665,7 @@ class ServiceRuntime:
             return AccountWorkBudget(seconds=remaining,cleanup_seconds=min(10.,remaining/3),monotonic=self.monotonic)
         self.work.budget_factory=shutdown_budget
         try:
+            if self.collection is not None:self._poll_collection(force_unknown=True)
             if self.child is not None: self._poll_child(force_unknown=True)
             if self.child is not None:
                 self.journal.recover_provider_admissions(observed_at=self.clock())

@@ -181,6 +181,11 @@ def production_fixture(tmp_path):
 def production_root(tmp_path, *, advance=False, orders=()):
     from trading_bot.service_cli import build_production_runtime
     settings,reader,composition,calendar,now=production_fixture(tmp_path)
+    from tests.service_fixtures import session_evidence
+    settings.session_evidence_path.parent.mkdir(exist_ok=True)
+    notice=session_evidence().model_copy(update={'source_id':'fixture-reviewed-session',
+        'notice_id':'fixture-reviewed-notice','reviewer':'fixture-owner'})
+    settings.session_evidence_path.write_text(notice.model_dump_json());settings.session_evidence_path.chmod(0o600)
     class Clock:
         value=now
         def __call__(self):
@@ -266,6 +271,7 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
     from trading_bot.service_models import ControlRequest
     from trading_bot.service_activation import OfflineActivationAuthority
     from trading_bot.portfolio import PortfolioHolding
+    from trading_bot.service_cli import owner_actor
     with production_root(tmp_path) as (runtime,reader,clock):
         # The real composition binder must be spawn-serializable without its
         # nested Settings/Inputs, SQLite connections, account or authority graph.
@@ -284,10 +290,12 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
         quantity=[7]
         runtime.work.snapshot_reader=lambda:replace(original(),holdings=(PortfolioHolding('035420',quantity[0],quantity[0],100),))
         clock.value+=timedelta(minutes=10)
-        runtime.controls.request_writer(actor='owner').append_request(ControlRequest(request_id='resume-collect',
-            actor='owner',requested_at=clock(),scope=runtime.controls.scope,action='RESUME',expected_revision=0))
+        runtime.controls.request_writer(actor=owner_actor()).append_request(ControlRequest(request_id='resume-collect',
+            actor=owner_actor(),requested_at=clock(),scope=runtime.controls.scope,action='RESUME',expected_revision=0))
         started=time.monotonic();runtime.tick()
         assert time.monotonic()-started<2
+        assert runtime.controls.reader().effective_state().mode=='RUNNING', tuple((r['reason_code'],r['mode']) for r in runtime.controls.reader().list_applications())
+        assert runtime.collection is not None, runtime.journal.list_events(runtime.job('DAILY')['job_id']) if runtime.job('DAILY') else runtime.state
         assert ready.wait(5)
         assert runtime.collection is not None and runtime.collection.process._start_method=='spawn'
         assert runtime.child is None and not runtime.work.conn.in_transaction
@@ -296,8 +304,8 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
         clock.value+=timedelta(seconds=60);runtime.tick()
         assert runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]['reason_code']=='RISK_PROTECTED'
         assert runtime.collection is not None
-        runtime.controls.request_writer(actor='owner').append_request(ControlRequest(request_id='pause-collect',
-            actor='owner',requested_at=clock(),scope=runtime.controls.scope,action='PAUSE',expected_revision=1))
+        runtime.controls.request_writer(actor=owner_actor()).append_request(ControlRequest(request_id='pause-collect',
+            actor=owner_actor(),requested_at=clock(),scope=runtime.controls.scope,action='PAUSE',expected_revision=1))
         runtime.tick()
         assert runtime.controls.reader().effective_state().mode=='PAUSED'
         release.set()

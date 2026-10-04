@@ -556,35 +556,18 @@ def _build_production_runtime(settings):
             risk_config=RiskConfig(policy_values.stop_loss_pct,policy_values.take_profit_pct),
             daily_loss_state=DailyLossState(policy_values.daily_loss_threshold,policy_values.daily_loss_threshold),audit_cycle=audit_cycle)
 
-        class Inputs:
-            def collect(self,day,held_tickers):
-                cutoff=policy.completed_bar_cutoff(day)
-                if not cutoff.available: raise RuntimeError('COMPLETED_BAR_UNKNOWN')
-                source=build_data_source(policy_values,expected_date=cutoff.cutoff_date.strftime('%Y%m%d'),
-                    ohlcv_adapter=ohlcv,quote_adapter=SimpleNamespace(fetch_current_price=composition.read_quote))
-                screened=source.screen_daily_candidates(cutoff.cutoff_date.strftime('%Y%m%d'))
-                from .portfolio import held_first_targets,build_held_position_context
-                from .domain import Ticker
-                from .data_models import TickerRole
-                result=[]
-                targets=held_first_targets(held_tickers,(c.ticker for c in screened.candidates))
-                for target in targets:
-                    data=source.build_context_result(Ticker(target.ticker),ticker_role=TickerRole.HOLDING
-                        if 'HELD' in target.provenance else TickerRole.CANDIDATE)
-                    if data.context is None: raise RuntimeError('DAILY_INPUT_INCOMPLETE')
-                    held=None
-                    if latest_snapshot[0] and target.ticker in held_tickers:
-                        held=build_held_position_context(latest_snapshot[0],target.ticker,
-                            current_price=data.context.current_price.amount)
-                    prompt=render_prompt(data.context,held_position=held).encode()
-                    provider='openai' if trading.llm_provider is LLMProviderName.OPENAI else 'anthropic'
-                    envelope=DailyDispatchEnvelope(prompt_bytes=prompt,prompt_hash=hashlib.sha256(prompt).hexdigest(),
-                        system_prompt=SYSTEM_PROMPT,schema_hash=signal_schema_hash(),provider=provider,
-                        model=trading.openai_model if provider=='openai' else trading.anthropic_model,
-                        temperature=trading.openai_temperature if provider=='openai' else trading.anthropic_temperature,
-                        prompt_version=PROMPT_VERSION)
-                    result.append(DailyInput(target.ticker,tuple(str(p) for p in target.provenance),envelope))
-                return tuple(result)
+        from .service_collection import ProductionInputSource,QuoteSettings,PromptIdentity
+        provider='openai' if trading.llm_provider is LLMProviderName.OPENAI else 'anthropic'
+        inputs=ProductionInputSource(policy=tuple((key,value) for key,value in policy_values.model_dump().items()
+            if key in {'ohlcv_adjusted','pykrx_request_timeout_seconds'} or key.startswith(('screener_','naver_news_'))),
+            quote=QuoteSettings(domain=trading.kis_mock.domain,app_key=trading.kis_mock.app_key,
+                app_secret=trading.kis_mock.app_secret,refresh_margin_seconds=trading.kis_token_refresh_margin_seconds,
+                min_interval_seconds=trading.kis_min_interval_seconds,max_retries=trading.kis_max_retries,
+                retry_backoff_seconds=trading.kis_retry_backoff_seconds,timeout_seconds=trading.kis_timeout_seconds),
+            prompt=PromptIdentity(system_prompt=SYSTEM_PROMPT,schema_hash=signal_schema_hash(),provider=provider,
+                model=trading.openai_model if provider=='openai' else trading.anthropic_model,
+                temperature=trading.openai_temperature if provider=='openai' else trading.anthropic_temperature,
+                prompt_version=PROMPT_VERSION))
 
         from .control_runtime import ResumeSafetyEvidence
         def current_resume(scope,now):
@@ -604,7 +587,7 @@ def _build_production_runtime(settings):
             work.run(lambda lease,current,budget:current)
             return current_resume(scope,clock())
         runtime=ServiceRuntime(settings=settings,journal=journal,controls=controls,composition=composition,
-            account_work=work,policy=policy,daily_inputs=Inputs(),provider_factory=ProviderChildFactory(provider_settings),
+            account_work=work,policy=policy,daily_inputs=inputs,provider_factory=ProviderChildFactory(provider_settings),
             trading=binding,clock=clock,activation_check=activation,
             validate_resume=validate_resume,current_resume_safety=current_resume)
         runtime.close_resources=lambda:(composition.close(),conn.close())
