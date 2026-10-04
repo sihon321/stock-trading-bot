@@ -138,7 +138,7 @@ def secure_sources(tmp_path, monkeypatch):
 def _route_samples(app, episode):
     substitutions = {'view_id':'overview', 'resource_id':'audit', 'record_id':'runs:operator-run',
         'family':'replay', 'result_id':'missing', 'artifact_id':'a'*64,
-        'format':'txt', 'episode_id':episode.episode_id, 'filename':'operator.css'}
+        'format':'txt', 'episode_id':episode.episode_id, 'filename':'operator.css', 'action':'pause'}
     samples = {}
     for rule in app.url_map.iter_rules():
         samples[rule.endpoint] = (re.sub(r'<(?:[^:>]+:)?([^>]+)>',
@@ -154,7 +154,7 @@ def test_every_registered_endpoint_method_auth_csrf_and_no_trade_authority(secur
     assert set(samples) == {'static','login','logout','api_view','api_session','operator_record',
         'operator_evidence','operator_validation','operator_validation_result','operator_reports',
         'generate_report','operator_artifact','operator_download','operator_alerts','operator_alert',
-        'acknowledge_alert', *('operator_'+name for name in ('overview','account','holdings','candidates',
+        'acknowledge_alert', 'controls', 'request_control', *('operator_'+name for name in ('overview','account','holdings','candidates',
             'decisions','orders','fills','runs','workers'))}
     anonymous = app.test_client()
     for endpoint, (path, methods) in samples.items():

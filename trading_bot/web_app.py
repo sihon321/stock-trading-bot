@@ -8,6 +8,7 @@ import sqlite3
 import ipaddress
 import secrets
 import re
+from uuid import uuid4
 from urllib.parse import urlsplit, parse_qsl, urlencode, quote
 
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session
@@ -171,7 +172,32 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
     control_service = WebControlRequestService(settings.control_resource, clock=clock) if settings.control_resource else None
     app.extensions['control_request_service'] = control_service
 
-    def controls_view(resource_id=None, *, result=None, error=None, note=''):
+    def saved_control_health():
+        reader = app.extensions['evidence_service']
+        try:
+            health = reader.service_health()
+            controls = reader.control_states()
+        except (OSError, ValueError, sqlite3.Error):
+            return (), ()
+        scopes = set(settings.control_resource.registered_scopes) if control_service else set()
+        return (tuple(row for row in health if (row.envelope.account_hash, row.envelope.target) in scopes),
+            tuple(row for row in controls if control_service and row.envelope.resource_id == settings.control_resource.resource_id))
+
+    def resume_request_ready(facts, health):
+        if not facts or not control_service:
+            return False
+        now = clock()
+        healthy_scopes = {(row.envelope.account_hash, row.envelope.target) for row in health
+            if row.kind == 'RISK' and row.state in {'RUNNING', 'WAITING', 'NOT_EXPECTED'}
+            and row.mutation_ready is not False and not row.manual_attention
+            and row.control_revision == facts['state'].acceptance_revision
+            and row.envelope.query_status == 'OK' and row.envelope.completeness == 'COMPLETE'
+            and row.envelope.freshness != 'STALE'
+            and row.envelope.source_observed_at is not None
+            and 0 <= (now-row.envelope.source_observed_at).total_seconds() <= 180}
+        return set(settings.control_resource.registered_scopes).issubset(healthy_scopes)
+
+    def controls_view(resource_id=None, *, result=None, error=None, note='', submitted_action=None):
         if resource_id is not None and (control_service is None or resource_id != settings.control_resource.resource_id):
             abort(404)
         facts = None
@@ -180,15 +206,40 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 facts = control_service.snapshot(actor=g.operator_session.actor)
             except (OSError, ValueError, sqlite3.Error):
                 error = error or '제어 저장소를 확인할 수 없습니다. 상태는 UNKNOWN입니다.'
+        health, saved_controls = saved_control_health()
+        audits = {}
+        if facts:
+            try:
+                with store.connection() as conn:
+                    for row in facts['requests']:
+                        saved = conn.execute("SELECT details_json FROM web_actions WHERE action='CONTROL_REQUEST' "
+                            "AND resource_id=? AND json_extract(details_json,'$.request_id')=? LIMIT 1",
+                            (settings.control_resource.resource_id, row['request_id'])).fetchone()
+                        audits[row['request_id']] = dict(state='기록됨' if saved else '미연결 · 확인 대기',
+                            note=_clean(json.loads(saved[0]).get('note', '')) if saved else '')
+            except (OSError, ValueError, sqlite3.Error):
+                audits = {}
+        form_ids = {action:str(uuid4()) for action in ACTIONS}
+        form_revisions = {action:facts['state'].acceptance_revision if facts else 0 for action in ACTIONS}
+        if result and submitted_action in ACTIONS and (result.audit_pending or result.status == 'UNAVAILABLE'):
+            # A manual retry repairs this exact correlation; it cannot create a second request.
+            form_ids[submitted_action] = result.request_id
+            form_revisions[submitted_action] = int(request.form['expected_revision'])
         common = common_view('운영 제어', '/controls', facts=facts, result=result, error=error,
-            note=note, resource_id=settings.control_resource.resource_id if control_service else None)
-        return app.jinja_env.from_string('''{% extends "operator/base.html" %}
-            {% block errors %}{% if error %}<p>{{ error }}</p>{% endif %}{% endblock %}
-            {% block content %}{% if result %}<p>{{ result.status }} · {{ result.request_id }} · 적용 대기</p>
-            {% if result.audit_pending %}<p>요청은 저장되었습니다. 웹 감사 기록은 대기 중입니다.</p>{% endif %}{% endif %}
-            {% if facts %}<p>적용 상태 {{ facts.state.applied.mode }} · revision {{ facts.state.applied.revision }}</p>
-            {% for row in facts.admissions %}<p>이전 승인 주문 · {{ row.state }} · {{ row.submission_id }}</p>{% endfor %}{% endif %}
-            {% endblock %}''').render(**common)
+            note=note, resource_id=settings.control_resource.resource_id if control_service else None,
+            control_scopes=settings.control_resource.registered_scopes if control_service else (),
+            resume_allowed=resume_request_ready(facts, health),
+            control_health=[dict(kind=row.kind, state=row.state, reason=_clean(row.reason_code),
+                source=source_presentation(row.envelope, row.subject_id), source_ids=row.source_ids,
+                last_progress=kst_time(row.last_progress_at), login_source_id=row.login_source_id,
+                session_source_id=row.session_source_id, manual_attention=row.manual_attention,
+                control_revision=row.control_revision, mutation_ready=row.mutation_ready) for row in health],
+            saved_controls=[source_presentation(row.envelope, row.request_id) for row in saved_controls],
+            form_ids=form_ids, form_revisions=form_revisions, control_audits=audits,
+            applied_at=kst_time(facts['state'].applied.applied_at) if facts else 'UNKNOWN')
+        common.update(target='mock' if control_service else 'UNKNOWN',
+            scope='등록된 설치 전체 · 제어 요청 · 적용은 서비스가 검증합니다.')
+        return render_template('operator/controls.html', **common)
 
     @app.get('/controls')
     @app.get('/controls/<resource_id>')
@@ -205,14 +256,22 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             abort(400)
         note = _clean(request.form.get('note', ''))[:500]
         try:
+            facts = None
+            if action == 'resume':
+                try:
+                    facts = control_service.snapshot(actor=g.operator_session.actor)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
             result = control_service.append_request(action, request.form, actor=g.operator_session.actor,
-                audit=store.append_control_action)
+                audit=store.append_control_action,
+                resume_allowed=action != 'resume' or resume_request_ready(facts, saved_control_health()[0]))
         except (ValueError, TypeError):
             return controls_view(resource_id, error=FORM_ERROR, note=note), 400
         status = 409 if result.status == 'CONFLICT' else 503 if result.status == 'UNAVAILABLE' or result.audit_pending else 200
-        error = '제어 revision이 변경되었거나 요청 ID가 충돌했습니다. 최신 상태를 확인하세요.' if status == 409 else (
+        error = ('재개 요청에 필요한 최신 서비스 증거를 확인할 수 없습니다. 차단 상태를 유지합니다.'
+            if result.reason_code == 'SAVED_HEALTH_UNAVAILABLE' else '제어 revision이 변경되었거나 요청 ID가 충돌했습니다. 최신 상태를 확인하세요.') if status == 409 else (
             '제어 요청을 확인할 수 없습니다. 저장 증거를 새로 조회하세요.' if result.status == 'UNAVAILABLE' else None)
-        return controls_view(resource_id, result=result, error=error, note=note), status
+        return controls_view(resource_id, result=result, error=error, note=note, submitted_action=action), status
 
     def safe_error(code, status):
         if request.path.startswith('/api/'):

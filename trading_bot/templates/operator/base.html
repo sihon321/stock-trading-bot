@@ -7,6 +7,7 @@
 ] %}
 {% set active = current_path|default('/') %}
 {% set selected = namespace(path='/') %}
+{% if active == '/controls' %}{% set selected.path = '/controls' %}{% endif %}
 {% for group, entries in navigation %}{% for path, label in entries %}{% if active == path %}{% set selected.path = path %}{% endif %}{% endfor %}{% endfor %}
 <!doctype html>
 <html lang="ko">
@@ -55,6 +56,7 @@
       {% endfor %}
     </nav>
   </details>
+  <nav aria-label="운영 제어"><a href="/controls"{% if active == '/controls' %} aria-current="page"{% endif %}>운영 제어</a></nav>
   </header>
   <main id="main-content" tabindex="-1">
     <nav class="breadcrumb" aria-label="현재 위치">{% block breadcrumb %}<a href="/">안전 개요</a> / <span>{{ title|default('안전 개요')|forceescape }}</span>{% endblock %}</nav>

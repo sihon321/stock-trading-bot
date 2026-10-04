@@ -94,6 +94,7 @@ button, input, select, textarea {
 button { font-size: var(--font-body); font-weight: 600; cursor: pointer; }
 button:disabled { cursor: wait; }
 button.primary { background: var(--accent); color: var(--accent-foreground); border-color: var(--accent); }
+.control-kill button { background: var(--destructive); color: var(--background); border-color: var(--destructive); }
 label, dt { font-size: var(--font-label); font-weight: 600; line-height: 1.5; }
 summary { min-height: var(--target-min); padding: var(--space-sm) var(--space-md); cursor: pointer; }
 form { margin: 0; }

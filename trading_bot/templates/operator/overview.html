@@ -2,6 +2,7 @@
 {% block source_status %}<p>화면 조회: {{ source.get('queried_at', 'UNKNOWN')|forceescape }} · 원천별 독립 관측</p>{% endblock %}
 {% block refresh_fields %}{% for key, value in params.items() %}<input type="hidden" name="{{ key|forceescape }}" value="{{ value|forceescape }}">{% endfor %}{% endblock %}
 {% block content %}
+<section class="card"><h2>운영 제어 요청</h2><p>수락된 중지 요청과 실제 적용 상태를 따로 확인합니다. 재개 요청은 서비스 검증을 거칩니다.</p>{{ ui.link('/controls', '일시정지 · 재개 요청 · 전체 주문 중지') }}</section>
 <section id="safety" class="risk-panel"><h2>모든 날짜의 미해결 주문·활성 알림</h2>
 {% for row in safety_blocks %}<article class="card">{{ ui.badge('CRITICAL','저장된 안전 차단') }}<h3>{{ row.id|forceescape }}</h3><p>안전 실패: {{ row.get('safety_failure_code','UNKNOWN')|forceescape }} · 가용성 실패: {{ row.get('availability_failure_code','UNKNOWN')|forceescape }}</p><p>캠페인 상태 변화는 안전 래치 해제를 증명하지 않습니다.</p>{{ ui.source_metadata(row.source) }}{{ ui.link(row.detail_url) }}</article>{% endfor %}
 {{ ui.link(risk_url, '정확한 구성 · 미해결 주문 ' ~ (risk_total if risk_total is not none else 'UNKNOWN') ~ '건') }}

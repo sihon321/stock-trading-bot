@@ -230,7 +230,8 @@ class WebStore:
                 or not 1 <= accepted_revision <= 10**12 or not isinstance(note, str) or len(note) > 500):
             raise ValueError('bounded control audit details required')
         identifier(actor)
-        self.settings.resource(resource_id)
+        if self.settings.resource(resource_id).owner != 'control':
+            raise ValueError('registered control audit resource required')
         details = dict(request_id=request_id, accepted_revision=accepted_revision, note=note)
         with self.connection() as conn:
             existing = conn.execute("SELECT actor,resource_id,details_json FROM web_actions "

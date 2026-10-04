@@ -123,11 +123,18 @@ def test_web_audit_failure_truth_and_same_id_repair(control_web, monkeypatch):
     assert response.status_code == 503 and rid in response.text
     assert '요청은 저장' in response.text and '웹 감사' in response.text
     assert 'sensitive unavailable path' not in response.text
+    from bs4 import BeautifulSoup
+    retry = BeautifulSoup(response.text, 'html.parser').select_one('form[action$="/kill"]')
+    assert retry.select_one('[name="request_id"]')['value'] == rid
+    assert retry.select_one('[name="expected_revision"]')['value'] == '0'
     assert owner.reader().effective_state().mode == 'KILLED'
     assert owner.reader().effective_state().applied.revision == 0
+    saved = client.get('/controls').text
+    assert rid in saved and '웹 감사 미연결' in saved
     monkeypatch.setattr(store, 'append_control_action', original)
     assert submit(client, 'kill', rid=rid).status_code == 200
     assert len(owner.reader().list_requests()) == 1
+    assert '웹 감사 기록됨' in client.get('/controls').text
 
 
 def test_descriptor_factory_has_no_service_or_trading_capabilities(control_web):

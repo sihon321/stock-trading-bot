@@ -39,7 +39,7 @@ class WebControlRequestService:
         return dict(state=reader.effective_state(), requests=reader.list_requests(limit=100),
             applications=reader.list_applications(limit=100), admissions=reader.list_admissions(limit=100))
 
-    def append_request(self, action, form, *, actor, audit):
+    def append_request(self, action, form, *, actor, audit, resume_allowed=True):
         if action not in ACTIONS or set(form) - FIELDS or any(len(form.getlist(k)) != 1 for k in form):
             raise ValueError('invalid fields')
         request_id, revision, note = form.get('request_id', ''), form.get('expected_revision', ''), form.get('note', '')
@@ -50,6 +50,8 @@ class WebControlRequestService:
         reader, writer = control_request_capabilities(self.descriptor, actor=actor, clock=self.clock)
         try:
             original = reader.get_request(request_id)
+            if action == 'resume' and original is None and not resume_allowed:
+                return WebControlResult('CONFLICT', request_id, None, 'SAVED_HEALTH_UNAVAILABLE')
             # Reuse committed server time; a later browser replay cannot change its identity.
             control = ControlRequest(request_id=request_id, actor=actor,
                 requested_at=original.requested_at if original else self.clock(), scope=self.scope,
