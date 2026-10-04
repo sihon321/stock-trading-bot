@@ -324,6 +324,20 @@ class ReadOnlyAcceptanceEvidenceReader:
 def validate_unattended_activation(settings: ServiceSettings, receipt: AcceptanceReceipt | None,
         saved_evidence_reader: SavedEvidenceReader | None, current_safety: SafetyReader | None, *,
         now: datetime | None = None, offline_authority: OfflineActivationAuthority | None = None) -> ActivationVerdict:
+    return _validate_acceptance(settings, receipt, saved_evidence_reader, current_safety,
+        now=now, offline_authority=offline_authority)
+
+
+def validate_receipt_capture(settings: ServiceSettings, receipt: AcceptanceReceipt,
+        saved_evidence_reader: ReadOnlyAcceptanceEvidenceReader, *, now: datetime) -> ActivationVerdict:
+    """Authentic saved proof transport validation; grants no execution authority."""
+    return _validate_acceptance(settings,receipt,saved_evidence_reader,None,now=now,capture_only=True)
+
+
+def _validate_acceptance(settings: ServiceSettings, receipt: AcceptanceReceipt | None,
+        saved_evidence_reader: SavedEvidenceReader | None, current_safety: SafetyReader | None, *,
+        now: datetime | None = None, offline_authority: OfflineActivationAuthority | None = None,
+        capture_only: bool = False) -> ActivationVerdict:
     """Both 09-08 approvals + exact immutable owner/version/hash proof + current gates."""
     now = now or datetime.now(timezone.utc)
     reasons = []
@@ -332,7 +346,7 @@ def validate_unattended_activation(settings: ServiceSettings, receipt: Acceptanc
                                  receipt_id=getattr(receipt, 'receipt_id', None))
     if settings.execution_target != 'mock' or any(s.execution_target!='mock' for s in settings.registered_scopes):
         return denied('REAL_TARGET_FORBIDDEN')
-    if not settings.service_enabled or settings.mode.value != 'KIS_MOCK':
+    if not capture_only and (not settings.service_enabled or settings.mode.value != 'KIS_MOCK'):
         return denied('SERVICE_NOT_ACTIVE')
     if receipt is None:
         return denied('ACCEPTANCE_RECEIPT_MISSING')
@@ -361,7 +375,7 @@ def validate_unattended_activation(settings: ServiceSettings, receipt: Acceptanc
         if not offline:
             if saved_evidence_reader._settings != settings:
                 return denied('SOURCE_TOPOLOGY_MISMATCH')
-            if load_acceptance_receipt(settings.acceptance_receipt_path) != receipt:
+            if not capture_only and load_acceptance_receipt(settings.acceptance_receipt_path) != receipt:
                 return denied('PROTECTED_RECEIPT_MISMATCH')
         evidence = SavedAcceptanceEvidence.model_validate(saved_evidence_reader.read(receipt).model_dump())
     except Exception:
@@ -414,6 +428,13 @@ def validate_unattended_activation(settings: ServiceSettings, receipt: Acceptanc
             or len({d.drill_id for d in controlled})!=len(controlled)
             or any(d.verdict!='PASSED' or not d.complete for d in controlled)):
         reasons.append('CONTROLLED_DRILLS_INCOMPLETE')
+    if capture_only:
+        if evidence.frozen_tickers:
+            reasons.append('UNRESOLVED_FREEZE')
+        reasons=tuple(dict.fromkeys(reasons))
+        return ActivationVerdict(allowed=not reasons,reason_codes=reasons or ('RECEIPT_CAPTURE_VERIFIED',),
+            source_ids=tuple(s.source_id for s in evidence.source_hashes),receipt_id=receipt.receipt_id,
+            authority='DENIED')
     try:
         safety = CurrentActivationSafety.model_validate(current_safety(receipt.scope, now).model_dump())
         source_map = {s.source_id:s.source_hash for s in evidence.source_hashes}

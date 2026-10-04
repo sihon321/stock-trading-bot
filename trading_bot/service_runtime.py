@@ -208,7 +208,8 @@ class ServiceRuntime:
                  policy: MarketCyclePolicy, daily_inputs: DailyInputSource,
                  provider_factory: ProviderChildFactory, trading: AccountTradingBinding | None = None,
                  clock=lambda:datetime.now(timezone.utc), monotonic=time.monotonic,
-                 offline_authority=None, activation_check=None, barrier=lambda name:None):
+                 offline_authority=None, activation_check=None, barrier=lambda name:None,
+                 leader=None, validate_resume=None, current_resume_safety=None):
         if (type(settings) is not ServiceSettings or type(journal) is not ServiceJournal
                 or type(controls) is not ControlStore or type(account_work) is not BoundedAccountWork
                 or type(composition) is not ServiceComposition or type(provider_factory) is not ProviderChildFactory
@@ -222,12 +223,23 @@ class ServiceRuntime:
         self.clock,self.monotonic,self.offline_authority,self.barrier=clock,monotonic,offline_authority,barrier
         self.activation_check=activation_check
         self.scope=composition.scope or settings.registered_scopes[0]
-        self.leader=ServiceLeader(settings,journal=journal,scope=self.scope)
+        self.leader=leader or ServiceLeader(settings,journal=journal,scope=self.scope)
+        if leader is not None:
+            self.bind_admitted_leader(leader)
+        self.validate_resume,self.current_resume_safety=validate_resume,current_resume_safety
         self.schedule=ServiceSchedule(self.scope)
         self.state='UNSTARTED'; self.child=None; self.last_dispatch_id=None
         self.no_new_dispatch=False; self.last_heartbeat=None; self.fresh=None
         self.inputs=(); self.last_risk_slot=None; self.applier=None
         self.active_day=None
+
+    def bind_admitted_leader(self, leader):
+        """Retain the launcher's concrete pre-worker OS/durable generation ownership."""
+        if (type(leader) is not ServiceLeader or leader.settings!=self.settings
+                or leader.journal.settings!=self.journal.settings or leader.scope!=self.scope):
+            raise RuntimeBlocked('REGISTERED_PREACQUIRED_LEADER_REQUIRED')
+        leader.assert_owner()
+        self.leader=leader
 
     def _validate(self):
         self.settings.validate_topology()
@@ -262,9 +274,13 @@ class ServiceRuntime:
         self.leader.state=state
 
     def start(self):
-        self._validate(); self.leader.acquire(); self._generation('RECOVERY_ONLY')
+        self._validate()
+        if self.leader.state=='UNACQUIRED': self.leader.acquire()
+        else: self.leader.assert_owner()
+        self._generation('RECOVERY_ONLY')
         self.state='RECOVERY_ONLY'
-        self.applier=ControlApplier(self.controls.service_capability(self.leader),clock=self.clock)
+        self.applier=ControlApplier(self.controls.service_capability(self.leader),clock=self.clock,
+            validate_resume=self.validate_resume,current_safety=self.current_resume_safety)
         self.applier.apply_pending()  # restrictive controls apply even if recovery fails
         try:
             self.recover()
@@ -580,7 +596,8 @@ class ServiceRuntime:
         return type(self)(settings=self.settings,journal=self.journal,controls=self.controls,
             composition=self.composition,account_work=self.work,policy=self.policy,daily_inputs=self.daily_inputs,
             provider_factory=self.provider_factory,trading=self.trading,clock=self.clock,monotonic=self.monotonic,
-            offline_authority=self.offline_authority,activation_check=self.activation_check,barrier=self.barrier)
+            offline_authority=self.offline_authority,activation_check=self.activation_check,barrier=self.barrier,
+            validate_resume=self.validate_resume,current_resume_safety=self.current_resume_safety)
 
     def run(self, *, wait=time.sleep):
         """Main-thread account worker; timer wakeups only, no sleep owns authority."""

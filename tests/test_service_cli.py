@@ -109,3 +109,127 @@ def test_all_commands_and_entrypoint_registered():
             'install-launchagents','start','stop','remove-launchagents'):
         assert command in result.output
     assert 'bot-service = "trading_bot.service_cli:app"' in Path('pyproject.toml').read_text()
+
+
+def production_fixture(tmp_path):
+    """Fake owned reads and fake normalized inquiries; never authentic approval evidence."""
+    from dataclasses import replace
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from tests.test_service_composition import mock_fixture
+    from tests.test_service_activation import activation_fixture
+    from tests.test_phase11_cli import snapshot
+    from tests.service_fixtures import NOW
+    from trading_bot.service_activation import ReadOnlyAcceptanceEvidenceReader
+    from trading_bot.service_composition import ServiceComposition
+    from trading_bot.kis_broker import KISBroker
+    from trading_bot.control_store import ControlStore
+    from trading_bot.service_store import ServiceJournal
+    from trading_bot import sqlite_audit
+    from trading_bot.service_cli import owner_actor
+    initial_evidence=activation_fixture(tmp_path)[-1]
+    settings,receipt,_,safety,_,_=mock_fixture(tmp_path)
+    evidence=initial_evidence.model_copy(update={'scope':settings.registered_scopes[0],
+        'owner_actor':owner_actor()})
+    receipt=receipt.model_copy(update={'evidence_class':'KIS_OBSERVED',
+        'checkpoint_approvals':tuple(a.model_copy(update={'actor':owner_actor()}) for a in receipt.checkpoint_approvals)})
+    settings.acceptance_receipt_path.write_text(receipt.model_dump_json());settings.acceptance_receipt_path.chmod(0o600)
+    protected_reader=ReadOnlyAcceptanceEvidenceReader.__new__(ReadOnlyAcceptanceEvidenceReader)
+    protected_reader._settings=settings
+    protected_reader.read=lambda receipt:evidence
+    protected_reader.read_freezes=lambda:()
+    policy={'ohlcv_adjusted':True,'pykrx_request_timeout_seconds':10,'screener_max_candidates':20,
+        'screener_markets':['KOSPI','KOSDAQ'],'screener_min_trading_value':1000000000,
+        'screener_min_volume_ratio':1,'screener_excluded_states':['HALTED','DELISTING','ADMIN'],
+        'naver_news_enabled':False,'naver_news_max_items':5,'naver_news_max_chars':2000,
+        'buy_confidence_threshold':.8,'sell_confidence_threshold':.8,'buy_cash_fraction':.1,
+        'max_position_value':1000000,'stop_loss_pct':.05,'take_profit_pct':.1,'daily_loss_threshold':500000}
+    policy_path=settings.trading_config_path.parent/'service-policy.json'
+    policy_path.write_text(json.dumps(policy));policy_path.chmod(0o600)
+    trading=json.loads(settings.trading_config_path.read_text())
+    trading.update(llm_provider='openai',openai_api_key='OFFLINE_NO_TRANSPORT')
+    settings.trading_config_path.write_text(json.dumps(trading))
+    settings.trading_journal_paths[0].parent.mkdir(exist_ok=True)
+    conn=sqlite_audit.connect(settings.trading_journal_paths[0]);conn.close();settings.trading_journal_paths[0].chmod(0o600)
+    ServiceJournal(settings).initialize();ControlStore(settings).initialize(actor=owner_actor())
+    fresh=lambda:replace(snapshot(snapshot_id=__import__('uuid').uuid4().hex),
+        account_scope_hash=receipt.scope.account_scope_hash,observed_at=NOW,
+        trading_date=NOW.date(),previous_trading_date=NOW.date()-timedelta(days=3))
+    def composition(settings,**kwargs):
+        def broker(bindings):
+            return KISBroker(order_adapter=SimpleNamespace(),account=SimpleNamespace(),
+                evidence_sink=bindings.evidence_sink,submission_authority=bindings.submission_authority)
+        from trading_bot.service_activation import ActivationVerdict
+        from trading_bot.domain import Money
+        return ServiceComposition(mode='KIS_MOCK',scope=receipt.scope,
+            activation=ActivationVerdict(allowed=True,reason_codes=('ACCEPTANCE_VALIDATED',),authority='OWNED_KIS_OBSERVED'),
+            authentication='OFFLINE_FAKE_OWNED_READS',prep_read_only=lambda:None,read_portfolio=lambda request:fresh(),
+            read_quote=lambda ticker:SimpleNamespace(price=Money(100),observed_at=NOW),
+            guarded_broker_builder=broker,read_freezes=lambda:(),close=lambda:None)
+    class Calendar:
+        def __init__(self,*args,**kwargs):pass
+        def is_trading_day(self,day):return True
+        def refresh(self,day):return True
+        def previous_trading_day(self,day):return day-timedelta(days=3)
+    return settings,protected_reader,composition,Calendar,NOW
+
+
+def test_real_composition_root_binds_concrete_account_and_audit(tmp_path):
+    from trading_bot.service_cli import build_production_runtime
+    from trading_bot.service_runtime import ServiceRuntime,AccountTradingBinding
+    from trading_bot.submission_authority import OwnedActivationCheck
+    from trading_bot.account_work import BoundedAccountWork
+    settings,reader,composition,calendar,now=production_fixture(tmp_path)
+    with NoExternalCapabilities() as external, patch('trading_bot.service_cli.acceptance_reader',return_value=reader), \
+            patch('trading_bot.service_cli.clock',return_value=now), \
+            patch('trading_bot.service_composition.build_service_composition',side_effect=composition), \
+            patch('trading_bot.data_source.ObservedKRXCalendar',calendar), \
+            patch('trading_bot.pykrx_adapter.PykrxOhlcvAdapter',return_value=object()):
+        runtime=build_production_runtime(settings)
+        assert type(runtime) is ServiceRuntime and type(runtime.trading) is AccountTradingBinding
+        assert type(runtime.work) is BoundedAccountWork and type(runtime.activation_check) is OwnedActivationCheck
+        try:
+            assert runtime.start()=='RUNNING'
+            broker=runtime.work.run(lambda lease,current,budget:runtime.trading._broker(runtime,lease,current,budget))
+            assert broker._submission_authority.unattended
+            assert type(broker._submission_authority.activation_check) is OwnedActivationCheck
+            assert runtime.work.conn.execute('SELECT COUNT(*) FROM portfolio_snapshots').fetchone()[0]>=4
+            assert runtime.work.conn.execute('SELECT COUNT(*) FROM runs WHERE status=?',('COMPLETED',)).fetchone()[0]>=2
+            assert not external.attempts
+        finally: runtime.stop();runtime.close_resources()
+
+
+def test_enabled_missing_real_receipt_denies_before_trading_construction(tmp_path):
+    from trading_bot.service_cli import build_production_runtime
+    settings,_=configured(tmp_path)
+    settings=settings.model_copy(update={'service_enabled':True,'mode':'KIS_MOCK'})
+    with NoExternalCapabilities() as external, patch('trading_bot.service_composition.load_mock_trading_settings',side_effect=AssertionError('credentials')):
+        import pytest
+        with pytest.raises((ValueError,OSError)): build_production_runtime(settings)
+        assert not external.attempts
+
+
+def test_dry_run_frozen_replay_separate_temp_output(tmp_path):
+    _,config=configured(tmp_path)
+    from tests.test_replay import FIXTURES
+    result=invoke(config,'dry-run','--fixture',str(FIXTURES/'focused.json'),
+        '--output-root',str(tmp_path/'replay-output'))
+    assert result.exit_code==0,result.output
+    assert json.loads((tmp_path/'replay-output'/'replay-result.json').read_text())['outcomes']
+    assert invoke(config,'dry-run','--fixture',str(FIXTURES/'focused.json'),
+        '--output-root',str(config.parent)).exit_code==1
+
+
+def test_receipt_capture_shared_saved_checks_do_not_grant_activation(tmp_path):
+    from trading_bot.service_activation import validate_receipt_capture,load_acceptance_receipt
+    settings,reader,_,_,now=production_fixture(tmp_path)
+    receipt=load_acceptance_receipt(settings.acceptance_receipt_path)
+    disabled=settings.model_copy(update={'mode':'DISABLED','service_enabled':False})
+    reader._settings=disabled
+    verdict=validate_receipt_capture(disabled,receipt,reader,now=now)
+    assert verdict.allowed and verdict.authority=='DENIED'
+    saved=reader.read(receipt)
+    reader.read=lambda receipt:saved.model_copy(update={'source_hashes':tuple(
+        h.model_copy(update={'source_hash':'f'*64}) for h in saved.source_hashes)})
+    verdict=validate_receipt_capture(disabled,receipt,reader,now=now)
+    assert not verdict.allowed and 'SOURCE_IDENTITY_MISMATCH' in verdict.reason_codes
