@@ -59,14 +59,14 @@ def _clean(value):
     return value[:4096]
 
 
-def _wire_record(resource, kind, row, key, stamp, fields, *, snapshot_id=None, source_ids=(), completeness='COMPLETE'):
+def _wire_record(resource, kind, row, key, stamp, fields, *, conn=None, snapshot_id=None, source_ids=(), completeness='COMPLETE'):
     rid = f'{kind}:{row[key]}'
     if len(rid) > 512 or _clean(rid) != rid or any(len(str(v)) > 128 or _clean(str(v)) != str(v) for v in source_ids):
         raise EvidenceUnavailable('INVALID_SOURCE_ID')
     projected = tuple((name, _clean(row[name])) for name in fields)
     if sum(len(str(v).encode()) + len(k) for k, v in projected) > 10000:
         projected = tuple((name, value[:512] if isinstance(value, str) else value) for name, value in projected)
-    return EvidenceRecord(rid, kind, _envelope(resource, datetime.now(timezone.utc),
+    return EvidenceRecord(rid, kind, _envelope(resource, datetime.now(timezone.utc), conn=conn,
         source_observed_at=_stamp(stamp), completeness=completeness),
         _selection(resource, kind, (rid,), snapshot_id, source_ids), projected)
 
@@ -98,9 +98,25 @@ def _identity(*parts):
     return hashlib.sha256(json.dumps(parts, separators=(',', ':'), default=str).encode()).hexdigest()
 
 
-def _envelope(resource, now, **values):
+def _portfolio_read_version(conn):
+    rows = conn.execute('SELECT owner,version FROM portfolio_schema_metadata').fetchall()
+    if len(rows) != 1 or rows[0][0] != contracts.PORTFOLIO_SCHEMA_OWNER:
+        raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
+    version = rows[0][1]
+    try:
+        contracts.portfolio_read_schema(version)
+    except ValueError:
+        raise EvidenceUnavailable('UNSUPPORTED_SCHEMA') from None
+    return version
+
+
+def _envelope(resource, now, *, conn=None, **values):
+    version = (_portfolio_read_version(conn) if conn is not None else None) if resource.owner == 'portfolio' else {
+        'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
+        'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION,
+    }.get(resource.owner)
     return SourceEnvelope(resource.id, resource.owner,
-        {'portfolio': 3, 'audit': 3, 'soak': 2, 'controller': 1}.get(resource.owner),
+        version,
         resource.account_hash, resource.target, now, **values)
 
 
@@ -129,13 +145,13 @@ def _transaction(resource):
         if schema is None:
             raise EvidenceUnavailable('UNSUPPORTED_SOURCE_OWNER')
         if resource.owner == 'portfolio':
-            version = conn.execute('SELECT version FROM portfolio_schema_metadata WHERE owner=?',
-                                   (contracts.PORTFOLIO_SCHEMA_OWNER,)).fetchone()
-            actual = version[0] if version else None
+            actual = _portfolio_read_version(conn)
+            schema = contracts.portfolio_read_schema(actual)
         else:
             actual = conn.execute('PRAGMA user_version').fetchone()[0]
-        expected = {'portfolio': 3, 'audit': 3, 'soak': 2, 'controller': 1}[resource.owner]
-        if actual != expected:
+        expected = {'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
+            'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION}.get(resource.owner)
+        if resource.owner != 'portfolio' and actual != expected:
             raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
         for table, columns in schema.items():
             actual_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
@@ -183,11 +199,17 @@ def _bounded_rows(conn, query, args=()):
     return rows
 
 
-def _table_source(table):
+def _table_source(table, *, portfolio_version=None):
     if table == 'portfolio_divergences':
         return '(SELECT d.*,s.observed_at FROM portfolio_divergences d JOIN portfolio_snapshots s ON s.snapshot_id=d.snapshot_id)'
     if table == 'daily_evaluations':
         # Canonical prompts are deliberately absent even from the fetched SQL rows.
+        if portfolio_version == 4:
+            return '''(SELECT e.evaluation_id,e.trading_date_kst,e.ticker,e.canonical_input_hash,
+                e.account_scope_hash,e.status,e.started_at,e.finalized_at,
+                d.execution_target,d.dispatch_state,d.dispatch_id,d.envelope_hash,
+                d.dispatched_at,d.finalized_at AS dispatch_finalized_at,d.execution_intent_id
+                FROM daily_evaluations e LEFT JOIN daily_evaluation_dispatches d USING(evaluation_id))'''
         return '(SELECT evaluation_id,trading_date_kst,ticker,canonical_input_hash,account_scope_hash,status,started_at,finalized_at FROM daily_evaluations)'
     return table
 
@@ -210,14 +232,14 @@ class ReadOnlyPortfolioRepository:
                              and s['daily_page_count'] > 0 and s['balance_page_count'] > 0
                              and (snapshot_id is None or s['snapshot_id'] == snapshot_id)), None)
             if complete is None:
-                return AccountDTO(_envelope(r, now, diagnostic_code='NO_COMPLETE_SNAPSHOT'),
+                return AccountDTO(_envelope(r, now, conn=conn, diagnostic_code='NO_COMPLETE_SNAPSHOT'),
                     _selection(r, 'account'), latest_attempt_id=latest['snapshot_id'] if latest else None,
                     latest_attempt_status=latest['completeness'] if latest else 'UNKNOWN')
             amounts = (complete['available_cash'], complete['total_evaluation'])
             if any(not isinstance(v, (float, int)) or not math.isfinite(v) or v < 0 for v in amounts):
                 raise EvidenceUnavailable('INVALID_ACCOUNT_TOTAL')
             sid = complete['snapshot_id']
-            env = _envelope(r, now, source_observed_at=_stamp(complete['observed_at']), completeness='COMPLETE', provenance='saved_broker')
+            env = _envelope(r, now, conn=conn, source_observed_at=_stamp(complete['observed_at']), completeness='COMPLETE', provenance='saved_broker')
             projected = []
             for kind, table, key in (('holdings', 'portfolio_holdings', 'ticker'),
                                      ('orders', 'portfolio_orders', 'order_id'),
@@ -367,6 +389,10 @@ class OperatorEvidenceService:
                 if evaluation is None or evaluation[0] != resource.account_hash:
                     raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
                 source_ids.append(row['evaluation_id'])
+                if _portfolio_read_version(conn) == 4:
+                    dispatch = conn.execute('SELECT execution_target FROM daily_evaluation_dispatches WHERE evaluation_id=?', (row['evaluation_id'],)).fetchone()
+                    if dispatch and dispatch[0] is not None and dispatch[0] != resource.target:
+                        raise EvidenceUnavailable('SCOPE_CONFLICT')
             if kind == 'divergences':
                 snapshot = conn.execute('SELECT account_scope_hash,cycle_id,observation_id FROM portfolio_snapshots WHERE snapshot_id=?', (row['snapshot_id'],)).fetchone()
                 if snapshot is None or snapshot['account_scope_hash'] != resource.account_hash:
@@ -374,7 +400,7 @@ class OperatorEvidenceService:
                 _check_run(conn, resource, snapshot['cycle_id'])
                 sid = row['snapshot_id']
                 source_ids.extend((snapshot['cycle_id'], snapshot['observation_id']))
-        record = _wire_record(resource, kind, row, key, row[time_key], fields,
+        record = _wire_record(resource, kind, row, key, row[time_key], fields, conn=conn,
                               snapshot_id=sid, source_ids=source_ids)
         extra = []
         if kind.startswith('transition_'):
@@ -392,6 +418,18 @@ class OperatorEvidenceService:
                 extra.extend((name, _clean(detail[name])) for name in allowed
                              if name in detail and (detail[name] is None or type(detail[name]) in {str, int, float, bool}))
         if kind == 'evaluations':
+            if 'dispatch_state' in row.keys():
+                target = row['execution_target']
+                if target is not None and target != resource.target:
+                    raise EvidenceUnavailable('SCOPE_CONFLICT')
+                extra.extend((name, _clean(row[name])) for name in
+                    ('execution_target','dispatch_state','dispatch_id','envelope_hash',
+                     'dispatched_at','dispatch_finalized_at','execution_intent_id'))
+                if row['dispatch_id']:
+                    source_ids = record.selection.source_ids + (row['dispatch_id'],)
+                    record = replace(record, selection=replace(record.selection, source_ids=source_ids))
+                record = replace(record, envelope=replace(record.envelope,
+                    provenance='saved_daily_dispatch' if target else 'saved_daily_dispatch_unknown_target'))
             event = conn.execute('SELECT id,event_type,action,confidence,reason_code,detail_json,observed_at FROM daily_evaluation_events WHERE evaluation_id=? AND event_type IN (?,?) ORDER BY id DESC LIMIT 1',
                 (row['evaluation_id'], 'SIGNAL_FINALIZED', 'LLM_UNAVAILABLE')).fetchone()
             if event:
@@ -464,7 +502,7 @@ class OperatorEvidenceService:
                         if age < 0:
                             raise EvidenceUnavailable('FUTURE_SOURCE_TIME')
                         freshness = 'FRESH' if age <= max(180, 3 * cadence) else 'STALE'
-                    env = _envelope(resource, self.clock(), source_observed_at=observed,
+                    env = _envelope(resource, self.clock(), conn=conn, source_observed_at=observed,
                         freshness=freshness, completeness='COMPLETE' if observation else 'UNKNOWN')
                     workers.append(WorkerDTO(env, f'{resource.id}:intraday', state, expected,
                                              cadence, lease_time, tuple(ids), sid))
@@ -617,9 +655,10 @@ class OperatorEvidenceService:
                     envelopes.append(account.envelope)
                 continue
             table, key, time_key, _ = spec
-            query_source = _table_source(table)
             try:
                 with _transaction(resource) as conn:
+                    query_source = _table_source(table, portfolio_version=
+                        _portfolio_read_version(conn) if resource.owner == 'portfolio' else None)
                     where = f'julianday({time_key})>=julianday(?) AND julianday({time_key})<julianday(?)'
                     args = [period.start.isoformat(), period.end.isoformat()]
                     if resource.owner == 'portfolio' and 'account_scope_hash' in contracts.PORTFOLIO_REPORT_SCHEMA[table]:
@@ -649,7 +688,7 @@ class OperatorEvidenceService:
                         records.extend(self._project(conn, resource, kind, row) for row in tail_rows)
                     else:
                         records.extend(projected)
-                    envelopes.append(_envelope(resource, self.clock(), completeness='COMPLETE',
+                    envelopes.append(_envelope(resource, self.clock(), conn=conn, completeness='COMPLETE',
                         source_observed_at=max((r.envelope.source_observed_at for r in projected), default=None)))
             except EvidenceUnavailable as exc:
                 total = None
@@ -684,7 +723,9 @@ class OperatorEvidenceService:
                 raise ValueError('invalid kind for owner')
             table, pk, _, _ = spec
             with _transaction(resource) as conn:
-                row = conn.execute(f'SELECT * FROM {_table_source(table)} WHERE {pk}=?', (key,)).fetchone()
+                query_source = _table_source(table, portfolio_version=
+                    _portfolio_read_version(conn) if resource.owner == 'portfolio' else None)
+                row = conn.execute(f'SELECT * FROM {query_source} WHERE {pk}=?', (key,)).fetchone()
                 record = self._project(conn, resource, kind, row) if row else None
         if record is None:
             raise EvidenceUnavailable('RECORD_NOT_FOUND')

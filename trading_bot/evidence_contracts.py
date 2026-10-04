@@ -10,7 +10,8 @@ from types import MappingProxyType
 PRIMARY_AUDIT_SCHEMA_VERSION = 3
 SOAK_SCHEMA_VERSION = 2
 CONTROLLER_SCHEMA_VERSION = 1
-PORTFOLIO_SCHEMA_VERSION = 3
+PORTFOLIO_SCHEMA_VERSION = 4
+PORTFOLIO_SUPPORTED_READ_VERSIONS = frozenset({3, 4})
 PORTFOLIO_SCHEMA_OWNER = "phase11"
 
 AUDIT_REPORT_SCHEMA = MappingProxyType({
@@ -127,7 +128,7 @@ CONTROLLER_REPORT_SCHEMA = MappingProxyType({
     'drill_verdicts': frozenset(('detail_json', 'drill_id', 'finalized_at', 'id', 'verdict')),
 })
 
-PORTFOLIO_REPORT_SCHEMA = MappingProxyType({
+PORTFOLIO_REPORT_SCHEMA_V3 = MappingProxyType({
     'portfolio_schema_metadata': frozenset(('owner', 'version')),
     'portfolio_snapshots': frozenset({
         'account_scope_hash', 'available_cash', 'balance_page_count', 'completeness',
@@ -187,3 +188,24 @@ PORTFOLIO_REPORT_SCHEMA = MappingProxyType({
     }),
 })
 
+PORTFOLIO_REPORT_SCHEMA_V4 = MappingProxyType({
+    **PORTFOLIO_REPORT_SCHEMA_V3,
+    'daily_evaluation_dispatches': frozenset({
+        'evaluation_id', 'execution_target', 'envelope_json', 'envelope_hash',
+        'dispatch_state', 'dispatch_id', 'dispatched_at', 'finalized_at', 'execution_intent_id',
+    }),
+    'daily_dispatch_identities': frozenset({
+        'evaluation_id', 'account_scope_hash', 'execution_target', 'trading_date_kst', 'ticker',
+    }),
+})
+PORTFOLIO_REPORT_SCHEMA = PORTFOLIO_REPORT_SCHEMA_V4
+PORTFOLIO_READ_SCHEMAS = MappingProxyType({
+    3: PORTFOLIO_REPORT_SCHEMA_V3, 4: PORTFOLIO_REPORT_SCHEMA_V4,
+})
+
+
+def portfolio_read_schema(version):
+    """Pure capability selection; no migration or owner import is permitted here."""
+    if type(version) is not int or version not in PORTFOLIO_SUPPORTED_READ_VERSIONS:
+        raise ValueError('unsupported portfolio read version')
+    return PORTFOLIO_READ_SCHEMAS[version]

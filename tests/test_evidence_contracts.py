@@ -191,11 +191,12 @@ def test_saved_portfolio_reader_version_timestamp_and_private_envelope(tmp_path,
     assert tuple(conn.iterdump()) == before
     if version == 4:
         conn.execute('DROP TRIGGER immutable_daily_dispatch_envelope')
+        conn.execute('DROP TRIGGER immutable_daily_dispatch_consumption')
         conn.execute("UPDATE daily_evaluation_dispatches SET execution_target='real'")
         conn.commit()
         failed = reader.list_records('evaluations', scope=ResourceScope(scope, 'mock'), period=period)
         assert failed.total is None and not failed.rows
-        assert failed.envelopes[0].diagnostic_code == 'SCOPE_CONFLICT'
+        assert failed.sources[0].diagnostic_code == 'SCOPE_CONFLICT'
     conn.close()
 
 
