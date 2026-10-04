@@ -34,6 +34,12 @@ def dependencies(conn, day='20260904'):
     if id(conn) in _dependencies:
         result=_dependencies[id(conn)]
         result['daily_dispatch_runtime'].clock.wall=current
+        if result['mutation_lease'].closed:
+            from pathlib import Path
+            prior = result['mutation_lease']
+            result['mutation_lease'] = acquire_mutation_lease(conn,
+                account_scope_hash=SCOPE.account_scope_hash, lock_dir=Path(prior.lock_path).parent,
+                command='run', cycle_id='test-owner', observed_at=current)
         return result
     root=_test_root / str(len(_dependencies)); root.mkdir()
     settings=TempServiceTopology(root).registration()
@@ -156,10 +162,9 @@ def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
 
         def reader():
             read_index[0] += 1
-            return snapshot(
-                observed_second=read_index[0],
-                snapshot_id=f"snapshot-{run_id}-{read_index[0]}",
-            )
+            from dataclasses import replace
+            return replace(snapshot(snapshot_id=f'snapshot-{run_id}-{read_index[0]}'),
+                observed_at=_dependencies[id(conn)]['daily_dispatch_runtime'].clock())
 
     collaborators=dependencies(conn,trading_date).copy()
     if lease is not None: collaborators['mutation_lease']=lease
@@ -236,9 +241,6 @@ def test_held_market_failure_is_durable_hold_and_does_not_block_sibling():
     conn = sqlite3.connect(":memory:")
     source = FailingHeldDataSource()
     calls: list[str] = []
-    snapshots = iter(
-        (snapshot(snapshot_id="held-market-gap-1"), snapshot(snapshot_id="held-market-gap-2"))
-    )
     from trading_bot.cli import run_cycle
 
     result = run_cycle(
@@ -250,7 +252,7 @@ def test_held_market_failure_is_durable_hold_and_does_not_block_sibling():
         notifier=Notifier(),
         trading_date="20260904",
         run_id="held-market-gap",
-        portfolio_snapshot_reader=lambda: next(snapshots),
+        portfolio_snapshot_reader=lambda: snapshot(snapshot_id=__import__('uuid').uuid4().hex),
         **dependencies(conn),
     )
 
@@ -326,8 +328,9 @@ def test_reused_signal_rechecks_lease_before_execution_and_post_boundary():
 
 def test_screened_only_sizing_uses_post_held_broker_cash_snapshot():
     conn = sqlite3.connect(":memory:")
-    snapshots = iter((snapshot(cash=100.0), snapshot(cash=900.0, observed_second=1)))
     seen_cash = []
+    def reader():
+        return snapshot(cash=900. if seen_cash else 100., snapshot_id=__import__('uuid').uuid4().hex)
 
     def cycle(provider, context, **kwargs):
         seen_cash.append((context.ticker.value, kwargs["available_cash"]))
@@ -337,7 +340,7 @@ def test_screened_only_sizing_uses_post_held_broker_cash_snapshot():
     invoke(
         conn,
         run_id="phase11-cash-refresh",
-        reader=lambda: next(snapshots),
+        reader=reader,
         factory=lambda: Provider([]),
         cycle=cycle,
     )
@@ -374,12 +377,14 @@ def test_first_saved_envelope_and_complete_signal_survive_current_input_change()
     kwargs=dict(conn=conn,trading_date_kst=date(2026,9,4),target=EvaluationTarget('005930',(EvaluationProvenance.HELD,)),
         context=make_data_context(current_price=Money(12345,'KRW')),account_scope_hash=SCOPE.account_scope_hash,
         provider_factory=lambda:SavedProvider([]),lease=deps['mutation_lease'],dispatch_runtime=runtime,
+        snapshot_reader=lambda:snapshot(snapshot_id=__import__('uuid').uuid4().hex),
         settings=make_settings(anthropic_model='changed-model'))
     signal,identity=_load_or_generate_daily_signal(**kwargs)
     assert seen==[saved] and identity==evaluation.evaluation_id
     stored=load_daily_evaluation(conn,identity)
     assert _terminal_daily_signal(stored)==signal
     kwargs['provider_factory']=lambda:pytest.fail('final saved signal cannot call a provider')
+    kwargs['lease']=dependencies(conn)['mutation_lease']
     assert _load_or_generate_daily_signal(**kwargs)==(signal,identity)
 
 
@@ -457,3 +462,59 @@ def test_daily_data_collection_never_holds_account_lease():
         notifier=Notifier(), trading_date='20260904', run_id='unowned-data',
         portfolio_snapshot_reader=lambda: snapshot(snapshot_id=__import__('uuid').uuid4().hex), **deps)
     assert seen == ['screen', 'context']
+
+
+@pytest.mark.parametrize('stage,restriction', [('ACCOUNT_RELEASED','CUTOFF'),
+    ('CHILD_STARTED','PAUSE'),('BEFORE_TRANSPORT_ENTRY','KILL')])
+def test_consumed_handoff_barriers_suppress_transport_and_never_replay(stage, restriction):
+    from dataclasses import replace
+    from trading_bot.cli import run_cycle
+    from trading_bot.service_models import ControlRequest
+    import uuid
+    conn=sqlite3.connect(':memory:'); deps=dependencies(conn)
+    runtime=deps['daily_dispatch_runtime']; calls=[]; stages=[]; fired=[]
+    runtime.clock.wall=datetime(2026,9,4,0,19,59,tzinfo=timezone.utc)
+    def barrier(name):
+        stages.append(name)
+        consumed=conn.execute("SELECT count(*) FROM daily_evaluation_dispatches WHERE dispatch_state='DISPATCHED'").fetchone()[0]
+        if name == stage and consumed and not fired:
+            fired.append(name)
+            if restriction=='CUTOFF': runtime.clock.advance(1)
+            else:
+                state=runtime.controls.reader().effective_state()
+                runtime.controls.request_writer(actor='tester').append_request(ControlRequest(
+                    request_id=f'barrier-{restriction}',actor='tester',requested_at=runtime.clock(),
+                    scope=runtime.controls.scope,action=restriction,expected_revision=state.acceptance_revision))
+    def reader(): return replace(snapshot(snapshot_id=uuid.uuid4().hex),observed_at=runtime.clock())
+    run_cycle(settings=make_settings(),data_source=DataSource(('005930',)),
+        llm_provider_factory=lambda:Provider(calls),broker=Broker(),audit_conn=conn,notifier=Notifier(),
+        trading_date='20260904',run_id='barrier-first',portfolio_snapshot_reader=reader,
+        account_work_barrier=barrier,**deps)
+    assert fired==[stage] and calls==[]
+    assert all(name in stages for name in ('ACCOUNT_RECONCILED','ACCOUNT_RELEASED','CHILD_STARTED','BEFORE_TRANSPORT_ENTRY'))
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED_UNKNOWN',)
+    invoke(conn,run_id='barrier-replay',factory=lambda:pytest.fail('consumed suppression never replays'),candidates=('005930',))
+    assert calls==[]
+
+
+def test_response_requires_new_complete_account_truth_before_finalization():
+    from dataclasses import replace
+    import uuid
+    from trading_bot.cli import run_cycle
+    conn=sqlite3.connect(':memory:'); deps=dependencies(conn); responded=[]; calls=[]
+    class ResponseProvider(Provider):
+        def generate_signal(self,context):
+            responded.append(True)
+            return super().generate_signal(context)
+    def reader():
+        return replace(snapshot(snapshot_id=uuid.uuid4().hex),
+            completeness=PortfolioCompleteness.INCOMPLETE if responded else PortfolioCompleteness.COMPLETE)
+    result=run_cycle(settings=make_settings(),data_source=DataSource(('005930',)),
+        llm_provider_factory=lambda:ResponseProvider(calls),broker=Broker(),audit_conn=conn,notifier=Notifier(),
+        trading_date='20260904',run_id='response-truth-loss',portfolio_snapshot_reader=reader,**deps)
+    assert calls==['005930'] and result['outcomes'][0]['final_action']=='ERROR'
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()==('RECOVERY_BLOCKED',)
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED',)
+    responded.clear()
+    invoke(conn,run_id='response-truth-recovery',factory=lambda:pytest.fail('uncertain signal cannot redispatch'),candidates=('005930',))
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED_UNKNOWN',)

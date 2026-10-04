@@ -265,6 +265,7 @@ def run_intraday_check(
     reconcile: Callable[[], object] = lambda: True,
     persist_unresolved: Callable[[], object] | None = None,
     policy: MarketCyclePolicy | None = None,
+    work_budget: object | None = None,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
 
@@ -313,6 +314,8 @@ def run_intraday_check(
         getattr(lease, "assert_active_owner")()
         exits: list[ExitResult] = []
         for holding in snapshot.holdings:
+            if work_budget is not None:
+                work_budget.assert_available()
             quote = quote_reader(holding.ticker)
             position = Position(
                 Ticker(holding.ticker), holding.total_quantity,
@@ -330,6 +333,8 @@ def run_intraday_check(
             candidate = evaluate_exit_candidate(trigger, snapshot)
             exits.append(candidate)
             if candidate.disposition is ExitDisposition.SUBMIT:
+                if work_budget is not None:
+                    work_budget.assert_available(minimum_seconds=5)
                 if stop_requested():
                     result = IntradayIterationResult(
                         iteration_id, IntradaySessionPhase.STOPPING,

@@ -35,11 +35,26 @@ class AccountWorkBudget:
     def remaining_seconds(self):
         return max(0., self.deadline - self.monotonic())
 
-    def assert_available(self, *, cleanup=False):
+    def assert_available(self, *, cleanup=False, minimum_seconds=0):
         remaining = (self.deadline if cleanup else self.work_deadline) - self.monotonic()
-        if remaining <= 0:
+        if remaining <= minimum_seconds:
             raise AccountWorkTimeout('account work budget exhausted')
         return remaining
+
+    @contextmanager
+    def submission_guard(self, lease, *, timeout_seconds):
+        """Recheck configured POST capacity at every final owner assertion."""
+        minimum = max(5., float(timeout_seconds))
+        original = lease.assert_active_owner
+        def current_owner(*args, **kwargs):
+            self.assert_available(minimum_seconds=minimum)
+            return original(*args, **kwargs)
+        lease.assert_active_owner = current_owner
+        try:
+            current_owner()
+            yield
+        finally:
+            lease.assert_active_owner = original
 
     @contextmanager
     def interrupt_after(self, *, cleanup=False):
@@ -124,23 +139,16 @@ class BoundedAccountWork:
                 result = operation(lease, current, budget)
             if not lease.closed:
                 def reconcile():
-                    try:
-                        with budget.interrupt_after(cleanup=True):
-                            snapshot = fresh()
-                            append_portfolio_snapshot(self.conn, snapshot, cycle_id=lease.cycle_id,
-                                observation_id=f'account-reconcile:{uuid.uuid4().hex}')
-                            verdict = self.reconcile_snapshot(snapshot)
-                            self.barrier('ACCOUNT_RECONCILED')
-                            return verdict
-                    except AccountWorkTimeout:
-                        return False
+                    snapshot = fresh()
+                    append_portfolio_snapshot(self.conn, snapshot, cycle_id=lease.cycle_id,
+                        observation_id=f'account-reconcile:{uuid.uuid4().hex}')
+                    verdict = self.reconcile_snapshot(snapshot)
+                    self.barrier('ACCOUNT_RECONCILED')
+                    return verdict
                 with budget.interrupt_after(cleanup=True):
-                    terminalize()
-                # The reconciliation owns its own interrupt timer; no SQLite
-                # transaction is retained across its broker read.
-                determinate = release_after_reconciliation(lease, terminalize_cycle=terminalize,
-                    reconcile_submitted=reconcile, persist_unresolved=self.persist_unresolved,
-                    observed_at=self.clock(), preserve_blocked=True)
+                    determinate = release_after_reconciliation(lease, terminalize_cycle=terminalize,
+                        reconcile_submitted=reconcile, persist_unresolved=self.persist_unresolved,
+                        observed_at=self.clock(), preserve_blocked=True)
                 if not determinate:
                     raise LeaseRecoveryBlocked('account reconciliation unresolved')
                 self.barrier('ACCOUNT_RELEASED')
@@ -151,8 +159,12 @@ class BoundedAccountWork:
                 # If evidence writing itself fails, keep kernel exclusion until
                 # process shutdown rather than opening an undocumented takeover.
                 self.conn.rollback()
-                terminalize()
-                self.persist_unresolved()
+                try:
+                    with budget.interrupt_after(cleanup=True):
+                        terminalize()
+                        self.persist_unresolved()
+                except AccountWorkTimeout:
+                    pass  # durable lease event below still records exhausted work
                 lease.mark_recovery_blocked(reason='ACCOUNT_WORK_STALLED', observed_at=self.clock())
                 lease.close_blocked()
             raise

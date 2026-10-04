@@ -52,6 +52,47 @@ def test_watch_one_pass_releases_account_before_every_sleep(tmp_path):
     conn.close()
 
 
+def test_production_intraday_root_uses_a_new_released_lease_each_pass(tmp_path):
+    from types import SimpleNamespace
+    from dataclasses import replace
+    import uuid
+    from trading_bot import cli, sqlite_audit
+    from tests.service_fixtures import FakeServiceClock
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    clock=FakeServiceClock(datetime(2026,9,4,0,10,tzinfo=timezone.utc))
+    path=tmp_path/'audit.db'; conn=connect_portfolio_store(path)
+    sqlite_audit.migrate(conn)
+    settings=make_settings(audit_db_path=str(path))
+    runtime=SimpleNamespace(audit_conn=conn,account_scope_hash='a'*64,
+        portfolio_snapshot_reader=lambda:replace(_snapshot(),snapshot_id=uuid.uuid4().hex,observed_at=clock()),
+        quote_reader=lambda ticker:Money(70000),broker=object(),notifier=SimpleNamespace(send=lambda text:True))
+    owners=[]
+    def sleep(seconds):
+        assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0]=='RELEASED'
+        competitor=acquire_mutation_lease(conn,account_scope_hash='a'*64,lock_dir=tmp_path/'.mutation-locks',
+            command='run',cycle_id='manual-between-passes',observed_at=clock())
+        owners.append(competitor.owner_token)
+        competitor.release()
+        clock.advance(seconds)
+    result=cli._default_intraday_command_runner('watch',60,settings=settings,runtime=runtime,
+        clock=clock,sleeper=sleep,max_iterations=2)
+    assert len(result.iterations)==2 and len(set(owners))==2
+
+
+def test_production_intraday_check_at_terminal_never_acquires_account(tmp_path):
+    from types import SimpleNamespace
+    from trading_bot import cli, sqlite_audit
+    conn=connect_portfolio_store(tmp_path/'terminal.db'); sqlite_audit.migrate(conn)
+    runtime=SimpleNamespace(audit_conn=conn,account_scope_hash='a'*64,broker=object(),
+        portfolio_snapshot_reader=lambda:pytest.fail('terminal must not query account'),
+        quote_reader=lambda ticker:pytest.fail('terminal must not quote'),
+        notifier=SimpleNamespace(send=lambda text:True))
+    result=cli._default_intraday_command_runner('check',None,settings=make_settings(),runtime=runtime,
+        clock=lambda:datetime(2026,9,4,15,30,tzinfo=KST))
+    assert result.phase is IntradaySessionPhase.TERMINAL
+
+
+
 @pytest.mark.parametrize(
     ("hour", "minute", "phase"),
     [

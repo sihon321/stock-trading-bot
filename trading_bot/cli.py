@@ -23,6 +23,7 @@ import typer
 from trading_bot.config import LLMProviderName, Settings, TradingMode, startup_banner
 from trading_bot.data_source import ObservedKRXCalendar, build_data_source
 from trading_bot.domain import Decision, LLMSignal, Money, Ticker
+from trading_bot.account_work import BoundedAccountWork, AccountWorkBudget
 from trading_bot.execution import ExecutionConfig, ExecutionResult
 from trading_bot.kis_auth import KisTokenManager, build_kis_auth_config
 from trading_bot.kis_rate_limit import KisRequestLimiter
@@ -132,6 +133,8 @@ from trading_bot.mutation_lease import (
 from trading_bot.exit_manager import submit_exit
 from trading_bot.intraday import (
     TransitionEvidenceGuard,
+    IntradaySessionPhase,
+    session_phase_at,
     run_intraday_check,
     run_intraday_watch,
     transition_observations_for_iteration,
@@ -197,17 +200,26 @@ class _LeaseGuardedBroker:
         portfolio_refresh: Optional[Callable[[str], PortfolioSnapshot]] = None,
         cycle_snapshot_id: Optional[str] = None,
         execution_intent_id: Optional[str] = None,
+        evaluation_id: Optional[str] = None,
+        work_budget: Any = None,
     ) -> None:
         self._broker = broker
         self._lease = lease
         self._portfolio_refresh = portfolio_refresh
         self._cycle_snapshot_id = cycle_snapshot_id
         self._execution_intent_id = execution_intent_id
+        self._evaluation_id = evaluation_id
+        self._work_budget = work_budget
 
     def get_position(self, ticker: Ticker) -> Any:
         return self._broker.get_position(ticker)
 
     def place_order(self, order: Any, **kwargs: Any) -> Any:
+        if self._work_budget is not None:
+            self._work_budget.assert_available(minimum_seconds=5)
+        if self._evaluation_id is not None:
+            self._execution_intent_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                f'daily-evaluation:{self._evaluation_id}:{order.side.value}'))
         if self._execution_intent_id is not None:
             kwargs['order_intent_id'] = self._execution_intent_id
         if isinstance(self._broker, (KISBroker, MockBroker)):
@@ -224,6 +236,10 @@ class _LeaseGuardedBroker:
             )
         else:
             self._lease.assert_active_owner()
+        if self._work_budget is not None:
+            timeout = getattr(getattr(self._broker, '_order_adapter', None), '_timeout_seconds', 5)
+            with self._work_budget.submission_guard(self._lease, timeout_seconds=timeout):
+                return self._broker.place_order(order, **kwargs)
         return self._broker.place_order(order, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -343,7 +359,7 @@ def _daily_envelope(settings, context):
         model=model, temperature=temperature, prompt_version=PROMPT_VERSION)
 
 
-def _load_or_generate_daily_signal(
+def _reserve_daily_signal(
     *,
     conn: sqlite3.Connection,
     trading_date_kst: date,
@@ -364,21 +380,21 @@ def _load_or_generate_daily_signal(
         saved = load_daily_dispatch(conn, prior[0])
         if (saved['account_scope_hash'] != account_scope_hash or saved['execution_target'] != 'mock'
                 or saved['envelope_json'] is None):
-            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_IDENTITY'), prior[0]
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_IDENTITY'), prior[0], None
         try:
             envelope = DailyDispatchEnvelope.model_validate_json(saved['envelope_json'])
         except ValueError:
-            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0]
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0], None
         stored_input = conn.execute('SELECT canonical_input FROM daily_evaluations WHERE evaluation_id=?', (prior[0],)).fetchone()[0]
         identity = conn.execute('SELECT account_scope_hash,execution_target,trading_date_kst,ticker '
             'FROM daily_dispatch_identities WHERE evaluation_id=?',(prior[0],)).fetchone()
         if (envelope.envelope_hash != saved['envelope_hash'] or envelope.schema_hash != signal_schema_hash()
                 or envelope.prompt_hash != saved['canonical_input_hash'] or envelope.prompt_bytes != bytes(stored_input)
                 or identity is None or tuple(identity) != (account_scope_hash,'mock',trading_date_kst.isoformat(),target.ticker)):
-            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0]
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0], None
         evaluation = load_daily_evaluation(conn, prior[0])
         if evaluation.status is DailyEvaluationStatus.FINALIZED:
-            return _terminal_daily_signal(evaluation), evaluation.evaluation_id
+            return _terminal_daily_signal(evaluation), evaluation.evaluation_id, None
     else:
         envelope = _daily_envelope(settings, context)
     evaluation = start_daily_evaluation(
@@ -391,7 +407,7 @@ def _load_or_generate_daily_signal(
         execution_target='mock', envelope=envelope, lease=lease, observed_at=now,
     )
     if evaluation.status is DailyEvaluationStatus.FINALIZED:
-        return _terminal_daily_signal(evaluation), evaluation.evaluation_id
+        return _terminal_daily_signal(evaluation), evaluation.evaluation_id, None
 
     scope = ServiceScope(account_scope_hash=account_scope_hash, execution_target='mock')
     session = dispatch_runtime.session_reader(trading_date_kst)
@@ -403,30 +419,88 @@ def _load_or_generate_daily_signal(
             or session.continuous_close is None or not session.continuous_open <= now < session.continuous_close):
         recover_started_evaluations(conn, lease=lease, account_scope_hash=account_scope_hash,
             execution_target='mock', trading_date_kst=trading_date_kst, observed_at=now, deadline=deadline)
-        return LLMSignal(Decision.HOLD, 0, 'DISPATCH_BLOCKED'), evaluation.evaluation_id
+        return LLMSignal(Decision.HOLD, 0, 'DISPATCH_BLOCKED'), evaluation.evaluation_id, None
     consumed = claim_daily_dispatch(conn, evaluation.evaluation_id, lease, dispatch_runtime.clock(), deadline)
-    admission = None
-    intent = str(uuid.uuid5(uuid.NAMESPACE_URL, f'daily-evaluation:{evaluation.evaluation_id}'))
+    return None, evaluation.evaluation_id, (envelope, dispatch_runtime.prepare(consumed, session=session))
+
+
+def _daily_account_work(*, conn, scope, clock, snapshot_reader, cycle_id,
+                        initial_lease=None, lock_dir=None, barrier=lambda name: None):
+    """Transfer an optional admitted lease, then acquire fresh authority per section."""
+    current = [initial_lease]
+    first = [initial_lease]
+    if initial_lease is not None:
+        if initial_lease.closed:
+            raise RuntimeError('initial account lease is closed')
+        lock_dir = Path(initial_lease.lock_path).parent
+    def factory():
+        if first[0] is not None:
+            owner, first[0] = first[0], None
+        else:
+            owner = acquire_mutation_lease(conn, account_scope_hash=scope, lock_dir=lock_dir,
+                command='run', cycle_id=cycle_id, observed_at=clock())
+        current[:] = [owner]
+        return owner
+    def terminalize_prior():
+        prior = current[0].prior_cycle_id
+        if prior is not None and prior != cycle_id:
+            row = conn.execute('SELECT status FROM runs WHERE run_id=?', (prior,)).fetchone()
+            if row is not None and row[0] == 'RUNNING':
+                sqlite_audit.finish_run(conn, run_id=prior, status=RunStatus.FAILED)
+        return True
+    def unresolved():
+        record_transition_state(conn, TransitionObservation(account_scope_hash=scope, ticker=None,
+            event_family='RECONCILIATION', normalized_state='RECONCILIATION_UNRESOLVED',
+            broker_subject_id=cycle_id, severity=OperationalSeverity.CRITICAL,
+            observed_at=clock(), detail={'command':'run'}))
+    return BoundedAccountWork(conn=conn, account_scope_hash=scope, lease_factory=factory,
+        snapshot_reader=snapshot_reader, terminalize_prior=terminalize_prior,
+        reconcile_snapshot=lambda current: {'determinate': all(order.status != 'UNKNOWN' for order in current.orders)},
+        terminalize=lambda: None, persist_unresolved=unresolved, clock=clock, barrier=barrier)
+
+
+def _load_or_generate_daily_signal(*, conn, trading_date_kst, target, context,
+        account_scope_hash, provider_factory, dispatch_runtime, settings,
+        account_work=None, lease=None, snapshot_reader=None):
+    """Reserve under authority, call broker-free transport unowned, finalize fresh."""
+    if account_work is None:
+        if snapshot_reader is None:
+            raise RuntimeError('daily dispatch requires bounded account snapshot composition')
+        account_work = _daily_account_work(conn=conn, scope=account_scope_hash,
+            clock=dispatch_runtime.clock, snapshot_reader=snapshot_reader,
+            cycle_id=lease.cycle_id, initial_lease=lease)
+    def reserve(owner, current, budget):
+        held = build_held_position_context(current, target.ticker, current_price=context.current_price.amount)
+        return _reserve_daily_signal(conn=conn, trading_date_kst=trading_date_kst, target=target,
+            context=_context_with_held_facts(context, held), account_scope_hash=account_scope_hash,
+            provider_factory=provider_factory, lease=owner, dispatch_runtime=dispatch_runtime, settings=settings)
+    signal, evaluation_id, prepared = account_work.run(reserve)
+    if prepared is None:
+        return signal, evaluation_id
+    envelope, admission = prepared
+    unknown = False
     try:
-        admission = dispatch_runtime.prepare(consumed, session=session)
-        provider = provider_factory()  # construction only after irreversible consumed claim
+        account_work.barrier('CHILD_STARTED')
+        provider = provider_factory()
+        account_work.barrier('BEFORE_TRANSPORT_ENTRY')
+        if conn.in_transaction:
+            raise RuntimeError('provider wait cannot span a transaction')
         signal = provider.generate_signal_from_envelope(envelope, admission)
         if not admission.used: raise RuntimeError('provider did not enter admitted transport')
         admission.writer.transition_prepared('FINISHED', reason_code='RESPONSE_PARSED', observed_at=dispatch_runtime.clock())
-        lease.assert_active_owner(observed_at=dispatch_runtime.clock())
-        finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=lease, now=dispatch_runtime.clock(),
-            action=signal.decision.value, confidence=signal.confidence, reason_code='FINAL_SIGNAL',
-            execution_intent_id=intent, signal_reason=signal.reason)
-        return signal, evaluation.evaluation_id
     except Exception:
-        if admission is not None:
-            try:
-                admission.writer.transition_prepared('UNKNOWN', reason_code='PROVIDER_UNKNOWN',observed_at=dispatch_runtime.clock())
-            except Exception: pass  # terminal suppression/failed evidence never restores authority
-        lease.assert_active_owner(observed_at=dispatch_runtime.clock())
-        finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=lease, now=dispatch_runtime.clock(), unknown=True,
-            execution_intent_id=intent)
-        return LLMSignal(Decision.HOLD, 0, 'LLM_UNAVAILABLE'), evaluation.evaluation_id
+        unknown = True
+        signal = LLMSignal(Decision.HOLD, 0, 'LLM_UNAVAILABLE')
+        try:
+            admission.writer.transition_prepared('UNKNOWN', reason_code='PROVIDER_UNKNOWN',observed_at=dispatch_runtime.clock())
+        except Exception: pass  # consumed suppression never restores replay permission
+    def finalize(owner, current, budget):
+        intent = str(uuid.uuid5(uuid.NAMESPACE_URL, f'daily-evaluation:{evaluation_id}:{signal.decision.value}'))
+        finalize_daily_dispatch(conn, evaluation_id, lease=owner, now=dispatch_runtime.clock(),
+            action=signal.decision.value, confidence=signal.confidence, reason_code='FINAL_SIGNAL', unknown=unknown,
+            execution_intent_id=intent, signal_reason=None if unknown else signal.reason)
+    account_work.run(finalize)
+    return signal, evaluation_id
 
 
 @dataclass(frozen=True)
@@ -1762,6 +1836,7 @@ def run_cycle(
     mutation_lease: Any = None,
     daily_dispatch_runtime: DailyDispatchRuntime | None = None,
     service_config_path: Path | None = None,
+    account_work_barrier: Callable[[str], object] = lambda name: None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
 
@@ -1829,7 +1904,7 @@ def run_cycle(
     phase11_universe = None
     phase11_snapshot = None
     phase11_targets: dict[str, EvaluationTarget] = {}
-    lease_owned = False
+    account_work = None
     if phase11_enabled:
         if resolved_settings.trading_mode is not TradingMode.MOCK:
             raise SystemExit('daily durable dispatch requires mock target')
@@ -1840,43 +1915,24 @@ def run_cycle(
         if llm_provider_factory is None and llm_provider is None:
             provider_factory = lambda: build_single_shot_llm_provider(resolved_settings)
         migrate_portfolio(resolved_audit_conn)
-        if mutation_lease is None:
-            if runtime is None or runtime.account_scope_hash is None:
-                raise ValueError("Phase 11 portfolio orchestration requires a mutation lease")
-            mutation_lease = acquire_mutation_lease(
-                resolved_audit_conn,
-                account_scope_hash=runtime.account_scope_hash,
-                lock_dir=Path(resolved_settings.audit_db_path).parent / ".mutation-locks",
-                command="run",
-                cycle_id=resolved_run_id,
-            )
-            lease_owned = True
-        if getattr(mutation_lease, "recovery_required", False):
-            phase11_snapshot = recover_to_active(
-                mutation_lease,
-                terminalize_prior_cycles=lambda: (
-                    sqlite_audit.recover_abandoned_runs(resolved_audit_conn) is not None
-                ),
-                query_fresh_snapshot=portfolio_snapshot_reader,
-                reconcile_prior_orders=lambda current: {
-                    "determinate": all(order.status != "UNKNOWN" for order in current.orders)
-                },
-            )
-        else:
-            mutation_lease.assert_active_owner()
-            phase11_snapshot = portfolio_snapshot_reader()
-            append_portfolio_snapshot(
-                resolved_audit_conn,
-                phase11_snapshot,
-                cycle_id=resolved_run_id,
-                observation_id=f"{resolved_run_id}:cycle-start",
-            )
+        scope_hash = getattr(mutation_lease, 'account_scope_hash', None) or getattr(runtime, 'account_scope_hash', None)
+        if scope_hash is None:
+            raise ValueError('Phase 11 portfolio orchestration requires a registered account scope')
+        account_work = _daily_account_work(conn=resolved_audit_conn, scope=scope_hash,
+            clock=daily_dispatch_runtime.clock, snapshot_reader=portfolio_snapshot_reader,
+            cycle_id=resolved_run_id, initial_lease=mutation_lease,
+            lock_dir=Path(resolved_settings.audit_db_path).parent/'.mutation-locks',
+            barrier=account_work_barrier)
         day = datetime.strptime(resolved_trading_date, '%Y%m%d').date()
-        recover_started_evaluations(resolved_audit_conn, lease=mutation_lease,
-            account_scope_hash=mutation_lease.account_scope_hash, execution_target='mock',
-            trading_date_kst=day, observed_at=daily_dispatch_runtime.clock(),
-            deadline=datetime.combine(day, datetime.min.time(), KST).replace(hour=9, minute=20))
-    sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
+        def recover_daily(owner, current, budget):
+            recover_started_evaluations(resolved_audit_conn, lease=owner,
+                account_scope_hash=scope_hash, execution_target='mock',
+                trading_date_kst=day, observed_at=daily_dispatch_runtime.clock(),
+                deadline=datetime.combine(day, datetime.min.time(), KST).replace(hour=9, minute=20))
+            return current
+        phase11_snapshot = account_work.run(recover_daily)
+    else:
+        sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
     sqlite_audit.start_run(
         resolved_audit_conn,
         run_id=resolved_run_id,
@@ -1922,57 +1978,13 @@ def run_cycle(
 
     outcomes: list[dict[str, Any]] = []
 
-    def reconcile_daily_shutdown() -> dict[str, bool]:
-        """Bound the final broker-truth check before returning mutation authority."""
-
-        if portfolio_snapshot_reader is None:
-            return {"determinate": True}
-        snapshot = portfolio_snapshot_reader()
-        append_portfolio_snapshot(
-            resolved_audit_conn,
-            snapshot,
-            cycle_id=resolved_run_id,
-            observation_id=f"{resolved_run_id}:shutdown:{uuid.uuid4().hex}",
-        )
-        return {"determinate": all(order.status != "UNKNOWN" for order in snapshot.orders)}
-
     def terminalize_daily(status: RunStatus) -> None:
         sqlite_audit.finish_run(
             resolved_audit_conn, run_id=resolved_run_id, status=status
         )
 
-    def persist_daily_unresolved() -> None:
-        scope = (
-            phase11_snapshot.account_scope_hash
-            if phase11_snapshot is not None
-            else getattr(mutation_lease, "account_scope_hash", None)
-        )
-        if not isinstance(scope, str) or len(scope) != 64:
-            return
-        record_transition_state(
-            resolved_audit_conn,
-            TransitionObservation(
-                account_scope_hash=scope,
-                ticker=None,
-                event_family="RECONCILIATION",
-                normalized_state="RECONCILIATION_UNRESOLVED",
-                broker_subject_id=resolved_run_id,
-                severity=OperationalSeverity.CRITICAL,
-                observed_at=datetime.now(timezone.utc),
-                detail={"command": "run"},
-            ),
-        )
-
     def shutdown_daily(status: RunStatus) -> None:
-        if lease_owned:
-            release_after_reconciliation(
-                mutation_lease,
-                terminalize_cycle=lambda: terminalize_daily(status),
-                reconcile_submitted=reconcile_daily_shutdown,
-                persist_unresolved=persist_daily_unresolved,
-            )
-        else:
-            terminalize_daily(status)
+        terminalize_daily(status)
 
     try:
         if ticker is not None:
@@ -1992,9 +2004,18 @@ def run_cycle(
                 tickers = _candidate_tickers(screened)
         if phase11_enabled:
             day = datetime.strptime(resolved_trading_date, '%Y%m%d').date()
-            scope = ServiceScope(account_scope_hash=mutation_lease.account_scope_hash, execution_target='mock')
-            tickers = list(daily_dispatch_runtime.commit_universe(scope, day, tickers, resolved_run_id))
-        screened_refresh_done = False
+            scope = ServiceScope(account_scope_hash=scope_hash, execution_target='mock')
+            def commit_universe(owner, current, budget):
+                nonlocal phase11_snapshot, phase11_universe, phase11_targets
+                phase11_snapshot = current
+                if ticker is None:
+                    phase11_universe = build_evaluation_universe(current, _candidate_tickers(screened))
+                    phase11_targets = {target.ticker: target for target in phase11_universe.targets}
+                    selected = tuple(phase11_targets)
+                else:
+                    selected = tuple(tickers)
+                return daily_dispatch_runtime.commit_universe(scope, day, selected, resolved_run_id)
+            tickers = list(account_work.run(commit_universe))
         for symbol in tickers:
             correlation_id = f"{resolved_run_id}:{symbol}"
             frozen_reason = resolved_preflight.frozen_tickers.get(symbol)
@@ -2042,25 +2063,6 @@ def run_cycle(
                         else (EvaluationProvenance.SCREENED,)
                     )
                     target = EvaluationTarget(symbol, provenance)
-                if (
-                    phase11_enabled
-                    and target is not None
-                    and target.provenance == (EvaluationProvenance.SCREENED,)
-                    and not screened_refresh_done
-                ):
-                    assert portfolio_snapshot_reader is not None
-                    phase11_snapshot = portfolio_snapshot_reader()
-                    append_portfolio_snapshot(
-                        resolved_audit_conn,
-                        phase11_snapshot,
-                        cycle_id=resolved_run_id,
-                        observation_id=f"{resolved_run_id}:post-held",
-                    )
-                    screened_refresh_done = True
-                if phase11_enabled:
-                    mutation_lease.assert_active_owner()
-                    if phase11_snapshot is None or not phase11_snapshot.mutation_capable:
-                        raise RuntimeError("ACCOUNT_DATA_INCOMPLETE")
                 try:
                     context = resolved_data_source.build_context(Ticker(symbol))
                 except Exception:
@@ -2075,25 +2077,18 @@ def run_cycle(
                     verdict = evaluate_ticker_evidence(
                         phase11_universe, target, market_evidence_available=False
                     )
-                    evaluation = start_daily_evaluation(
-                        resolved_audit_conn,
-                        trading_date_kst=datetime.strptime(
-                            resolved_trading_date, "%Y%m%d"
-                        ).date(),
-                        ticker=symbol,
-                        provenance=tuple(item.value for item in target.provenance),
-                        canonical_input=f"DATA_INCOMPLETE:{symbol}".encode("ascii"),
-                        account_scope_hash=phase11_snapshot.account_scope_hash,
-                    )
-                    if evaluation.status is DailyEvaluationStatus.STARTED:
-                        append_daily_evaluation_event(
-                            resolved_audit_conn,
-                            evaluation.evaluation_id,
-                            event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
-                            action=verdict.decision,
-                            reason_code="DATA_INCOMPLETE",
-                            detail={"market_evidence": "unavailable"},
-                        )
+                    def unavailable(owner, current, budget):
+                        evaluation = start_daily_evaluation(resolved_audit_conn,
+                            trading_date_kst=day, ticker=symbol,
+                            provenance=tuple(item.value for item in target.provenance),
+                            canonical_input=f'DATA_INCOMPLETE:{symbol}'.encode('ascii'),
+                            account_scope_hash=current.account_scope_hash)
+                        if evaluation.status is DailyEvaluationStatus.STARTED:
+                            append_daily_evaluation_event(resolved_audit_conn, evaluation.evaluation_id,
+                                event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
+                                action=verdict.decision, reason_code='DATA_INCOMPLETE',
+                                detail={'market_evidence':'unavailable'})
+                    account_work.run(unavailable)
                     outcomes.append({
                         "ticker": symbol,
                         "status": "data_incomplete",
@@ -2116,29 +2111,11 @@ def run_cycle(
                         final_order_state="DATA_INCOMPLETE",
                     )
                     continue
-                active_broker = (
-                    _LeaseGuardedBroker(
-                        resolved_broker,
-                        mutation_lease,
-                        portfolio_snapshot_reader,
-                        phase11_snapshot.snapshot_id if phase11_snapshot else None,
-                    )
-                    if phase11_enabled else resolved_broker
-                )
-                available_cash = (
-                    phase11_snapshot.account.available_cash
-                    if phase11_enabled and phase11_snapshot is not None
-                    else _available_cash(resolved_broker, resolved_settings)
-                )
+                active_broker = resolved_broker
+                available_cash = _available_cash(resolved_broker, resolved_settings) if not phase11_enabled else 0
                 provider_for_cycle = resolved_llm_provider
                 if phase11_enabled:
                     assert target is not None and phase11_snapshot is not None
-                    held = build_held_position_context(
-                        phase11_snapshot,
-                        symbol,
-                        current_price=context.current_price.amount,
-                    )
-                    context = _context_with_held_facts(context, held)
                     signal, _evaluation_id = _load_or_generate_daily_signal(
                         conn=resolved_audit_conn,
                         trading_date_kst=datetime.strptime(
@@ -2148,24 +2125,27 @@ def run_cycle(
                         context=context,
                         account_scope_hash=phase11_snapshot.account_scope_hash,
                         provider_factory=provider_factory,
-                        lease=mutation_lease,
+                        account_work=account_work,
                         dispatch_runtime=daily_dispatch_runtime,
                         settings=resolved_settings,
                     )
-                    active_broker._execution_intent_id = load_daily_dispatch(
-                        resolved_audit_conn, _evaluation_id)['execution_intent_id']
                     provider_for_cycle = _FinalSignalProvider(signal)
-                result = cycle_fn(
-                    provider_for_cycle,
-                    context,
-                    broker=active_broker,
-                    available_cash=available_cash,
-                    execution_config=_execution_config(resolved_settings),
-                    risk_config=_risk_config(resolved_settings),
-                    daily_loss_state=_daily_loss_state(resolved_settings),
-                    dry_run=dry_run,
-                    origin_run_id=resolved_run_id,
-                )
+                def execute_signal(owner=None, current=None, budget=None):
+                    current_context = context
+                    execution_broker = active_broker
+                    cash = available_cash
+                    if current is not None:
+                        current_context = _context_with_held_facts(context, build_held_position_context(
+                            current, symbol, current_price=context.current_price.amount))
+                        execution_broker = _LeaseGuardedBroker(resolved_broker, owner,
+                            portfolio_snapshot_reader, current.snapshot_id, evaluation_id=_evaluation_id, work_budget=budget)
+                        cash = current.account.available_cash
+                        budget.assert_available(minimum_seconds=5)
+                    return cycle_fn(provider_for_cycle, current_context, broker=execution_broker,
+                        available_cash=cash, execution_config=_execution_config(resolved_settings),
+                        risk_config=_risk_config(resolved_settings), daily_loss_state=_daily_loss_state(resolved_settings),
+                        dry_run=dry_run, origin_run_id=resolved_run_id)
+                result = account_work.run(execute_signal) if phase11_enabled else execute_signal()
                 if result.audit is None:
                     raise RuntimeError("cycle result missing audit event")
                 reconciliation = getattr(resolved_broker, "last_reconciliation", None)
@@ -2539,11 +2519,13 @@ def soak_drill_command(
 _intraday_stop_requested = lambda: False
 
 
-def _default_intraday_command_runner(mode: str, interval_seconds: int | None) -> Any:
+def _default_intraday_command_runner(mode: str, interval_seconds: int | None, *,
+        settings=None, runtime=None, clock=None, sleeper=time.sleep, max_iterations=None) -> Any:
     """Build the production, LLM-free intraday composition root."""
 
-    settings = Settings()
-    runtime = build_runtime(settings=settings)
+    settings = settings or Settings()
+    runtime = runtime or build_runtime(settings=settings)
+    clock = clock or (lambda: datetime.now(KST))
     reader = runtime.portfolio_snapshot_reader
     quote_reader = runtime.quote_reader
     scope = runtime.account_scope_hash
@@ -2552,14 +2534,9 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
         raise RuntimeError("intraday KIS collaborators are unavailable")
     migrate_portfolio(runtime.audit_conn)
     cycle_id = uuid.uuid4().hex
-    lease = acquire_mutation_lease(
-        runtime.audit_conn,
-        account_scope_hash=scope,
-        lock_dir=Path(settings.audit_db_path).parent / ".mutation-locks",
-        command=f"intraday-{mode}",
-        cycle_id=cycle_id,
-    )
+    lease = None
     latest: list[PortfolioSnapshot] = []
+    pass_budget = []
     transition_guard = TransitionEvidenceGuard(
         transport=runtime.notifier.send,
         evidence_writer=lambda note, status, category: record_transition_notification(
@@ -2585,29 +2562,12 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             normalized_state="STOPPED",
             broker_subject_id=cycle_id,
             severity=OperationalSeverity.INFO,
-            observed_at=datetime.now(timezone.utc),
+            observed_at=clock(),
             detail={"mode": mode},
         )
-        notification = record_transition_state(runtime.audit_conn, observation)
-        if notification is not None:
-            transition_guard.notify(notification)
-
-    def fresh_snapshot() -> PortfolioSnapshot:
-        snapshot = reader()
-        latest[:] = [snapshot]
-        append_portfolio_snapshot(
-            runtime.audit_conn,
-            snapshot,
-            cycle_id=cycle_id,
-            observation_id=f"{cycle_id}:{uuid.uuid4().hex}",
-        )
-        for observation in transition_observations_for_snapshot(
-            snapshot,
-            observed_at=datetime.now(timezone.utc),
-            long_open_seconds=settings.intraday_long_open_warning_seconds,
-        ):
-            persist_transition(observation)
-        return snapshot
+        record_transition_state(runtime.audit_conn, observation)
+        # The terminal fact is local; optional notification transport must never
+        # postpone durable blocked close after an expired I/O deadline.
 
     def persist_transition(observation: TransitionObservation) -> None:
         """Persist the durable projection before optional alert transport."""
@@ -2616,121 +2576,85 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
         if notification is not None:
             transition_guard.notify(notification)
 
-    def reconcile() -> dict[str, bool]:
-        snapshot = fresh_snapshot()
-        determinate = all(order.status != "UNKNOWN" for order in snapshot.orders)
-        if not determinate:
-            persist_transition(
-                TransitionObservation(
-                    account_scope_hash=scope,
-                    ticker=None,
-                    event_family="RECONCILIATION",
-                    normalized_state="RECONCILIATION_UNRESOLVED",
-                    broker_subject_id=cycle_id,
-                    severity=OperationalSeverity.CRITICAL,
-                    observed_at=datetime.now(timezone.utc),
-                    detail={"mode": mode},
-                )
-            )
-        return {"determinate": determinate}
-
-    def persist_reconciliation_unresolved() -> None:
-        persist_transition(
-            TransitionObservation(
-                account_scope_hash=scope,
-                ticker=None,
-                event_family="RECONCILIATION",
-                normalized_state="RECONCILIATION_UNRESOLVED",
-                broker_subject_id=cycle_id,
-                severity=OperationalSeverity.CRITICAL,
-                observed_at=datetime.now(timezone.utc),
-                detail={"mode": mode},
-            )
-        )
-
     def submit(candidate: Any, price: Money) -> str | None:
         if not latest:
             raise RuntimeError("intraday submission requires current account truth")
-        return submit_exit(
-            candidate,
-            broker=runtime.broker,
-            limit_price=price,
-            portfolio_refresh=reader,
-            lease_guard=lease,
-            cycle_snapshot_id=latest[0].snapshot_id,
-            origin_run_id=cycle_id,
-            submission_authority=getattr(runtime.broker,'_submission_authority',None),
-        )
+        timeout = getattr(getattr(runtime.broker, '_order_adapter', None), '_timeout_seconds', 5)
+        with pass_budget[0].submission_guard(lease, timeout_seconds=timeout):
+            return submit_exit(candidate, broker=runtime.broker, limit_price=price,
+                portfolio_refresh=reader, lease_guard=lease, cycle_snapshot_id=latest[0].snapshot_id,
+                origin_run_id=cycle_id, submission_authority=getattr(runtime.broker,'_submission_authority',None))
 
     def audit(result: Any) -> None:
         append_watch_iteration(runtime.audit_conn, result)
         for observation in transition_observations_for_iteration(
             result,
             account_scope_hash=scope,
-            observed_at=datetime.now(timezone.utc),
+            observed_at=clock(),
         ):
             persist_transition(observation)
 
+    def lease_factory():
+        nonlocal lease, cycle_id, terminalized
+        cycle_id = uuid.uuid4().hex
+        terminalized = False
+        lease = acquire_mutation_lease(runtime.audit_conn, account_scope_hash=scope,
+            lock_dir=Path(settings.audit_db_path).parent/'.mutation-locks',
+            command=f'intraday-{mode}', cycle_id=cycle_id, observed_at=clock())
+        return lease
+    def prior_terminal():
+        prior = lease.prior_cycle_id
+        row = runtime.audit_conn.execute('SELECT status FROM runs WHERE run_id=?', (prior,)).fetchone()
+        if row is not None and row[0] == 'RUNNING':
+            sqlite_audit.finish_run(runtime.audit_conn, run_id=prior, status=RunStatus.FAILED)
+        return True
+    def unresolved_local():
+        record_transition_state(runtime.audit_conn, TransitionObservation(account_scope_hash=scope,
+            ticker=None, event_family='RECONCILIATION', normalized_state='RECONCILIATION_UNRESOLVED',
+            broker_subject_id=cycle_id, severity=OperationalSeverity.CRITICAL,
+            observed_at=clock(), detail={'mode':mode}))
+    work = BoundedAccountWork(conn=runtime.audit_conn, account_scope_hash=scope,
+        lease_factory=lease_factory, snapshot_reader=reader, terminalize_prior=prior_terminal,
+        reconcile_snapshot=lambda current: {'determinate': all(order.status != 'UNKNOWN' for order in current.orders)},
+        terminalize=terminalize_intraday, persist_unresolved=unresolved_local, clock=clock)
+    def bounded_risk_budget():
+        now = clock().astimezone(KST)
+        remaining = min(45., (now.replace(hour=15, minute=30, second=0, microsecond=0) - now).total_seconds())
+        return AccountWorkBudget(seconds=remaining, cleanup_seconds=min(10., remaining / 3))
+    work.budget_factory = bounded_risk_budget
+    def one_pass():
+        if session_phase_at(clock()) is IntradaySessionPhase.TERMINAL:
+            return run_intraday_check(clock=clock, snapshot_reader=reader, quote_reader=quote_reader,
+                risk_config=_risk_config(settings), lease=None, exit_submitter=submit, audit_sink=audit)
+        def operation(owner, current, budget):
+            pass_budget[:] = [budget]
+            latest[:] = [current]
+            for observation in transition_observations_for_snapshot(current, observed_at=clock(),
+                    long_open_seconds=settings.intraday_long_open_warning_seconds):
+                persist_transition(observation)
+            return run_intraday_check(clock=clock, snapshot_reader=lambda:current,
+                quote_reader=quote_reader, risk_config=_risk_config(settings), lease=owner,
+                exit_submitter=submit, audit_sink=audit, mutation_guard=transition_guard.assert_mutation_allowed,
+                stop_requested=lambda:bool(_intraday_stop_requested()),
+                terminalize=lambda result:terminalize_intraday(), reconcile=lambda:True,
+                persist_unresolved=unresolved_local,
+                work_budget=budget,
+                policy=getattr(getattr(runtime.broker, '_submission_authority', None), 'policy', None))
+        return work.run(operation)
     try:
-        if lease.recovery_required:
-            recover_to_active(
-                lease,
-                terminalize_prior_cycles=lambda: sqlite_audit.recover_abandoned_runs(
-                    runtime.audit_conn
-                ),
-                query_fresh_snapshot=fresh_snapshot,
-                reconcile_prior_orders=lambda current: {
-                    "determinate": all(
-                        order.status != "UNKNOWN" for order in current.orders
-                    )
-                },
-            )
-            persist_transition(
-                TransitionObservation(
-                    account_scope_hash=scope,
-                    ticker=None,
-                    event_family="RECOVERY",
-                    normalized_state="RECOVERED",
-                    broker_subject_id=cycle_id,
-                    severity=OperationalSeverity.INFO,
-                    observed_at=datetime.now(timezone.utc),
-                    detail={"mode": mode},
-                )
-            )
-        kwargs = dict(
-            clock=lambda: datetime.now(ZoneInfo("Asia/Seoul")),
-            snapshot_reader=fresh_snapshot,
-            quote_reader=quote_reader,
-            risk_config=_risk_config(settings),
-            lease=lease,
-            exit_submitter=submit,
-            audit_sink=audit,
-            mutation_guard=transition_guard.assert_mutation_allowed,
-            persist_unresolved=persist_reconciliation_unresolved,
-        )
         if mode == "check":
-            return run_intraday_check(
-                **kwargs,
-                terminalize=lambda _result: terminalize_intraday(),
-            )
+            return one_pass()
         return run_intraday_watch(
-            **kwargs,
-            sleeper=time.sleep,
+            clock=clock, one_pass=one_pass, sleeper=sleeper, max_iterations=max_iterations,
             stop_requested=lambda: bool(_intraday_stop_requested()),
-            reconcile=reconcile,
             interval_seconds=interval_seconds or settings.intraday_watch_interval_seconds,
-            terminalize=terminalize_intraday,
-            persist_unresolved=persist_reconciliation_unresolved,
+            policy=getattr(getattr(runtime.broker, '_submission_authority', None), 'policy', None),
         )
     finally:
-        if not lease.closed:
-            release_after_reconciliation(
-                lease,
-                terminalize_cycle=terminalize_intraday,
-                reconcile_submitted=reconcile,
-                persist_unresolved=persist_reconciliation_unresolved,
-            )
-        runtime.audit_conn.close()
+        try:
+            terminalize_intraday()
+        finally:
+            runtime.audit_conn.close()
 
 
 _intraday_command_runner = _default_intraday_command_runner

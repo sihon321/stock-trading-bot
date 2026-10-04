@@ -51,7 +51,7 @@ def test_bounded_timeout_stays_recovery_blocked_after_unlock(tmp_path):
     from trading_bot.account_work import AccountWorkTimeout
     work, conn, clock, sequence = account_work_fixture(tmp_path)
     def operation(lease, current, budget):
-        clock.advance(46)
+        clock.advance(36)
         budget.assert_available()
     with pytest.raises(AccountWorkTimeout): work.run(operation)
     assert 'unresolved' in sequence
@@ -88,6 +88,116 @@ def test_real_stalled_read_is_interrupted_without_live_lock_takeover(tmp_path):
     assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RECOVERY_BLOCKED'
     assert 'unresolved' in sequence
     conn.close()
+
+
+def _slow_daily_process(root, ready, resume, results):
+    """Spawn-safe actual daily runner with a broker-free fake transport wait."""
+    from pathlib import Path
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from tests import test_phase11_cli as fixture
+    fixture._test_root, fixture._dependencies = Path(root), {}
+    conn = sqlite3.connect(Path(root)/'shared-primary.db')
+    deps = fixture.dependencies(conn)
+    runtime = deps['daily_dispatch_runtime']
+    class SlowProvider(fixture.Provider):
+        def generate_signal(self, context):
+            ready.put((runtime.settings, str(Path(deps['mutation_lease'].lock_path).parent)))
+            if not resume.wait(8): raise RuntimeError('fake parent wait exhausted')
+            return super().generate_signal(context)
+    try:
+        outcome = fixture.invoke(conn, run_id='slow-daily', factory=lambda:SlowProvider([]), candidates=('005930',))
+        results.put((outcome['errors'], conn.execute('SELECT status FROM runs WHERE run_id=?',('slow-daily',)).fetchone()[0]))
+    finally:
+        conn.close()
+
+
+def test_spawned_slow_provider_allows_risk_account_work_and_kill_acceptance(tmp_path):
+    from datetime import datetime, timezone
+    from dataclasses import replace
+    from trading_bot.account_work import BoundedAccountWork
+    from trading_bot.control_store import ControlStore
+    from trading_bot.service_models import ControlRequest
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from tests.test_phase11_cli import snapshot
+    ctx = multiprocessing.get_context('spawn')
+    ready, results, resume = ctx.Queue(), ctx.Queue(), ctx.Event()
+    child = ctx.Process(target=_slow_daily_process,args=(str(tmp_path),ready,resume,results))
+    child.start()
+    try:
+        settings, lock_dir = ready.get(timeout=8)
+        clock = FakeServiceClock(datetime(2026,9,4,0,10,tzinfo=timezone.utc))
+        conn = sqlite3.connect(tmp_path/'shared-primary.db')
+        current = []
+        work = BoundedAccountWork(conn=conn, account_scope_hash=SCOPE.account_scope_hash,clock=clock,
+            lease_factory=lambda:acquire_mutation_lease(conn,account_scope_hash=SCOPE.account_scope_hash,
+                lock_dir=lock_dir,command='intraday-check',cycle_id='risk-concurrent',observed_at=clock()),
+            snapshot_reader=lambda:replace(snapshot(snapshot_id=__import__('uuid').uuid4().hex),observed_at=clock()),
+            terminalize_prior=lambda:True,reconcile_snapshot=lambda current:True,
+            terminalize=lambda:None,persist_unresolved=lambda:pytest.fail('healthy risk cannot be blocked'))
+        assert work.run(lambda lease, truth, budget: current.append(truth.snapshot_id) or 'risk-progress') == 'risk-progress'
+        controls=ControlStore(settings,clock=clock)
+        with controls.admission_lock(): pass
+        state=controls.reader().effective_state()
+        controls.request_writer(actor='tester').append_request(ControlRequest(request_id='kill-during-wait',
+            actor='tester',requested_at=clock(),scope=controls.scope,action='KILL',expected_revision=state.acceptance_revision))
+        assert controls.reader().effective_state(SCOPE).mode == 'KILLED'
+        assert conn.execute('SELECT status FROM runs WHERE run_id=?',('slow-daily',)).fetchone()[0] == 'RUNNING'
+        conn.close()
+        resume.set()
+        assert results.get(timeout=8) == (0, 'COMPLETED')
+        child.join(8)
+        assert child.exitcode == 0 and len(current) == 1
+    finally:
+        resume.set()
+        child.join(2)
+        if child.is_alive(): child.terminate(); child.join()
+
+
+def test_daily_evaluation_side_intent_survives_new_execution_wrapper(tmp_path):
+    from tests.test_service_controls import submission_fixture
+    from trading_bot.cli import _LeaseGuardedBroker
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from pathlib import Path
+    import uuid
+    controls, primary, lease, guard, broker, adapter, args=submission_fixture(tmp_path)
+    order=Order(Ticker('005930'),OrderSide.SELL,1,Money(70000))
+    intent=str(uuid.uuid5(uuid.NAMESPACE_URL,'daily-evaluation:saved-evaluation:SELL'))
+    try:
+        wrapper=_LeaseGuardedBroker(broker,lease,portfolio_refresh=lambda:args['portfolio_refresh']('005930'),
+            evaluation_id='saved-evaluation')
+        wrapper.place_order(order,**args)
+        assert wrapper._execution_intent_id == intent
+        lease.release()
+        lease=acquire_mutation_lease(primary,account_scope_hash=SCOPE.account_scope_hash,
+            lock_dir=Path(lease.lock_path).parent,command='run',cycle_id='saved-replay',observed_at=controls.clock())
+        repeated=_LeaseGuardedBroker(broker,lease,portfolio_refresh=lambda:args['portfolio_refresh']('005930'),
+            evaluation_id='saved-evaluation')
+        with pytest.raises(Exception): repeated.place_order(order,**args)
+        assert repeated._execution_intent_id==intent and adapter.post_attempts==1
+        assert len(controls.reader().list_admissions())==1
+    finally:
+        lease.release();primary.close()
+
+
+def test_final_owner_assertion_reserves_configured_post_budget_after_preparation():
+    from types import SimpleNamespace
+    from trading_bot.account_work import AccountWorkBudget, AccountWorkTimeout
+    from trading_bot.cli import _LeaseGuardedBroker
+    from trading_bot.domain import Order,OrderSide,Money,Ticker
+    clock=FakeServiceClock(); posts=[]
+    lease=SimpleNamespace(assert_active_owner=lambda **kwargs:None)
+    class PreparedBroker:
+        _order_adapter=SimpleNamespace(_timeout_seconds=10)
+        def place_order(self, order, **kwargs):
+            clock.advance(26)  # 9s remain for work, below configured single POST.
+            lease.assert_active_owner()
+            posts.append(order)
+    budget=AccountWorkBudget(monotonic=clock.monotonic)
+    guarded=_LeaseGuardedBroker(PreparedBroker(),lease,work_budget=budget)
+    with pytest.raises(AccountWorkTimeout):
+        guarded.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)))
+    assert posts==[]
 
 
 def _hold(settings, ready, release):
