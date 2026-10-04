@@ -186,3 +186,33 @@ def test_mock_domain_exact_and_unverified_codex_fail_closed(tmp_path):
         with pytest.raises(ServiceCompositionBlocked,match='PROVIDER_SINGLE_SHOT_UNVERIFIED'):
             result.provider_factory()
     assert not probe.attempts
+
+
+@pytest.mark.parametrize('domain', [
+    'https://openapi.koreainvestment.com:9443',
+    'https://openapivts.koreainvestment.com:29443/foreign',
+    'https://user@openapivts.koreainvestment.com:29443',
+    'https://openapivts.koreainvestment.com:29443?real=true',
+])
+def test_domain_cannot_redirect_or_select_real_target(tmp_path,domain):
+    import json
+    from trading_bot.service_composition import build_service_composition
+    settings,receipt,reader,safety,clients,policy=mock_fixture(tmp_path)
+    document=json.loads(settings.trading_config_path.read_text())
+    document['kis_mock']['domain']=domain
+    settings.trading_config_path.write_text(json.dumps(document))
+    with patch('trading_bot.kis_auth.KisTokenManager',side_effect=AssertionError('client')):
+        result=build_service_composition(settings,receipt=receipt,saved_evidence_reader=reader,
+            current_safety=lambda *a:safety,clock=lambda:NOW,offline_mock_clients=clients,policy=policy)
+    assert not result.activation.allowed
+
+
+def test_protected_explicit_secret_path_ignores_real_and_secret_env(tmp_path,monkeypatch):
+    from trading_bot.service_composition import load_mock_trading_settings
+    settings,*_=mock_fixture(tmp_path)
+    monkeypatch.setenv('SOAK_KIS_MOCK_ACCOUNT_CANO','99998888')
+    monkeypatch.setenv('TRADING_MODE','real')
+    monkeypatch.setenv('CONFIRM_REAL_TRADING','true')
+    loaded=load_mock_trading_settings(settings.trading_config_path)
+    assert loaded.kis_mock_account_cano.get_secret_value()=='00001234'
+    assert not hasattr(loaded,'kis_real') and not hasattr(loaded,'confirm_real_trading')
