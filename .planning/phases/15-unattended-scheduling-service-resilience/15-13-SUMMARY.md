@@ -148,3 +148,11 @@ Both tasks have ordered test/feat gates; normal repository commit hooks were use
 ## Self-Check: PASSED
 
 All four created files and six modified files exist. Commits `d7d451b`, `13d5931`, `57ba229`, and `1457fc6` exist in main history; no tracked deletions or uncommitted implementation files remain after GREEN. Ordered RED/GREEN gates and canonical output were verified before tracking updates.
+
+## Wave 8 Regression Follow-up
+
+- Parent's full regression completed **1852 passed, 1 failed in 465.32s**. The sole failure was `tests/test_operator_setup.py::test_exact_reviewed_extras_and_independent_scripts`: its exact script inventory predated the planned `bot-service` entrypoint.
+- **[Rule 1 — Test contract integration; parent-approved narrow ownership]** Added exactly `bot-service: trading_bot.service_cli:app` to the expected inventory. Dependency pins, security assertions and exact equality remain unchanged; no source implementation changed. Fix commit: `6fe966c`. This adds one test file to the plan's original 10-file implementation inventory.
+- Verification with the project's reviewed user-base environment: `PYTHONUSERBASE="$PWD/.python-userbase" python3 -m pytest -q tests/test_operator_setup.py tests/test_service_cli.py::test_all_commands_and_entrypoint_registered` — **4 passed in 0.96s**; diff check passed.
+- Initial `.venv` verification had two environment failures because that interpreter lacks the reviewed Flask/Playwright prerequisites; using the already installed project user-base resolved them without installing packages or weakening checks.
+- Parent reruns the full wave gate. No duplicate plan advance, metrics or tracking changes were made for this follow-up; prior requirements and operator gates remain unchanged.
