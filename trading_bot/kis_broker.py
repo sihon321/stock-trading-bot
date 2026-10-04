@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from contextlib import nullcontext
 from datetime import datetime, time as dt_time
 import hashlib
 from typing import Any, Callable, Dict, Optional, Protocol, Sequence
@@ -97,6 +98,7 @@ class KISBroker:
         clock: Optional[Callable[[], datetime]] = None,
         freshness_policy_version: str = "quote-freshness-v1",
         _test_only_allow_unguarded_mutation: bool = False,
+        submission_authority: Any = None,
     ) -> None:
         self._order_adapter = order_adapter
         self._account = account
@@ -110,6 +112,10 @@ class KISBroker:
         self._pre_submit_quote_reader = pre_submit_quote_reader
         self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
         self._freshness_policy_version = freshness_policy_version
+        self._submission_authority = submission_authority
+        # The compatibility constructor cannot bypass an actual credential adapter.
+        if _test_only_allow_unguarded_mutation and isinstance(order_adapter, KisOrderAdapter):
+            _test_only_allow_unguarded_mutation = False
         self._test_only_allow_unguarded_mutation = bool(
             _test_only_allow_unguarded_mutation
         )
@@ -145,6 +151,17 @@ class KISBroker:
         trigger_revalidator: Optional[Callable[[PortfolioSnapshot, Money], bool]] = None,
     ) -> str:
         """Place one order through the fresh-truth, evidence-first boundary."""
+
+        from .submission_authority import SubmissionAuthority, SubmissionDenied
+        authority = self._submission_authority
+        if type(authority) is not SubmissionAuthority and not self._test_only_allow_unguarded_mutation:
+            raise MarketClosedError('FINAL_SUBMISSION_AUTHORITY_REQUIRED')
+        scope = None
+        if authority is not None:
+            try:
+                scope = authority.assert_account(self._account, self._order_adapter)
+            except SubmissionDenied as exc:
+                raise MarketClosedError(str(exc)) from None
 
         paired_capability = (
             portfolio_refresh is not None
@@ -213,6 +230,7 @@ class KISBroker:
             return existing
 
         submission_id = str(uuid.uuid4())
+        quote = None
         if self._pre_submit_quote_reader is not None:
             quote = self._pre_submit_quote_reader(order.ticker.value)
             checked_at = self._clock()
@@ -289,47 +307,57 @@ class KISBroker:
             if owner_token
             else None
         )
-        self._emit(OrderEvent(
-            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
-            ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ATTEMPTED,
-            submission_id=submission_id, side=order.side.value,
-            requested_qty=order.quantity,
-            detail={
-                "cycle_snapshot_id": cycle_snapshot_id,
-                "refresh_snapshot_id": (
-                    refresh_snapshot.snapshot_id if refresh_snapshot is not None else None
-                ),
-                "lease_owner_fingerprint": owner_token_hash,
-            },
-        ))
+        boundary = (authority.admit(order, scope, intent_id, submission_id,
+            lease_guard, (refresh_snapshot, quote)) if authority is not None else nullcontext(None))
         try:
-            result = self._order_adapter.place_order_cash(
-                account=self._account, order=order, snapped_price=snapped_price,
-            )
-        except Exception as exc:
-            detail = {"error_type": type(exc).__name__}
-            if isinstance(exc, KisOrderError):
-                detail.update(exc.safe_diagnostics)
-            self._emit(OrderEvent(
-                order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
-                ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_AMBIGUOUS,
-                submission_id=submission_id, side=order.side.value,
-                requested_qty=order.quantity, broker_status="ACK_UNKNOWN",
-                detail=detail,
-            ))
-            self._last_reconciliation = OrderReconciliation(
-                "", order.ticker.value, order.quantity, 0, order.quantity,
-                client_ref, intent_id, submission_id, "AMBIGUOUS_SUBMISSION",
-            )
-            raise AmbiguousSubmissionError(
-                order_intent_id=intent_id, submission_id=submission_id
-            ) from None
-        self._emit(OrderEvent(
-            order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
-            ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ACCEPTED,
-            submission_id=submission_id, broker_order_id=result.order_id,
-            side=order.side.value, requested_qty=order.quantity, broker_status="ACCEPTED",
-        ))
+            with boundary as admission:
+                self._emit(OrderEvent(
+                    order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+                    ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ATTEMPTED,
+                    submission_id=submission_id, side=order.side.value,
+                    requested_qty=order.quantity,
+                    detail={
+                        **(admission.detail() if admission is not None else {}),
+                        "cycle_snapshot_id": cycle_snapshot_id,
+                        "refresh_snapshot_id": (
+                            refresh_snapshot.snapshot_id if refresh_snapshot is not None else None
+                        ),
+                        "lease_owner_fingerprint": owner_token_hash,
+                    },
+                ))
+                if authority is not None:
+                    authority.verify_attempt(admission, order, origin,
+                        lease=lease_guard, fresh_evidence=(refresh_snapshot, quote))
+                try:
+                    result = self._order_adapter.place_order_cash(
+                        account=self._account, order=order, snapped_price=snapped_price,
+                    )
+                except Exception as exc:
+                    detail = {"error_type": type(exc).__name__}
+                    if isinstance(exc, KisOrderError):
+                        detail.update(exc.safe_diagnostics)
+                    self._emit(OrderEvent(
+                        order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+                        ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_AMBIGUOUS,
+                        submission_id=submission_id, side=order.side.value,
+                        requested_qty=order.quantity, broker_status="ACK_UNKNOWN",
+                        detail=detail,
+                    ))
+                    self._last_reconciliation = OrderReconciliation(
+                        "", order.ticker.value, order.quantity, 0, order.quantity,
+                        client_ref, intent_id, submission_id, "AMBIGUOUS_SUBMISSION",
+                    )
+                    raise AmbiguousSubmissionError(
+                        order_intent_id=intent_id, submission_id=submission_id
+                    ) from None
+                self._emit(OrderEvent(
+                    order_intent_id=intent_id, origin_run_id=origin, observer_run_id=observer,
+                    ticker=order.ticker.value, event_type=OrderEventType.SUBMISSION_ACCEPTED,
+                    submission_id=submission_id, broker_order_id=result.order_id,
+                    side=order.side.value, requested_qty=order.quantity, broker_status="ACCEPTED",
+                ))
+        except SubmissionDenied as exc:
+            raise MarketClosedError(str(exc)) from None
 
         fill = self._read_fill_status(
             ticker=order.ticker.value,

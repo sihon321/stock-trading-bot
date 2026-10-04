@@ -188,9 +188,12 @@ def submission_fixture(tmp_path):
     j = ControlStore(settings, clock=FakeServiceClock())
     j.initialize(actor='owner')
     primary = sqlite_audit.connect(settings.trading_journal_paths[0])
+    from trading_bot.portfolio_store import migrate_portfolio
+    migrate_portfolio(primary)
     soak_store.connect_soak_store(settings.trading_journal_paths[1]).close()
     connect_controller(settings.trading_journal_paths[2], *settings.trading_journal_paths[:2]).close()
-    sqlite_audit.start_run(primary, run_id='submission-run', trading_mode='mock', dry_run=False, target='kis_mock')
+    if primary.execute("SELECT 1 FROM runs WHERE run_id='submission-run'").fetchone() is None:
+        sqlite_audit.start_run(primary, run_id='submission-run', trading_mode='mock', dry_run=False, target='kis_mock')
     lease = acquire_mutation_lease(primary, account_scope_hash=scope.account_scope_hash,
         lock_dir=tmp_path/'account-locks', command='test', cycle_id='submission-run', observed_at=NOW)
     class Calendar:
@@ -235,7 +238,7 @@ def test_final_authority_pending_restrictions(tmp_path, action, side, allowed):
             with pytest.raises(MarketClosedError): broker.place_order(order, **args)
         assert adapter.post_attempts == int(allowed)
         if allowed: assert j.reader().list_admissions()[0]['state']=='FINISHED'
-    finally: lease.close(); primary.close()
+    finally: lease.release(); primary.close()
 
 
 def test_final_authority_callback_kill_zero_post(tmp_path):
@@ -249,7 +252,7 @@ def test_final_authority_callback_kill_zero_post(tmp_path):
     try:
         with pytest.raises(MarketClosedError): broker.place_order(_order(),**args)
         assert adapter.post_attempts==0
-    finally: lease.close(); primary.close()
+    finally: lease.release(); primary.close()
 
 
 @pytest.mark.parametrize('failure', ['primary','post','terminal','crash'])
@@ -273,7 +276,7 @@ def test_final_authority_consumes_partial_unknown_intent(tmp_path, failure, monk
         broker.set_evidence_sink(original)
         with pytest.raises(Exception): broker.place_order(order,**args)
         assert adapter.post_attempts==int(failure in ('post','terminal'))
-    finally: lease.close(); primary.close()
+    finally: lease.release(); primary.close()
 
 
 def test_final_authority_post_has_no_sql_transaction_and_lock_cannot_accept(tmp_path):
@@ -290,7 +293,84 @@ def test_final_authority_post_has_no_sql_transaction_and_lock_cannot_accept(tmp_
     try:
         broker.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)),**args)
         assert j.request_writer(actor='owner').append_request(request(j,'KILL')).status=='REQUESTED'
-    finally: lease.close(); primary.close()
+    finally: lease.release(); primary.close()
+
+
+def _spawn_final_post(root, barrier, ready, release, results):
+    from pathlib import Path
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    from trading_bot.mutation_lease import recover_to_active
+    j, primary, lease, guard, broker, adapter, args = submission_fixture(Path(root))
+    def wait():
+        ready.set()
+        if not release.wait(10): raise TimeoutError('fixture barrier')
+    refresh=args['portfolio_refresh']
+    if lease.recovery_required:
+        recover_to_active(lease,terminalize_prior_cycles=lambda:None,
+            reconcile_broker_truth=lambda:True,refresh_snapshot=lambda:refresh('005930'))
+    if barrier=='EARLY': args['trigger_revalidator']=lambda snapshot,price:(wait() or True)
+    if barrier=='ATTEMPT':
+        sink=broker._evidence_sink
+        def evidence(event):
+            sink(event)
+            if event.event_type.value=='SUBMISSION_ATTEMPTED': wait()
+        broker.set_evidence_sink(evidence)
+    post=adapter.place_order_cash
+    def transport(**kw):
+        if barrier=='POST': wait()
+        results.put('POST')
+        return post(**kw)
+    adapter.place_order_cash=transport
+    try:
+        broker.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)),**args)
+        results.put('FINISHED')
+    except Exception: results.put('DENIED')
+    finally: lease.release(); primary.close()
+
+
+@pytest.mark.parametrize('barrier', ['EARLY','ATTEMPT','POST'])
+def test_final_authority_spawned_control_post_ordering(tmp_path,barrier):
+    j, primary, lease, guard, broker, adapter, args=submission_fixture(tmp_path)
+    lease.release(); primary.close()
+    ctx=multiprocessing.get_context('spawn')
+    ready,release,results=ctx.Event(),ctx.Event(),ctx.Queue()
+    child=ctx.Process(target=_spawn_final_post,args=(str(tmp_path),barrier,ready,release,results))
+    child.start()
+    try:
+        assert ready.wait(10)
+        accepted=j.request_writer(actor='owner').append_request(request(j,'KILL'))
+        assert accepted.status==('REQUESTED' if barrier=='EARLY' else 'UNAVAILABLE')
+        release.set(); child.join(10)
+        assert child.exitcode==0
+        if barrier=='EARLY': assert results.get(timeout=2)=='DENIED'
+        else:
+            assert results.get(timeout=2)=='POST' and results.get(timeout=2)=='FINISHED'
+            assert j.request_writer(actor='owner').append_request(request(j,'KILL')).status=='REQUESTED'
+        assert j.reader().effective_state().mode=='KILLED'
+    finally:
+        release.set()
+        if child.is_alive(): child.kill(); child.join(5)
+
+
+@pytest.mark.parametrize('changed', ['quote','snapshot','session','fake_lease','fake_activation'])
+def test_final_authority_rechecks_actual_gates(tmp_path,changed):
+    from dataclasses import replace
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    from trading_bot.kis_broker import MarketClosedError
+    j, primary, lease, guard, broker, adapter, args=submission_fixture(tmp_path)
+    if changed in ('quote','snapshot'): j.clock.advance(11)
+    elif changed=='session': j.clock.advance(6*3600+20*60)
+    elif changed=='fake_lease':
+        class FakeLease:
+            account_scope_hash=lease.account_scope_hash
+            def assert_active_owner(self): return True
+        args['lease_guard']=FakeLease()
+    else: guard.unattended=True; guard.activation_check=lambda:True
+    try:
+        with pytest.raises(MarketClosedError):
+            broker.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)),**args)
+        assert adapter.post_attempts==0
+    finally: lease.release(); primary.close()
 
 
 def application(j):

@@ -18,6 +18,7 @@ and leave all state unchanged — the broker never mutates on a rejected order.
 from __future__ import annotations
 
 from datetime import datetime
+from contextlib import nullcontext
 from typing import Any, Callable, Dict, List, Optional, Sequence
 import uuid
 from zoneinfo import ZoneInfo
@@ -39,6 +40,8 @@ class MockBroker:
         evidence_sink: Optional[Callable[[OrderEvent], object]] = None,
         clock: Optional[Callable[[], datetime]] = None,
         freshness_policy_version: str = "quote-freshness-v1",
+        submission_authority: Any = None,
+        submission_scope: Any = None,
     ) -> None:
         self._cash = cash
         self._positions: Dict[str, Position] = {
@@ -50,6 +53,8 @@ class MockBroker:
         self._evidence_sink = evidence_sink
         self._clock = clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul")))
         self._freshness_policy_version = freshness_policy_version
+        self._submission_authority = submission_authority
+        self._submission_scope = submission_scope
 
     def set_evidence_sink(self, sink: Callable[[OrderEvent], object]) -> None:
         self._evidence_sink = sink
@@ -77,6 +82,7 @@ class MockBroker:
                 such rejection no state is mutated.
         """
 
+        quote = None
         if self._pre_submit_quote_reader is not None:
             from trading_bot.kis_broker import MarketClosedError
 
@@ -129,16 +135,45 @@ class MockBroker:
 
         notional = order.quantity * order.limit_price.amount
 
-        if order.side is OrderSide.BUY:
-            self._apply_buy(order, notional)
-        elif order.side is OrderSide.SELL:
-            self._apply_sell(order, notional)
-        else:  # pragma: no cover - OrderSide is exhaustively BUY/SELL
-            raise ValueError(f"unsupported order side: {order.side!r}")
-
-        self._order_counter += 1
-        self._order_history.append(order)
-        return f"MOCK-{self._order_counter}"
+        authority=self._submission_authority
+        intent_id=str(context.get('order_intent_id') or uuid.uuid4())
+        submission_id=str(uuid.uuid4())
+        origin=str(context.get('origin_run_id') or 'unattributed')
+        boundary=nullcontext(None)
+        if authority is not None:
+            from .submission_authority import SubmissionAuthority
+            if type(authority) is not SubmissionAuthority:
+                raise ValueError('actual submission authority required')
+            refresh=context.get('portfolio_refresh')
+            snapshot=refresh(order.ticker.value) if callable(refresh) else None
+            boundary=authority.admit(order,self._submission_scope,intent_id,submission_id,
+                context.get('lease_guard'),(snapshot,quote))
+        with boundary as admission:
+            if authority is not None:
+                if self._evidence_sink is None:
+                    raise ValueError('committed primary evidence required')
+                self._evidence_sink(OrderEvent(order_intent_id=intent_id,origin_run_id=origin,
+                    observer_run_id=origin,ticker=order.ticker.value,
+                    event_type=OrderEventType.SUBMISSION_ATTEMPTED,submission_id=submission_id,
+                    side=order.side.value,requested_qty=order.quantity,detail=admission.detail()))
+                authority.verify_attempt(admission,order,origin,
+                    lease=context.get('lease_guard'),fresh_evidence=(snapshot,quote))
+            if order.side is OrderSide.BUY:
+                self._apply_buy(order, notional)
+            elif order.side is OrderSide.SELL:
+                self._apply_sell(order, notional)
+            else:  # pragma: no cover
+                raise ValueError(f"unsupported order side: {order.side!r}")
+            self._order_counter += 1
+            self._order_history.append(order)
+            result=f"MOCK-{self._order_counter}"
+            if authority is not None:
+                self._evidence_sink(OrderEvent(order_intent_id=intent_id,origin_run_id=origin,
+                    observer_run_id=origin,ticker=order.ticker.value,
+                    event_type=OrderEventType.RECONCILED,submission_id=submission_id,
+                    broker_order_id=result,side=order.side.value,requested_qty=order.quantity,
+                    filled_qty=order.quantity,unfilled_qty=0,broker_status='FILLED'))
+            return result
 
     def _apply_buy(self, order: Order, notional: float) -> None:
         if notional > self._cash.amount:
