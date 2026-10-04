@@ -649,8 +649,10 @@ class OperatorEvidenceService:
                         ids=[f'service_expectations:{obligation["expectation_id"]}']
                         job=next((j for j in jobs if j['kind']==kind),None)
                         event=conn.execute('SELECT * FROM service_job_events WHERE job_id=? ORDER BY sequence DESC LIMIT 1',(job['job_id'],)).fetchone() if job else None
-                        progress=_operational_stamp(event['observed_at']) if event else None
+                        successful=conn.execute("SELECT * FROM service_job_events WHERE job_id=? AND ((state='RUNNING' AND reason_code IN ('RISK_PROTECTED','RISK_RECONCILED','RECONCILIATION_ONLY')) OR state='COMPLETED') ORDER BY sequence DESC LIMIT 1",(job['job_id'],)).fetchone() if job else None
+                        progress=_operational_stamp(successful['observed_at']) if successful else None
                         if event: ids.append(f'service_job_events:{event["event_id"]}')
+                        if successful and (not event or successful['event_id']!=event['event_id']): ids.append(f'service_job_events:{successful["event_id"]}')
                         if heartbeat: ids.append(f'service_heartbeats:{heartbeat["worker_id"]}')
                         manual=bool(attention and attention['state']=='MANUAL_ATTENTION')
                         if manual: ids.append(f'service_attention:{attention["event_id"]}')
@@ -672,19 +674,21 @@ class OperatorEvidenceService:
                             elif kind!='RISK' and deadline and now>=deadline and (job is None or job['state'] in {'MISSED','CLAIMED','DEFERRED'}): state='MISSED_SCHEDULE'
                             elif kind=='RISK' and due and now>=due:
                                 hb=_operational_stamp(heartbeat['observed_at']) if heartbeat else None
-                                if (hb is None and (now-due).total_seconds()>=120) or (hb and (now-hb).total_seconds()>120): state='WORKER_STALLED'
+                                if event and event['state'] in {'BLOCKED','UNKNOWN','FAILED'}: state=event['state']
+                                elif (hb is None and (now-due).total_seconds()>=120) or (hb and (now-hb).total_seconds()>120): state='WORKER_STALLED'
                                 elif (progress and (now-progress).total_seconds()>105) or (progress is None and (now-due).total_seconds()>=120): state='WORKER_STALLED'
                                 elif hb: state='RECOVERY_BLOCKED' if heartbeat['phase']=='RECOVERY_BLOCKED' else 'RUNNING'
                             elif job:
                                 state=job['state']
                         observed=max(stamp,progress or stamp)
+                        if event: observed=max(observed,_operational_stamp(event['observed_at']))
                         if manual: observed=max(observed,_operational_stamp(attention['observed_at']))
                         if state=='WORKER_STALLED' and heartbeat: observed=max(observed,_operational_stamp(heartbeat['observed_at']))
                         env=_envelope(resource,now,source_observed_at=observed,completeness='COMPLETE',
-                            provenance='OBSERVER_DERIVED',diagnostic_code=state if state in {'EXPECTATION_UNKNOWN','MISSED_SCHEDULE','WORKER_STALLED'} else None)
+                            provenance='OBSERVER_DERIVED',diagnostic_code=state if state in {'EXPECTATION_UNKNOWN','MISSED_SCHEDULE','WORKER_STALLED','BLOCKED','UNKNOWN','FAILED'} else None)
                         result.append(ServiceHealthDTO(env,subject,kind,state,expected,due,deadline,progress,tuple(ids),
                             'OBSERVER_DERIVED',day,obligation['control_revision'],obligation['session_source_id'],obligation['login_source_id'],obligation['config_hash'],
-                            restarts,manual,current['reason_code'],False if state in {'RECOVERY_BLOCKED','SERVICE_MANUAL_ATTENTION'} else None))
+                            restarts,manual,event['reason_code'] if event and state in {'BLOCKED','UNKNOWN','FAILED'} else current['reason_code'],False if state in {'RECOVERY_BLOCKED','SERVICE_MANUAL_ATTENTION','BLOCKED','UNKNOWN','FAILED'} else None))
             except EvidenceUnavailable as exc:
                 result.append(ServiceHealthDTO(_envelope(resource,now,query_status='FAILED',diagnostic_code=str(exc)),
                     resource.id,'SOURCE','SERVICE_SOURCE_UNAVAILABLE'))

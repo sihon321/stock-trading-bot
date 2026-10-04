@@ -239,10 +239,54 @@ def test_production_account_work_accepts_exact_nonterminal_truth_without_clearin
         assert runtime.start()=='RUNNING'
         seen=runtime.work.run(lambda lease,current,budget:(lease.state,tuple(h.ticker for h in current.holdings)))
         assert '005930' in seen[1]
+        from trading_bot import soak_store
+        from trading_bot.soak_models import CampaignKind
+        import sqlite3
+        runtime.settings.trading_journal_paths[1].parent.mkdir(exist_ok=True)
+        with sqlite3.connect(runtime.settings.trading_journal_paths[1]) as soak:
+            soak_store.migrate_soak_store(soak)
+            soak_store.create_campaign(soak,campaign_id='retained-freeze',accepted_profile_fingerprint='profile',
+                accepted_profile_version='TEST',field_contract_version='TEST',ambiguity_policy_version='TEST',
+                ambiguity_window_seconds=30,ambiguity_poll_cadence_seconds=5,ambiguity_max_observations=6,
+                campaign_kind=CampaignKind.PROOF_ORDER,credit_eligible=False)
+            soak_store.freeze_ticker(soak,freeze_id='000660-original',campaign_id='retained-freeze',ticker='000660',
+                freeze_kind='AMBIGUITY',order_intent_id='original-intent')
+            original=tuple(tuple(row) for row in soak.execute('SELECT * FROM soak_ticker_freezes'))
+        from trading_bot.domain import Money
+        from types import SimpleNamespace
+        runtime.trading=replace(runtime.trading,quote_reader=lambda ticker:SimpleNamespace(price=Money(68000),observed_at=clock()))
+        runtime.work.run(lambda lease,current,budget:runtime.trading.risk(runtime,lease,current,budget))
+        with sqlite3.connect(runtime.settings.trading_journal_paths[1]) as soak:
+            assert tuple(soak.execute('SELECT * FROM soak_ticker_freezes'))==original
         rows=conn.execute("SELECT broker_status FROM order_events WHERE event_type='RECONCILED'").fetchall()
         assert rows and {r[0] for r in rows}=={status}
         assert tuple(reader.read_freezes())==before
         assert not conn.execute("SELECT 1 FROM mutation_leases WHERE state!='RELEASED'").fetchone()
+
+
+@pytest.mark.parametrize('corruption',['unknown','missing','duplicate','quantity','wrong_subject'])
+def test_production_unknown_or_contradictory_order_truth_blocks_account(tmp_path,corruption):
+    from trading_bot.portfolio import PortfolioOrder
+    from trading_bot.audit_models import OrderEvent,OrderEventType,RunKind
+    from trading_bot import sqlite_audit
+    order=PortfolioOrder('known-open',None,'000660','BUY',2,0,2,0,0,100,'OPEN','20261005','090000')
+    orders=(order,)
+    if corruption=='unknown':orders=(replace(order,status='UNKNOWN'),)
+    if corruption=='missing':orders=()
+    if corruption=='duplicate':orders=(order,order)
+    if corruption=='quantity':orders=(replace(order,ordered_quantity=3,remaining_quantity=3),)
+    if corruption=='wrong_subject':orders=(replace(order,ticker='005930'),)
+    with production_root(tmp_path,orders=orders) as (runtime,reader,clock):
+        sqlite_audit.start_run(runtime.work.conn,run_id='origin',trading_mode='mock',run_kind=RunKind.RUN,
+            dry_run=False,trading_date_kst='2026-10-05')
+        sqlite_audit.append_order_event(runtime.work.conn,OrderEvent('original-intent','origin','origin','000660',
+            OrderEventType.SUBMISSION_ACCEPTED,broker_order_id='known-open',side='BUY',requested_qty=2,
+            filled_qty=0,unfilled_qty=2,observed_at=clock().isoformat()))
+        if corruption=='duplicate':
+            import sqlite3
+            with pytest.raises(sqlite3.IntegrityError):runtime.start()
+        else:assert runtime.start()=='RECOVERY_BLOCKED'
+        assert not runtime.work.conn.execute("SELECT 1 FROM order_events WHERE event_type='RECONCILED'").fetchone()
 
 
 def test_real_composition_root_binds_concrete_account_and_audit(tmp_path):

@@ -104,6 +104,21 @@ class SavedEvidenceReader(Protocol):
 SafetyReader = Callable[[ServiceScope, datetime], CurrentActivationSafety]
 
 
+@dataclass(frozen=True)
+class ObservedSafetyReader:
+    """Trusted observation with an actual clock after bounded source reads.
+
+    The supplied timestamp is observation start. Evaluation end determines age;
+    neither a later read nor an advancing clock rewrites the source timestamp.
+    Legacy readers retain their explicit fixed evaluation time.
+    """
+    read: SafetyReader
+    clock: Callable[[], datetime]
+
+    def __call__(self, scope, now):
+        return self.read(scope, now)
+
+
 def _protected_json(path: Path, limit: int = 2 * 1024 * 1024):
     checked = protected_file(path)
     before = checked.stat()
@@ -437,9 +452,10 @@ def _validate_acceptance(settings: ServiceSettings, receipt: AcceptanceReceipt |
             authority='DENIED')
     try:
         safety = CurrentActivationSafety.model_validate(current_safety(receipt.scope, now).model_dump())
+        evaluated = current_safety.clock() if type(current_safety) is ObservedSafetyReader else now
         source_map = {s.source_id:s.source_hash for s in evidence.source_hashes}
         if (safety.scope!=receipt.scope or not safety.healthy or safety.safety_latched
-                or not safety.observed_at<=now<safety.expires_at
+                or not safety.observed_at<=now<=evaluated<safety.expires_at
                 or not 0<(safety.expires_at-safety.observed_at).total_seconds()<=10
                 or set(safety.source_hashes)!=set(evidence.source_hashes[:3])
                 or any(source_map.get(s.source_id)!=s.source_hash for s in safety.source_hashes)):

@@ -414,13 +414,16 @@ def _build_production_runtime(settings):
     capture=validate_receipt_capture(settings,receipt,reader,now=clock())
     if not capture.allowed: raise RuntimeError('AUTHENTIC_ACCEPTANCE_REQUIRED')
 
-    def safety(scope,now):
-        observed=clock(); evidence=reader.read(load_acceptance_receipt(settings.acceptance_receipt_path))
+    def observe_safety(scope,now):
+        observed=now; evidence=reader.read(load_acceptance_receipt(settings.acceptance_receipt_path))
         return CurrentActivationSafety(scope=evidence.scope,observed_at=observed,
             expires_at=observed+timedelta(seconds=10),healthy=(evidence.scope==scope
                 and evidence.state=='COMPLETED' and not evidence.cross_store_unknown
                 and not evidence.reconciliation_unknown and not evidence.reconciliation_incomplete),
             safety_latched=evidence.safety_latched, frozen_tickers=reader.read_freezes(),source_hashes=evidence.source_hashes[:3])
+
+    from .service_activation import ObservedSafetyReader
+    safety=ObservedSafetyReader(observe_safety,clock)
 
     policy_values=Policy.model_validate_json(json.dumps(_protected_json(settings.trading_config_path.parent/'service-policy.json',65536)))
     trading=load_mock_trading_settings(settings.trading_config_path)
@@ -453,7 +456,8 @@ def _build_production_runtime(settings):
             for row in rows: latest[row['order_intent_id']]=dict(row)
             return tuple(r for r in latest.values() if r['event_type'] in
                 ('SUBMISSION_ATTEMPTED','SUBMISSION_ACCEPTED','SUBMISSION_AMBIGUOUS')
-                or r['event_type']=='RECONCILED' and r['broker_status']=='UNKNOWN')
+                or r['event_type']=='RECONCILED' and r['broker_status'] not in
+                    ('FILLED','CANCELLED','EXPIRED','REJECTED'))
 
         def snapshot_reader(*_):
             now=clock(); day=now.astimezone(KST).date(); cutoff=policy.completed_bar_cutoff(day)
@@ -499,9 +503,21 @@ def _build_production_runtime(settings):
             for row in unresolved():
                 matches=[o for o in current.orders if o.order_id==row['broker_order_id']
                     and o.ticker==row['ticker'] and o.side==row['side']]
-                if len(matches)!=1 or not matches[0].terminal:
+                if len(matches)!=1:
                     determinate=False;continue
                 order=matches[0]
+                # Exact determinate nonterminal truth scopes suppression to the
+                # subject. It proves account reconciliation, never freeze release.
+                if (order.status not in {'OPEN','PARTIAL','NO_FILL','FILLED','CANCELLED','EXPIRED','REJECTED'}
+                        or row['requested_qty']!=order.ordered_quantity
+                        or order.ordered_quantity<=0
+                        or min(order.filled_quantity,order.remaining_quantity,order.cancelled_quantity,order.rejected_quantity)<0
+                        or order.ordered_quantity!=order.filled_quantity+order.remaining_quantity+order.cancelled_quantity+order.rejected_quantity
+                        or row['filled_qty'] is not None and order.filled_quantity<row['filled_qty']
+                        or order.status in {'OPEN','NO_FILL'} and (order.filled_quantity or not order.remaining_quantity)
+                        or order.status=='PARTIAL' and not (order.filled_quantity and order.remaining_quantity)
+                        or order.terminal and order.remaining_quantity):
+                    determinate=False;continue
                 sqlite_audit.append_order_event(conn,OrderEvent(order_intent_id=row['order_intent_id'],
                     origin_run_id=row['origin_run_id'],observer_run_id=active[0].cycle_id,ticker=row['ticker'],
                     event_type=OrderEventType.RECONCILED,submission_id=row['submission_id'],broker_order_id=order.order_id,
@@ -578,7 +594,8 @@ def _build_production_runtime(settings):
             session=sessions.for_date(now.astimezone(KST).date())
             return ResumeSafetyEvidence(scope=scope,observed_at=current.observed_at,
                 expires_at=current.observed_at+timedelta(seconds=10),
-                broker_complete=current.mutation_capable and not unresolved(),
+                broker_complete=current.mutation_capable and all(o.status!='UNKNOWN' for o in current.orders)
+                    and all(r['event_type']=='RECONCILED' and r['broker_status'] in {'OPEN','PARTIAL','NO_FILL'} for r in unresolved()),
                 evidence_complete=facts.healthy,calendar_confirmed=session.eligibility=='ELIGIBLE',
                 authority_current=activation().allowed,safety_latched=facts.safety_latched,
                 frozen_subjects=facts.frozen_tickers,source_hashes=saved.source_hashes)

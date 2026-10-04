@@ -44,9 +44,10 @@ class AlertDetector:
         if env.query_status!='OK' or env.source_observed_at is None or not health.source_ids:
             return ()
         states={'MISSED_SCHEDULE':'MISSED_SCHEDULE','WORKER_STALLED':'WORKER_STALLED',
+                'BLOCKED':'WORKER_STALLED','FAILED':'WORKER_STALLED','UNKNOWN':'WORKER_STALLED','RECOVERY_BLOCKED':'WORKER_STALLED',
                 'EXPECTATION_UNKNOWN':'EXPECTATION_UNKNOWN','SERVICE_MANUAL_ATTENTION':'SERVICE_MANUAL_ATTENTION'}
         family=states.get(health.state)
-        recovery=health.expected_running is True and health.last_progress_at is not None and health.state in {'RUNNING','COMPLETED','TERMINAL'}
+        recovery=health.expected_running is True and health.mutation_ready is not False and health.last_progress_at is not None and health.state in {'RUNNING','COMPLETED','TERMINAL'}
         families=(family,) if family else ('MISSED_SCHEDULE','WORKER_STALLED','EXPECTATION_UNKNOWN') if recovery else ()
         facts=[]
         for family in families:
