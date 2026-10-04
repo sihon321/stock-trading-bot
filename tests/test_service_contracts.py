@@ -352,8 +352,8 @@ def test_fixture_sessions_login_and_source_failures():
         reader.read('session')
     assert reader.calls == ('config', 'session')
     pending = f.healthy_pending_critical()
-    assert pending.incident.severity == 'CRITICAL' and pending.incident.acknowledged_at is None
-    assert pending.outbox.state == 'PENDING' and pending.next_reminder_at > NOW
+    assert pending.incident.severity == 'CRITICAL' and pending.incident.acknowledged is False
+    assert pending.outbox.state == 'QUEUED' and pending.next_reminder_at > NOW
 
 
 def test_fixture_fakes_are_single_shot_and_append_only(tmp_path):
@@ -403,6 +403,20 @@ def test_fixture_transport_acknowledges_entry_without_waiting_for_response(tmp_p
         child.process.join(5)
         assert child.process.exitcode == 0
         assert 'RESPONSE_RECEIVED' in child.checkpoints
+
+
+def test_fixture_alert_owner_uses_only_temporary_store(tmp_path):
+    f = fixtures()
+    clock = f.FakeServiceClock()
+    with f.NoExternalCapabilities():
+        store = f.temporary_pending_critical_store(tmp_path, clock)
+        episodes = store.list_incidents()
+        assert len(episodes) == 1 and episodes[0].severity == 'CRITICAL'
+        assert episodes[0].acknowledged is False
+        assert store.path.is_relative_to(tmp_path)
+        assert len(store.pending_deliveries()) == 1
+        clock.advance(wall_seconds=1800)
+        assert len(store.due_reminders(clock())) == 1
 
 
 def test_fixture_capability_tripwires_block_real_clients_and_processes():
