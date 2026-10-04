@@ -1,7 +1,7 @@
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -220,6 +220,100 @@ def test_production_safety_uses_observation_start_and_evaluation_end(tmp_path):
 
 
 import pytest
+
+
+@dataclass
+class GatedCollectionDataSource:
+    ready: object
+    release: object
+    stages: Path
+    stage: str = 'screen'
+
+    def __call__(self,policy,cutoff):
+        from types import SimpleNamespace
+        from trading_bot.data_source import build_data_source
+        from tests.test_data_source import (_available_ohlcv,_available_indicators,
+            _available_quote,_available_news)
+        from tests.test_screener import _row
+        from tests.service_fixtures import NoExternalCapabilities
+        # Tripwires apply inside the spawned interpreter before construction.
+        external=NoExternalCapabilities();external.__enter__()
+        outer=self
+        def record(stage):
+            with outer.stages.open('a') as output:output.write(stage+'\n')
+            if outer.stage==stage:
+                outer.ready.set()
+                if not outer.release.wait(10):raise RuntimeError('offline collection wait')
+        class Bars:
+            def fetch_market_rows(self,day):
+                record('screen')
+                row=_row('005930')
+                row['health']=replace(row['health'],observed_date=day,expected_date=day)
+                return (row,)
+            def fetch_daily_ohlcv(self,ticker,day,**kwargs):
+                record('context')
+                result=_available_ohlcv()
+                return replace(result,health=replace(result.health,observed_date=day,expected_date=day))
+        def news(ticker):record('news');return _available_news()
+        return build_data_source(policy,expected_date=cutoff.strftime('%Y%m%d'),ohlcv_adapter=Bars(),
+            quote_adapter=SimpleNamespace(fetch_current_price=lambda ticker:_available_quote()),
+            news_adapter=SimpleNamespace(fetch_news=news),indicator_fn=lambda frame,config:_available_indicators())
+
+
+@pytest.mark.parametrize('stage',['screen','context','news'])
+def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(tmp_path,stage):
+    import multiprocessing,pickle,time
+    from trading_bot.service_models import ControlRequest
+    from trading_bot.service_activation import OfflineActivationAuthority
+    from trading_bot.portfolio import PortfolioHolding
+    with production_root(tmp_path) as (runtime,reader,clock):
+        # The real composition binder must be spawn-serializable without its
+        # nested Settings/Inputs, SQLite connections, account or authority graph.
+        pickle.dumps(runtime.daily_inputs)
+        from trading_bot.service_collection import ProductionInputSource
+        assert type(runtime.daily_inputs) is ProductionInputSource
+        context=multiprocessing.get_context('spawn');ready=context.Event();release=context.Event()
+        source=runtime.daily_inputs
+        assert set(vars(source))=={'policy','quote','prompt','offline_factory','offline_authority'}
+        source=replace(source,offline_factory=GatedCollectionDataSource(ready,release,tmp_path/'stages',stage),
+            offline_authority=OfflineActivationAuthority(tmp_path))
+        runtime.daily_inputs=source
+        runtime.barrier=lambda name:(_ for _ in ()).throw(RuntimeError('before provider')) if name=='DISPATCH_COMMITTED' else None
+        assert runtime.start()=='RUNNING'
+        original=runtime.work.snapshot_reader
+        quantity=[7]
+        runtime.work.snapshot_reader=lambda:replace(original(),holdings=(PortfolioHolding('035420',quantity[0],quantity[0],100),))
+        clock.value+=timedelta(minutes=10)
+        runtime.controls.request_writer(actor='owner').append_request(ControlRequest(request_id='resume-collect',
+            actor='owner',requested_at=clock(),scope=runtime.controls.scope,action='RESUME',expected_revision=0))
+        started=time.monotonic();runtime.tick()
+        assert time.monotonic()-started<2
+        assert ready.wait(5)
+        assert runtime.collection is not None and runtime.collection.process._start_method=='spawn'
+        assert runtime.child is None and not runtime.work.conn.in_transaction
+        assert not runtime.work.conn.execute("SELECT 1 FROM mutation_leases WHERE state!='RELEASED'").fetchone()
+        quantity[0]=11
+        clock.value+=timedelta(seconds=60);runtime.tick()
+        assert runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]['reason_code']=='RISK_PROTECTED'
+        assert runtime.collection is not None
+        runtime.controls.request_writer(actor='owner').append_request(ControlRequest(request_id='pause-collect',
+            actor='owner',requested_at=clock(),scope=runtime.controls.scope,action='PAUSE',expected_revision=1))
+        runtime.tick()
+        assert runtime.controls.reader().effective_state().mode=='PAUSED'
+        release.set()
+        deadline=time.monotonic()+5
+        while runtime.collection is not None and time.monotonic()<deadline:
+            time.sleep(.02);runtime.tick()
+        assert runtime.collection is None
+        saved=runtime.work.conn.execute('SELECT ticker,canonical_input,provenance_json FROM daily_evaluations ORDER BY started_at,rowid').fetchall()
+        assert saved and saved[0]['ticker']=='035420'
+        assert b'total_quantity: 7' in saved[0]['canonical_input']
+        assert b'total_quantity: 11' not in saved[0]['canonical_input']
+        assert json.loads(saved[0]['provenance_json'])==['HELD']
+        assert runtime.child is None
+        with runtime.journal.connection() as saved_journal:
+            assert not saved_journal.execute('SELECT 1 FROM service_provider_admissions').fetchone()
+        assert 'news' in (tmp_path/'stages').read_text()
 
 
 @pytest.mark.parametrize('status,filled', [('OPEN',0),('PARTIAL',1),('NO_FILL',0)])
