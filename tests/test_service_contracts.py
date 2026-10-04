@@ -297,3 +297,129 @@ def test_settings_never_read_dotenv_even_when_explicit_override_supplied(tmp_pat
     path = tmp_path / '.env'
     path.write_text('BOT_SERVICE_MODE=KIS_MOCK')
     assert settings_class()(_env_file=path).mode == 'DISABLED'
+
+
+def fixtures():
+    return importlib.import_module('service_fixtures')
+
+
+def test_fixture_clock_rollover_and_sleep_are_independent():
+    f = fixtures()
+    clock = f.FakeServiceClock(datetime(2026, 10, 5, 14, 59, tzinfo=timezone.utc))
+    old = clock.monotonic()
+    assert clock.now_kst().date() == DAY
+    clock.advance(wall_seconds=120, monotonic_seconds=0)
+    assert clock.now_kst().date() == DAY + timedelta(days=1)
+    assert clock.monotonic() == old
+    clock.advance(wall_seconds=-60, monotonic_seconds=30)
+    assert clock.monotonic() == old + 30
+    assert len(f.observer_only_midnight_progression()) == 3
+    with pytest.raises(ValueError):
+        f.FakeServiceClock(NOW.replace(tzinfo=None))
+
+
+def test_fixture_topology_registration_and_synthetic_approvals(tmp_path):
+    f = fixtures()
+    topology = f.TempServiceTopology(tmp_path)
+    stores = [topology.audit_db_path, topology.service_db_path, topology.control_db_path,
+              topology.web_db_path, topology.soak_db_path, topology.controller_db_path]
+    assert len(set(stores)) == 6
+    assert all(p.is_relative_to(tmp_path) and not p.exists() for p in stores)
+    assert topology.registration(enabled=False).mode == 'DISABLED'
+    enabled = topology.registration(enabled=True)
+    assert enabled.mode == 'KIS_MOCK' and enabled.execution_target == 'mock'
+    assert all(p.stat().st_mode & 0o077 == 0 for p in
+        (enabled.trading_config_path, enabled.acceptance_receipt_path,
+         enabled.session_evidence_path, enabled.observer_config_path))
+    bundle = f.ApprovalBundle.synthetic()
+    assert bundle.receipt.evidence_class == 'SYNTHETIC'
+    assert bundle.receipt.has_both_checkpoint_approvals
+    with pytest.raises(ValueError):
+        f.TempServiceTopology(Path.cwd() / 'data')
+
+
+def test_fixture_sessions_login_and_source_failures():
+    f = fixtures()
+    assert f.session_evidence('normal').continuous_open.astimezone(models().KST).hour == 9
+    assert f.session_evidence('delayed').continuous_open.astimezone(models().KST).hour == 10
+    assert f.session_evidence('holiday').eligibility == 'HOLIDAY'
+    assert f.session_evidence('unknown').eligibility == 'UNKNOWN'
+    for state in ('CONFIRMED', 'ABSENT', 'UNKNOWN'):
+        assert f.FakeOwnerLoginProbe(state).observe_owner_gui().state == state
+    reader = f.FakeSourceReader({'config': 1, 'session': 2}, failures=('session',))
+    assert reader.read('config') == 1
+    with pytest.raises(f.FixtureSourceUnavailable):
+        reader.read('session')
+    assert reader.calls == ('config', 'session')
+    pending = f.healthy_pending_critical()
+    assert pending.incident.severity == 'CRITICAL' and pending.incident.acknowledged_at is None
+    assert pending.outbox.state == 'PENDING' and pending.next_reminder_at > NOW
+
+
+def test_fixture_fakes_are_single_shot_and_append_only(tmp_path):
+    f = fixtures()
+    counter = f.AppendOnlyCallCounter(tmp_path / 'calls.jsonl')
+    provider = f.FakeSingleShotProvider(counter)
+    assert provider.generate_signal('saved-input').decision == 'HOLD'
+    assert len(counter.calls) == 1
+    with pytest.raises(f.FixtureAlreadyCalled):
+        provider.generate_signal('saved-input')
+    broker = f.FakeBroker(counter)
+    broker.place_order('synthetic-order')
+    notifier = f.FakeNotificationTransport(counter)
+    assert notifier.send('synthetic-notification')
+    assert tuple(c['kind'] for c in counter.calls) == ('PROVIDER', 'BROKER', 'NOTIFICATION')
+    with pytest.raises(AttributeError):
+        counter.calls = ()
+
+
+@pytest.mark.parametrize('barrier', [
+    'INPUT_COMMITTED', 'DISPATCHED', 'ACCOUNT_RECONCILED', 'ACCOUNT_RELEASED',
+    'CHILD_STARTED', 'PROVIDER_ADMISSION_PREPARED', 'BEFORE_TRANSPORT_ENTRY',
+    'TRANSPORT_ENTERED', 'RESPONSE_RECEIVED', 'SIGNAL_FINALIZED',
+    'SUBMISSION_ATTEMPTED', 'POST_RETURNED'])
+def test_fixture_child_crash_barriers_leave_durable_facts_and_no_process(tmp_path, barrier):
+    f = fixtures()
+    with f.SpawnedCrashBarrier(tmp_path, barrier) as child:
+        assert child.reached.wait(5)
+        assert child.checkpoints[-1] == barrier
+        assert child.process.is_alive()
+        if barrier in {'INPUT_COMMITTED', 'DISPATCHED', 'CHILD_STARTED',
+                       'PROVIDER_ADMISSION_PREPARED', 'BEFORE_TRANSPORT_ENTRY'}:
+            assert child.counter.calls == ()
+    assert not child.process.is_alive()
+
+
+def test_fixture_transport_acknowledges_entry_without_waiting_for_response(tmp_path):
+    f = fixtures()
+    with f.SpawnedCrashBarrier(tmp_path, 'TRANSPORT_ENTERED') as child:
+        assert child.entered.wait(5)
+        assert child.reached.wait(5)
+        assert len(child.counter.calls) == 1
+        assert 'RESPONSE_RECEIVED' not in child.checkpoints
+        assert child.admission_lock.acquire(timeout=1)
+        child.admission_lock.release()
+        child.release.set()
+        child.process.join(5)
+        assert child.process.exitcode == 0
+        assert 'RESPONSE_RECEIVED' in child.checkpoints
+
+
+def test_fixture_capability_tripwires_block_real_clients_and_processes():
+    import socket
+    import subprocess
+    import httpx
+    import openai
+    import anthropic
+    f = fixtures()
+    with f.NoExternalCapabilities() as guard:
+        attempts = (lambda: socket.create_connection(('127.0.0.1', 9)),
+                    lambda: httpx.get('https://example.com'),
+                    lambda: openai.OpenAI(api_key='synthetic'),
+                    lambda: anthropic.Anthropic(api_key='synthetic'),
+                    lambda: subprocess.run(['launchctl', 'list']),
+                    lambda: subprocess.run(['codex', 'exec', 'test']))
+        for attempt in attempts:
+            with pytest.raises(f.ExternalCapabilityForbidden):
+                attempt()
+        assert len(guard.attempts) == len(attempts)
