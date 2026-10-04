@@ -313,7 +313,9 @@ class ControlStore:
         for row in pending:
             if row['action'] == 'KILL': mode = ControlMode.KILLED
             elif row['action'] == 'PAUSE' and mode != ControlMode.KILLED: mode = ControlMode.PAUSED
-        return EffectiveControl(applied, mode, highest, tuple(r['request_id'] for r in pending))
+        processed = {r[0] for r in conn.execute('SELECT request_id FROM control_applications WHERE request_id IS NOT NULL')}
+        return EffectiveControl(applied, mode, highest,
+            tuple(r['request_id'] for r in pending if r['request_id'] not in processed))
 
     def service_capability(self, leader):
         # Import here: read/request paths do not load service/trading writer modules.

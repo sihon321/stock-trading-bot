@@ -272,6 +272,7 @@ def test_service_resume_uncertain_gates_rejected_preserves_freeze_and_kill(tmp_p
         assert result['result'] == 'REJECTED'
         assert j.reader().effective_state(SCOPE).mode == 'KILLED'
         assert j.reader().effective_state(SCOPE).applied.revision == 1
+        assert j.reader().effective_state(SCOPE).pending_request_ids == ()
         assert result['reason_code'] in ('SAFETY_BLOCKED','SAFETY_UNAVAILABLE','SAFETY_STALE')
     finally: leader.close()
 
