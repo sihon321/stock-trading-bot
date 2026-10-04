@@ -304,11 +304,11 @@ Primary threats: forged/resumed control (Spoofing/Elevation), overwritten journa
 
 No training-only factual claims are promoted to decisions. Proposed contracts are explicitly labeled recommendations within the owner's discretion. Unknown production approvals, future-date session notices and deployed phone/service configuration remain unknown. [VERIFIED: research scope and findings]
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-- **Date-specific session evidence:** no authoritative future-date exception feed was verified. Plan a reviewed source/override contract and UNKNOWN behavior before activation; do not extrapolate historical exam notices. [VERIFIED: official sources consulted; proposed action]
-- **09-08 proof transport:** no machine-readable human acceptance receipt exists today. Implement a narrow explicit receipt linked to source evidence and retain the real operator checkpoint; it is an activation blocker, not a planning blocker. [VERIFIED: schema/artifact checks]
-- **Exact supervision accounting:** distinguish minimal rejected launcher entries from admitted worker restart attempts, and make both observable. Native launchd does not implement the selected sliding limit. [VERIFIED: current local manual; proposed action]
+- **RESOLVED — Date-specific session evidence:** [15-02-PLAN.md](15-02-PLAN.md) chooses protected reviewed exact-date KRX/KIND session bundles with source URL/notice identity/content hash, reviewer/effective/observed times and explicit UNKNOWN. The same evidence gates scheduling, classification and actual provider/POST admission. Historical notices and weekday/KIS Boolean witnesses cannot grant future session hours. Actual future-date authoritative evidence remains a pending activation input; the design resolution does not claim a verified feed.
+- **RESOLVED — 09-08 proof transport:** [15-06-PLAN.md](15-06-PLAN.md) validates an immutable AcceptanceReceipt bound to campaign/profile/source identities and both named09-08 checkpoint approvals; [15-13-PLAN.md](15-13-PLAN.md) supplies explicit owner record-acceptance transport. Missing/synthetic/changed proof blocks activation without blocking offline implementation. Actual operator approvals and broker-observed eligible-day evidence remain external gates; receipt support cannot create those approvals or clear freezes.
+- **RESOLVED — Exact supervision accounting:** [15-03-PLAN.md](15-03-PLAN.md) durably reserves each admitted automatic worker restart before construction, enforces three within600 seconds and retains MANUAL_ATTENTION/history; [15-13-PLAN.md](15-13-PLAN.md) distinguishes denied minimal launcher entries, binds conditional KeepAlive and explicit validated reset. Native launchd throttle is a wake hint rather than budget authority. Actual installation/login/logout/wake acceptance remains external and unpassed.
 
 ## Sources
 
@@ -322,4 +322,3 @@ Local sources: 15-CONTEXT.md, REQUIREMENTS/ROADMAP/STATE/config, 09-08-PLAN.md, 
 **Provider fallback:** research-plan selected Context7 for library questions; no Context7 MCP or ctx7 CLI was available, so official documentation was retrieved through web tools. Five digests cached with seam confidence MEDIUM.
 **Valid until:** recheck macOS deployment and date-specific exchange notices at installation/activation; stable code findings must be rechecked if implementation changes.
 **Changes made:** only this research artifact; no production code, configuration, service, credentials, paid calls, orders or commits.
-

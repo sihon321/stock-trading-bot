@@ -249,7 +249,7 @@ Plans:
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 14/14 | Complete    | 2026-10-03 |
-| 15. Unattended Scheduling & Service Resilience | v1.3 | 0/TBD | Not Planned |  |
+| 15. Unattended Scheduling & Service Resilience | v1.3 | 0/14 | Planned    |  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
 
 ## v1.2 Complete Trade Lifecycle & Strategy Evidence (Phase Details)
@@ -475,11 +475,50 @@ Plans:
   3. Health checks detect missed schedules, stalled workers, stale market data, and notification failure; recovery remains fail closed.
   4. Manual pause, resume, dry-run, and global kill controls work without deleting audit evidence or releasing unresolved-order freezes.
 
-**Plans:** 0 plans
+**Plans:** 0/14 plans executed
 
 Plans:
+**Wave 1**
 
+- [ ] 15-01-PLAN.md
 - [ ] TBD (run /gsd-plan-phase 15 to break down)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 15-02-PLAN.md
+- [ ] 15-03-PLAN.md
+- [ ] 15-04-PLAN.md
+- [ ] 15-05-PLAN.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 15-06-PLAN.md
+- [ ] 15-07-PLAN.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 15-08-PLAN.md
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 15-09-PLAN.md
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 15-10-PLAN.md
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 15-11-PLAN.md
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 15-12-PLAN.md
+- [ ] 15-13-PLAN.md
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [ ] 15-14-PLAN.md
 
 ### Phase 16: Controlled Real-Money Pilot & Scale Gates
 
