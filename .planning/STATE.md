@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 5
+current_plan: 6
 status: executing
-stopped_at: Completed 15-04-PLAN.md; CLI scoped recovery integration deferred to 15-07
-last_updated: "2026-10-04T04:51:07.111Z"
+stopped_at: Completed 15-05-PLAN.md; CLI authority integration remains assigned to 15-07
+last_updated: "2026-10-04T05:06:58.598Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 5
+Current Plan: 6
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 5 of 14
+Plan: 6 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -148,6 +148,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Three automatic restarts per 600 seconds are durably reserved; attention persists until explicit validated reset and clock reversal remains denial.
 - [Phase 15]: First canonical bytes and frozen envelope are immutable; scoped one-shot dispatch commits DISPATCHED before transport and uncertain recovery never resets consumption.
 - [Phase 15]: Daily recovery requires actual same-store ACTIVE account authority; pure exact v3/v4 saved reader capabilities retain explicit unknown historical target.
+- [Phase 15]: Installation-global control requests and final admission share a protected flock; accepted restrictions are immediately effective and survive restart/date changes.
+- [Phase 15]: Actual live ServiceLeader ownership alone mints control application capability; fresh all-account owner resume and current source/revision checks cannot grant independent trading activation.
 
 ### Pending Todos
 
@@ -182,6 +184,7 @@ None yet.
 | Phase 15 P02 | 4min | 2 tasks | 5 files |
 | Phase 15 P03 | 45min | 2 tasks | 4 files |
 | Phase 15 P04 | 12min | 2 tasks | 6 files |
+| Phase 15 P05 | 13min | 2 tasks | 3 files |
 
 ## Deferred Items
 
@@ -215,8 +218,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T04:51:07.104Z
-Stopped at: Completed 15-04-PLAN.md; CLI scoped recovery integration deferred to 15-07
+Last session: 2026-10-04T05:06:58.591Z
+Stopped at: Completed 15-05-PLAN.md; CLI authority integration remains assigned to 15-07
 Resume file: None
 
 ## Operator Next Steps
