@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+import hashlib
+import time
+from datetime import datetime, time as wall_time
 from typing import Any, Callable
+
+import httpx
 
 import structlog
 from tenacity import (
@@ -28,6 +33,154 @@ from trading_bot.prompts import PROMPT_VERSION, SYSTEM_PROMPT, render_prompt
 from trading_bot.risk import DailyLossState, RiskConfig
 from trading_bot.signal_parser import SignalParseError, parse_signal
 from trading_bot.trade_signal import TradeSignal
+from trading_bot.service_models import DailyDispatchEnvelope, KST, ProviderAdmissionState
+
+
+def signal_schema_hash() -> str:
+    return hashlib.sha256(json.dumps(TradeSignal.model_json_schema(), sort_keys=True,
+        separators=(',', ':')).encode()).hexdigest()
+
+
+class TransportEntryAck:
+    """Single synchronous acknowledgement; never a reusable transport permit."""
+    def __init__(self, admission, lock, deadline):
+        self.admission, self.lock, self.deadline = admission, lock, deadline
+        self.entered = False
+        self.open = True
+
+    def __call__(self, create=None):
+        if not self.open or self.entered:
+            raise LLMProviderError('ENTRY_ACK_INVALID')
+        self.lock.assert_owned()
+        def check():
+            if time.monotonic() >= self.deadline:
+                raise LLMProviderError('ENTRY_BUDGET_EXCEEDED')
+            return self.admission.check_current()
+        self.admission.writer.enter_transport(check)
+        result = create() if create is not None else None
+        self.entered = True
+        self.lock.__exit__(None, None, None)
+        return result
+
+
+class ProviderDispatchAdmission:
+    """Consumed operational identity only; no trading or account capability."""
+    def __init__(self, *, dispatch_id, scope, trading_date_kst, envelope_hash,
+                 session_source_id, control_reader, session_reader, clock, writer, lock_factory):
+        self.dispatch_id, self.scope = dispatch_id, scope
+        self.trading_date_kst, self.envelope_hash = trading_date_kst, envelope_hash
+        self.session_source_id = session_source_id
+        self.control_reader, self.session_reader, self.clock = control_reader, session_reader, clock
+        self.writer, self.lock_factory = writer, lock_factory
+        self.used = False
+
+    def check_current(self):
+        now = self.clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise LLMProviderError('CLOCK_UNKNOWN')
+        local = now.astimezone(KST)
+        if local.date() != self.trading_date_kst or not wall_time(9, 10) <= local.time() < wall_time(9, 20):
+            raise LLMProviderError('DISPATCH_EXPIRED')
+        session = self.session_reader(self.trading_date_kst)
+        if (session.trading_date_kst != self.trading_date_kst or session.eligibility != 'ELIGIBLE'
+                or session.source_id != self.session_source_id
+                or session.continuous_open is None or session.continuous_close is None
+                or not session.continuous_open <= now < session.continuous_close
+                or session.observed_at > now or session.reviewed_at > now or session.effective_at > now):
+            raise LLMProviderError('SESSION_CHANGED')
+        control = self.control_reader.effective_state(self.scope)
+        if control.mode != 'RUNNING': raise LLMProviderError('CONTROL_STOPPED')
+        return now, control.acceptance_revision, session.source_id
+
+    def suppress(self, code):
+        try:
+            self.writer.transition_prepared('SUPPRESSED_NO_CALL', reason_code=code,
+                observed_at=self.clock())
+        except Exception:
+            # Failed local evidence never grants transport permission; consumption stays.
+            pass
+
+    def admit_at_transport_entry(self, invocation):
+        if self.used: raise LLMProviderError('DISPATCH_ALREADY_CONSUMED')
+        self.used = True
+        ack = None
+        try:
+            with self.lock_factory() as lock:
+                row = self.writer.read_prepared()
+                if (row.dispatch_id != self.dispatch_id or row.scope != self.scope
+                        or row.trading_date_kst != self.trading_date_kst
+                        or row.envelope_hash != self.envelope_hash):
+                    raise LLMProviderError('HANDOFF_MISMATCH')
+                self.check_current()
+                ack = TransportEntryAck(self, lock, min(lock.deadline, time.monotonic() + 1))
+                result = invocation(ack)
+                if not ack.entered: raise LLMProviderError('ENTRY_ACK_MISSING')
+                return result
+        except Exception as exc:
+            if ack is None or not ack.entered:
+                self.suppress(str(exc) if isinstance(exc, LLMProviderError) else 'ENTRY_UNKNOWN')
+            raise LLMProviderError(str(exc) if isinstance(exc, LLMProviderError) else 'ENTRY_UNKNOWN') from None
+        finally:
+            if ack is not None: ack.open = False
+
+
+class _SingleShotTransport(httpx.BaseTransport):
+    """Actual SDK transport entry, armed once for one consumed evaluation."""
+    def __init__(self, inner):
+        self.inner, self.admission = inner, None
+        self.used = False
+
+    def handle_request(self, request):
+        if self.used or self.admission is None: raise LLMProviderError('TRANSPORT_UNARMED')
+        self.used = True
+        def entry(ack):
+            # This is the synchronous HTTP transport invocation entry, not an
+            # SDK pre-request callback. Response/network waiting follows ACK.
+            ack()
+            return self.inner.handle_request(request)
+        return self.admission.admit_at_transport_entry(entry)
+
+    def close(self): self.inner.close()
+
+
+def _validate_envelope(provider, envelope, admission):
+    try:
+        envelope = DailyDispatchEnvelope.model_validate(envelope)
+        expected = {'claude': 'anthropic', 'openai': 'openai', 'codex_cli': 'codex'}[provider.provider_name]
+        if envelope.provider != expected or envelope.schema_hash != signal_schema_hash():
+            raise ValueError('unsupported provider/schema')
+        if isinstance(admission, ProviderDispatchAdmission) and envelope.envelope_hash != admission.envelope_hash:
+            raise ValueError('frozen envelope mismatch')
+        envelope.prompt_bytes.decode('utf-8')
+        return envelope
+    except Exception:
+        raise LLMProviderError('ENVELOPE_INVALID') from None
+
+
+def _generate_stored(provider, envelope, admission):
+    envelope = _validate_envelope(provider, envelope, admission)
+    transport = getattr(provider, '_single_shot_transport', None)
+    if transport is None or getattr(provider._client, 'max_retries', None) != 0:
+        if isinstance(admission, ProviderDispatchAdmission): admission.suppress('UNSUPPORTED_TRANSPORT')
+        raise LLMProviderError('UNSUPPORTED_TRANSPORT')
+    transport.admission = admission
+    try:
+        if envelope.provider == 'anthropic':
+            response = provider._client.messages.create(model=envelope.model, temperature=envelope.temperature,
+                max_tokens=1024, system=envelope.system_prompt,
+                tools=[EMIT_SIGNAL_TOOL | {'input_schema': TradeSignal.model_json_schema()}],
+                tool_choice={'type':'tool','name':'emit_signal'},
+                messages=[{'role':'user','content':envelope.prompt_bytes.decode()}])
+            if getattr(response, 'stop_reason', None) == 'refusal': raise ValueError('refusal')
+            return _finalize(provider._select_tool_input(response))
+        response = provider._client.chat.completions.parse(model=envelope.model, temperature=envelope.temperature,
+            response_format=TradeSignal, messages=[{'role':'system','content':envelope.system_prompt},
+                {'role':'user','content':envelope.prompt_bytes.decode()}])
+        message = response.choices[0].message
+        if message.refusal or message.parsed is None: raise ValueError('refusal')
+        return _finalize(message.parsed.model_dump(mode='json'))
+    except Exception as exc:
+        raise LLMProviderError(type(exc).__name__.upper()) from None
 
 
 class LLMProviderError(RuntimeError):
@@ -205,6 +358,9 @@ class ClaudeLLMProvider:
 
     provider_name = "claude"
 
+    def generate_signal_from_envelope(self, envelope, dispatch_admission):
+        return _generate_stored(self, envelope, dispatch_admission)
+
     def __init__(
         self,
         *,
@@ -285,6 +441,9 @@ class OpenAILLMProvider:
     """OpenAI adapter using chat.completions.parse structured outputs."""
 
     provider_name = "openai"
+
+    def generate_signal_from_envelope(self, envelope, dispatch_admission):
+        return _generate_stored(self, envelope, dispatch_admission)
 
     def __init__(
         self,
@@ -368,6 +527,33 @@ class CodexCLIProvider:
     """
 
     provider_name = "codex_cli"
+
+    def generate_signal_from_envelope(self, envelope, dispatch_admission):
+        envelope = _validate_envelope(self, envelope, dispatch_admission)
+        if not getattr(self, '_single_shot', False):
+            dispatch_admission.suppress('UNSUPPORTED_TRANSPORT')
+            raise LLMProviderError('UNSUPPORTED_TRANSPORT')
+        prompt = '\n\n'.join((envelope.system_prompt, envelope.prompt_bytes.decode(), CODEX_JSON_INSTRUCTION))
+        argv = [self._binary, 'exec', '--model', envelope.model,
+            '-c', 'model_providers.openai.request_max_retries=0',
+            '-c', 'model_providers.openai.stream_max_retries=0', prompt]
+        child = None
+        def enter(ack):
+            nonlocal child
+            # Popen itself is the local invocation boundary. No response wait
+            # occurs until creation is positively established and ACK releases.
+            child = ack(lambda: self._popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL, text=True))
+            return child
+        try:
+            dispatch_admission.admit_at_transport_entry(enter)
+            stdout, _stderr = child.communicate(timeout=90)
+            if child.returncode != 0: raise ValueError('nonzero')
+            return _finalize(_extract_json_object(stdout))
+        except Exception as exc:
+            if child is not None and child.poll() is None:
+                child.kill(); child.communicate(timeout=1)
+            raise LLMProviderError(type(exc).__name__.upper()) from None
 
     def __init__(
         self,
@@ -462,6 +648,35 @@ class CodexCLIProvider:
                 f"codex CLI exited with status {returncode}: {stderr[:500]}"
             )
         return getattr(completed, "stdout", "") or ""
+
+
+def build_single_shot_llm_provider(settings: Settings, *, transport=None, popen=None):
+    """Construct positively verified clients; injected arbitrary SDKs are unsupported."""
+    if settings.llm_provider is LLMProviderName.CODEX_CLI:
+        provider = CodexCLIProvider(binary=settings.codex_cli_binary, model=settings.codex_cli_model,
+            temperature=settings.codex_cli_temperature, timeout_seconds=90, max_retries=1,
+            extra_args=settings.codex_cli_extra_args)
+        provider._single_shot = True
+        provider._popen = popen or subprocess.Popen
+        return provider
+    boundary = _SingleShotTransport(transport or httpx.HTTPTransport(retries=0))
+    http_client = httpx.Client(transport=boundary, timeout=90, follow_redirects=False)
+    kwargs = dict(max_retries=0, timeout=90, http_client=http_client)
+    if settings.llm_provider is LLMProviderName.CLAUDE:
+        import anthropic
+        if settings.anthropic_auth_token is not None and settings.anthropic_auth_token.get_secret_value().strip():
+            kwargs.update(auth_token=settings.anthropic_auth_token.get_secret_value(),
+                default_headers={'anthropic-beta': ANTHROPIC_OAUTH_BETA_HEADER})
+        else: kwargs['api_key'] = settings.active_llm_api_key.get_secret_value()
+        provider = ClaudeLLMProvider(client=anthropic.Anthropic(**kwargs), model=settings.anthropic_model,
+            temperature=settings.anthropic_temperature, max_retries=1)
+    else:
+        import openai
+        kwargs['api_key'] = settings.active_llm_api_key.get_secret_value()
+        provider = OpenAILLMProvider(client=openai.OpenAI(**kwargs), model=settings.openai_model,
+            temperature=settings.openai_temperature, max_retries=1)
+    provider._single_shot_transport = boundary
+    return provider
 
 
 def build_llm_provider(

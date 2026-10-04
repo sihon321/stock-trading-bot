@@ -349,6 +349,43 @@ class ProviderAdmissionWriter:
     def __init__(self,journal,dispatch_id,scope,envelope_hash):
         self.__journal=journal; self.__dispatch_id=dispatch_id; self.__scope=scope; self.__envelope_hash=envelope_hash
 
+    def read_prepared(self):
+        row = self.__journal.load_provider_admission(self.__dispatch_id)
+        if (row is None or row.scope != self.__scope or row.envelope_hash != self.__envelope_hash
+                or row.state != ProviderAdmissionState.PREPARED):
+            raise ValueError('exact bound PREPARED handoff required')
+        return row
+
+    def enter_transport(self, check):
+        """Short local entry commit; check is credential-free and performs no IO outside saved readers.
+
+        A post-commit guard still precedes the synchronous transport acknowledgement.
+        Its rejection proves no invocation, so remove the provisional timestamp while
+        consuming the handoff permanently. No public transition can reset or replay it.
+        """
+        row = self.read_prepared()
+        now, revision, session_id = check()
+        if timestamp(now) < timestamp(row.observed_at):
+            raise ValueError('admission observation rollback')
+        try:
+            with self.__journal.connection() as c:
+                changed = c.execute("""UPDATE service_provider_admissions SET state='IN_FLIGHT',
+                    reason_code='TRANSPORT_ENTRY',observed_at=?,invocation_started_at=?,
+                    control_revision=?,session_source_id=? WHERE dispatch_id=? AND state='PREPARED'
+                    AND scope_hash=? AND target=? AND envelope_hash=?""",
+                    (timestamp(now),timestamp(now),revision,session_id,self.__dispatch_id,
+                     self.__scope.account_scope_hash,self.__scope.execution_target,self.__envelope_hash)).rowcount
+                if changed != 1: raise ValueError('handoff already consumed')
+                check()  # rollback if persistence crossed cutoff/session/budget
+            check()  # guard any commit/callback gap before the actual entry ACK
+        except BaseException:
+            with self.__journal.connection() as c:
+                c.execute("""UPDATE service_provider_admissions SET state='SUPPRESSED_NO_CALL',
+                    reason_code='ENTRY_GUARD_DENIED',invocation_started_at=NULL
+                    WHERE dispatch_id=? AND state='IN_FLIGHT'""", (self.__dispatch_id,))
+            raise
+        return True
+
     def transition_prepared(self,state,*,reason_code,observed_at,invocation_started_at=None,control_revision=None,session_source_id=None):
         state=ProviderAdmissionState(state)
         with self.__journal.connection() as c:

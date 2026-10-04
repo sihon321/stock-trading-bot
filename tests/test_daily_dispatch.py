@@ -21,38 +21,42 @@ def envelope(provider='openai'):
         provider=provider, model='saved-model', temperature=.2, prompt_version='saved-v1')
 
 
-def admitted(tmp_path, *, clock=None, session_reader=None):
+def admitted(tmp_path, *, clock=None, session_reader=None, env=None):
     from trading_bot.control_store import ControlStore
     from trading_bot.service_store import ServiceJournal
     from trading_bot.llm_provider import ProviderDispatchAdmission
     clock = clock or FakeServiceClock(NOW + timedelta(minutes=10))
     settings = TempServiceTopology(tmp_path).registration()
     controls = ControlStore(settings, clock=clock)
-    controls.initialize()
+    controls.initialize(actor='tester')
     # Initial state is conservatively PAUSED. Explicit offline application only.
     from trading_bot.service_leader import ServiceLeader
     journal = ServiceJournal(settings, clock=clock); journal.initialize()
     leader = ServiceLeader(settings, journal=journal)
-    leader.__enter__()
-    controls.service_capability(leader).apply_pending(safety_check=lambda: ('proof1',))
+    leader.acquire()
     # Use normal control request/application APIs to grant RUNNING in this fixture.
     from trading_bot.service_models import ControlRequest
     request = ControlRequest(request_id='resume1', actor='tester', requested_at=clock(),
         scope=controls.scope, action='RESUME', expected_revision=0)
-    assert controls.request_writer(actor='tester').accept(request).status == 'ACCEPTED'
-    controls.service_capability(leader).apply_pending(safety_check=lambda: ('proof1',))
-    leader.__exit__(None, None, None)
+    assert controls.request_writer(actor='tester').append_request(request).status == 'REQUESTED'
+    from trading_bot.control_runtime import ControlApplier
+    from tests.test_service_controls import safety
+    applier = ControlApplier(controls.service_capability(leader),
+        validate_resume=lambda scope, now: safety(scope, now),
+        current_safety=lambda scope, now: safety(scope, now), clock=clock)
+    applier.apply_pending()
+    leader.close()
     key = LogicalJobKey(scope=SCOPE, trading_date_kst=NOW.date(), kind='DAILY')
     journal.claim_job(key, due_at=clock(), dispatch_deadline_at=NOW+timedelta(minutes=20), owner_generation='fixture')
     journal.commit_universe(key.logical_id, ('005930',))
-    env = envelope()
+    env = env or envelope()
     row = dict(dispatch_id='dispatch1', evaluation_id='eval1', account_scope_hash=SCOPE.account_scope_hash,
         execution_target='mock', trading_date_kst=NOW.date().isoformat(), envelope_hash=env.envelope_hash,
         dispatch_state='DISPATCHED', dispatched_at=clock().isoformat())
     writer = journal.prepare_provider_admission(ProviderCallAdmission(dispatch_id='dispatch1', evaluation_id='eval1',
         scope=SCOPE, trading_date_kst=NOW.date(), envelope_hash=env.envelope_hash, state='PREPARED',
         reason_code='READY', control_revision=1, session_source_id=session_evidence().source_id,
-        observed_at=clock()), consumed_dispatch=row)
+        observed_at=clock(), invocation_started_at=None), consumed_dispatch=row)
     admission = ProviderDispatchAdmission(dispatch_id='dispatch1', scope=SCOPE,
         trading_date_kst=NOW.date(), envelope_hash=env.envelope_hash,
         session_source_id=session_evidence().source_id, control_reader=controls.reader(),
@@ -85,7 +89,7 @@ def test_changed_current_facts_suppress_consumed_dispatch_without_call(tmp_path,
     if boundary == 'session': admission.session_reader = lambda day: session_evidence('unknown', day)
     if boundary in ('pause', 'kill'):
         from trading_bot.service_models import ControlRequest
-        controls.request_writer(actor='tester').accept(ControlRequest(request_id='stop', actor='tester',
+        controls.request_writer(actor='tester').append_request(ControlRequest(request_id='stop', actor='tester',
             requested_at=clock(), scope=controls.scope, action=boundary.upper(), expected_revision=1))
     calls=[]
     with pytest.raises(LLMProviderError): admission.admit_at_transport_entry(lambda ack: calls.append('BAD'))
@@ -113,8 +117,7 @@ def test_sdk_single_shot_frozen_request_and_nested_retries(tmp_path, monkeypatch
     from conftest import make_settings
     from trading_bot.config import LLMProviderName
     from trading_bot.llm_provider import build_single_shot_llm_provider, LLMProviderError
-    admission, journal, controls, clock = admitted(tmp_path)
-    env=envelope(provider); admission.envelope_hash=env.envelope_hash
+    env=envelope(provider)
     # Provider identity changes need a matching committed handoff: hash on fixture
     # differs for Anthropic; this test uses a verified transport admission double.
     class Entry:
@@ -139,3 +142,70 @@ def test_sdk_single_shot_frozen_request_and_nested_retries(tmp_path, monkeypatch
     assert request['model']=='saved-model'
     assert env.prompt_bytes.decode() in str(request['messages'])
     assert env.system_prompt in str(request)
+
+
+def test_slow_response_accepts_kill_after_entry_and_before_response(tmp_path):
+    admission, journal, controls, clock=admitted(tmp_path)
+    from trading_bot.service_models import ControlRequest
+    def invocation(ack):
+        ack()
+        result=controls.request_writer(actor='tester').append_request(ControlRequest(
+            request_id='kill-during-response',actor='tester',requested_at=clock(),scope=controls.scope,
+            action='KILL',expected_revision=1))
+        assert result.status=='REQUESTED'
+        clock.advance(600)  # an entered call may complete after 09:20
+        return 'late response'
+    assert admission.admit_at_transport_entry(invocation)=='late response'
+    assert journal.load_provider_admission('dispatch1').invocation_started_at is not None
+    assert controls.reader().effective_state(SCOPE).mode=='KILLED'
+
+
+@pytest.mark.parametrize('stage', ['transaction','post_commit'])
+def test_persistence_guard_gap_suppresses_without_false_invocation(tmp_path, monkeypatch, stage):
+    from trading_bot.llm_provider import LLMProviderError
+    admission,journal,controls,clock=admitted(tmp_path)
+    original=admission.check_current
+    count=[0]
+    def check():
+        count[0]+=1
+        if count[0] == (3 if stage=='transaction' else 4): clock.advance(600)
+        return original()
+    monkeypatch.setattr(admission,'check_current',check)
+    calls=[]
+    with pytest.raises(LLMProviderError): admission.admit_at_transport_entry(lambda ack: (ack(),calls.append('BAD')))
+    row=journal.load_provider_admission('dispatch1')
+    assert calls==[] and row.state=='SUPPRESSED_NO_CALL' and row.invocation_started_at is None
+
+
+@pytest.mark.parametrize('failure',['timeout','nonzero','parse','success'])
+def test_codex_one_creation_with_response_wait_outside_lock(tmp_path,failure):
+    from conftest import make_settings
+    from trading_bot.config import LLMProviderName
+    from trading_bot.llm_provider import build_single_shot_llm_provider,LLMProviderError
+    env=envelope('codex'); admission,journal,controls,clock=admitted(tmp_path,env=env)
+    calls=[]
+    class Child:
+        returncode=1 if failure=='nonzero' else 0
+        def communicate(self,timeout):
+            assert timeout==90
+            with controls.admission_lock(): pass
+            if failure=='timeout': raise TimeoutError('no raw error')
+            return ('invalid' if failure=='parse' else '{"decision":"HOLD","confidence":0.8,"reason":"saved"}','')
+        def poll(self): return self.returncode
+    def popen(argv,**kw): calls.append((argv,kw)); return Child()
+    provider=build_single_shot_llm_provider(make_settings(llm_provider=LLMProviderName.CODEX_CLI),popen=popen)
+    if failure=='success': assert provider.generate_signal_from_envelope(env,admission).reason=='saved'
+    else:
+        with pytest.raises(LLMProviderError): provider.generate_signal_from_envelope(env,admission)
+    assert len(calls)==1 and 'saved-model' in calls[0][0]
+    assert env.system_prompt in calls[0][0][-1] and env.prompt_bytes.decode() in calls[0][0][-1]
+
+
+def test_unknown_injected_sdk_has_no_envelope_transport_authority(tmp_path):
+    from conftest import FakeOpenAIClient
+    from trading_bot.llm_provider import OpenAILLMProvider,LLMProviderError
+    admission,journal,controls,clock=admitted(tmp_path)
+    client=FakeOpenAIClient()
+    provider=OpenAILLMProvider(client=client,model='current',temperature=0)
+    with pytest.raises(LLMProviderError): provider.generate_signal_from_envelope(envelope(),admission)
+    assert journal.load_provider_admission('dispatch1').state=='SUPPRESSED_NO_CALL'
