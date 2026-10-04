@@ -127,6 +127,17 @@ class ObservedKRXCalendar:
             return self._record(day, False)
         return self._record(day, None)
 
+    def refresh(self, day: date) -> bool | None:
+        """One bounded adapter/witness observation for uncertain or current dates.
+
+        Completed historical positive/closed evidence stays cached. The adapter
+        owns transport timeout/retries; refresh adds no retry loop of its own.
+        """
+        if day == self._current_date() or self._cache.get(day) is None:
+            self._cache.pop(day, None)
+            self._diagnostics.pop(day, None)
+        return self.is_trading_day(day)
+
     def diagnostic_for(self, day: date) -> str | None:
         """Return a bounded source-level reason only for cached UNKNOWN dates."""
 

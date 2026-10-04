@@ -162,3 +162,41 @@ def test_calendar_refresh_retains_confirmed_historical_cache():
     assert calendar.is_trading_day(prior) is True
     assert calendar.refresh(prior) is True
     assert calls == ['fetch']
+
+
+def test_loader_aliases_and_positive_holiday(tmp_path):
+    from trading_bot.session_evidence import load_session_evidence
+    clock = FakeServiceClock(at(10))
+    value = notice()
+    value['date'] = value.pop('trading_date_kst')
+    value['content_hash'] = value.pop('source_hash')
+    path = save(tmp_path, {'sessions': [value]})
+    assert load_session_evidence(path, DAY, clock).continuous_open == at(9)
+    path = save(tmp_path, notice('holiday'))
+    assert policy(path, clock, False).classify(clock()).session is MarketSession.CLOSED_DAY
+
+
+def test_duplicate_fields_and_alias_conflicts_are_not_authority(tmp_path):
+    clock = FakeServiceClock(at(10))
+    path = save(tmp_path, notice(date=DAY.isoformat()))
+    assert not policy(path, clock).classify(clock()).executable
+    path.write_text(json.dumps(notice())[:-1] + ', "reviewer": "other"}')
+    assert not policy(path, clock).classify(clock()).executable
+
+
+def test_policy_refreshes_current_unknown_calendar_with_same_saved_session(tmp_path):
+    from trading_bot.data_source import ObservedKRXCalendar
+    witness = [None, True]
+
+    class Adapter:
+        def fetch_market_ohlcv(self, *args, **kwargs):
+            raise RuntimeError('offline')
+
+    from trading_bot.session_evidence import SessionEvidenceProvider
+    clock = FakeServiceClock(at(10))
+    calendar = ObservedKRXCalendar(Adapter(), current_date=lambda: DAY,
+                                   calendar_witness=lambda day: witness.pop(0))
+    shared = MarketCyclePolicy(calendar, session_evidence_provider=SessionEvidenceProvider(
+        save(tmp_path, notice()), clock))
+    assert shared.classify(clock()).session is MarketSession.UNKNOWN
+    assert shared.classify(clock()).executable

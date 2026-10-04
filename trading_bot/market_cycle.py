@@ -1,4 +1,4 @@
-"""Pure, dependency-free KRX cycle and quote-freshness policy."""
+"""Injected KRX cycle, reviewed session and independent quote-freshness policy."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from .service_models import SessionEligibility, SessionEvidence
 
 KST = ZoneInfo("Asia/Seoul")
 POLICY_VERSION = "krx-continuous-v1"
@@ -35,6 +37,10 @@ class KRXCalendarProvider(Protocol):
     def is_trading_day(self, day: date) -> bool | None: ...
 
     def previous_trading_day(self, day: date) -> date | None: ...
+
+
+class SessionProvider(Protocol):
+    def for_date(self, requested_date: date) -> SessionEvidence: ...
 
 
 @dataclass(frozen=True)
@@ -71,29 +77,54 @@ class QuoteFreshness:
 class MarketCyclePolicy:
     """Classify market state and completed-data boundaries using an injected calendar."""
 
-    def __init__(self, calendar: KRXCalendarProvider, *, max_quote_age_seconds: float = 10.0):
+    def __init__(self, calendar: KRXCalendarProvider, *, max_quote_age_seconds: float = 10.0,
+                 session_evidence_provider: SessionProvider | None = None):
         self._calendar = calendar
         self.max_quote_age_seconds = float(max_quote_age_seconds)
+        self.session_evidence_provider = session_evidence_provider
 
     def classify(self, observed_at: datetime) -> MarketCycleEvidence:
         if observed_at.tzinfo is None:
             return self._unknown(observed_at.replace(tzinfo=KST), "naive observation time")
         kst = observed_at.astimezone(KST)
         try:
-            trading_day = self._calendar.is_trading_day(kst.date())
+            refresh = getattr(self._calendar, 'refresh', None)
+            trading_day = (refresh(kst.date())
+                           if self.session_evidence_provider is not None and callable(refresh)
+                           else self._calendar.is_trading_day(kst.date()))
         except Exception:  # provider uncertainty must fail closed
             return self._unknown(kst, "calendar unavailable")
-        if trading_day is None:
+        if type(trading_day) is not bool:
             return self._unknown(kst, self._calendar_unknown_reason(kst.date()))
+        opening, closing = time(9, 0), time(15, 20)
+        if self.session_evidence_provider is not None:
+            try:
+                evidence = self.session_evidence_provider.for_date(kst.date())
+                if (evidence.trading_date_kst != kst.date()
+                        or evidence.eligibility is SessionEligibility.UNKNOWN):
+                    return self._unknown(kst, 'session authority unavailable')
+                if ((trading_day is True) != (evidence.eligibility is SessionEligibility.ELIGIBLE)):
+                    return self._unknown(kst, 'calendar and session authority contradict')
+                if trading_day is True:
+                    if evidence.continuous_open is None or evidence.continuous_close is None:
+                        return self._unknown(kst, 'session authority unavailable')
+                    opening = evidence.continuous_open.astimezone(KST).time()
+                    closing = min(evidence.continuous_close.astimezone(KST).time(), time(15, 20))
+            except Exception:
+                return self._unknown(kst, 'session authority unavailable')
         if not trading_day:
             return MarketCycleEvidence(
                 kst, kst.date(), CalendarState.CLOSED_DAY, MarketSession.CLOSED_DAY,
                 False, "confirmed non-trading day",
             )
         local_time = kst.timetz().replace(tzinfo=None)
-        if local_time < time(9, 0):
+        if local_time >= time(15, 20) and local_time <= time(15, 30):
+            session = MarketSession.CLOSING_AUCTION
+        elif local_time > time(15, 30):
+            session = MarketSession.AFTER_HOURS
+        elif local_time < opening:
             session = MarketSession.PRE_OPEN
-        elif local_time < time(15, 20):
+        elif local_time < closing:
             session = MarketSession.CONTINUOUS
         elif local_time <= time(15, 30):
             session = MarketSession.CLOSING_AUCTION
