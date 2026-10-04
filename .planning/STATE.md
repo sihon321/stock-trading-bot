@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 7
+current_plan: 6
 status: executing
-stopped_at: Completed 15-07-PLAN.md out of order; earliest pending 15-06 requires orchestrator position restore
-last_updated: "2026-10-04T05:31:12.037Z"
+stopped_at: Phase 15 plans 01-05 and 07 completed; wave 2 integration corrected; next 15-06
+last_updated: "2026-10-04T05:32:16.359Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 7
+Current Plan: 6
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 7 of 14
+Plan: 6 (15-06-PLAN.md; 15-07 integration completed early)
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -221,9 +221,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T05:31:12.030Z
-Stopped at: Completed 15-07-PLAN.md out of order; earliest pending 15-06 requires orchestrator position restore
-Resume file: None
+Last session: 2026-10-04T05:32:16.352Z
+Stopped at: Phase 15 plans 01-05 and 07 completed; wave 2 integration corrected; next 15-06
+Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-06-PLAN.md
 
 ## Operator Next Steps
 
