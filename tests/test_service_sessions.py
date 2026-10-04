@@ -200,3 +200,101 @@ def test_policy_refreshes_current_unknown_calendar_with_same_saved_session(tmp_p
         save(tmp_path, notice()), clock))
     assert shared.classify(clock()).session is MarketSession.UNKNOWN
     assert shared.classify(clock()).executable
+
+
+@pytest.mark.parametrize(('kind', 'instant', 'expected'), [
+    ('normal', at(8, 50), 'PREFLIGHT_READ_ONLY'),
+    ('normal', at(9), 'ACTIVE'),
+    ('delayed', at(9), 'PREFLIGHT_READ_ONLY'),
+    ('delayed', at(9, 19, 59), 'PREFLIGHT_READ_ONLY'),
+    ('delayed', at(10), 'ACTIVE'),
+    ('delayed', at(15, 19, 59), 'ACTIVE'),
+    ('delayed', at(15, 20), 'RECONCILE_ONLY'),
+    ('delayed', at(15, 30), 'TERMINAL'),
+    ('unknown', at(10), 'RECOVERY_ONLY'),
+    ('holiday', at(10), 'RECOVERY_ONLY'),
+])
+def test_intraday_uses_shared_session_authority(tmp_path, kind, instant, expected):
+    from trading_bot.intraday import session_phase_at
+    clock = FakeServiceClock(instant)
+    shared = policy(save(tmp_path, notice(kind)), clock, kind != 'holiday')
+    assert session_phase_at(clock(), policy=shared).value == expected
+
+
+def check_kwargs(clock, calls):
+    from trading_bot.domain import Money
+    from trading_bot.risk import RiskConfig
+    from test_exit_manager import _snapshot
+    return dict(clock=clock, snapshot_reader=lambda: (calls.append('snapshot'), _snapshot())[1],
+        quote_reader=lambda ticker: Money(50_000, 'KRW'), risk_config=RiskConfig(0.05, 0.10),
+        lease=type('Lease', (), {'assert_active_owner': lambda self: None})(),
+        exit_submitter=lambda candidate, price: calls.append('post'), audit_sink=lambda result: None,
+        reconcile=lambda: calls.append('reconcile'))
+
+
+@pytest.mark.parametrize(('kind', 'instant', 'expected_calls'), [
+    ('normal', at(8, 50), []), ('delayed', at(9, 10), []),
+    ('unknown', at(10), []), ('normal', at(15, 20), ['reconcile']),
+    ('delayed', at(15, 30), []),
+])
+def test_nonactive_check_never_constructs_risk_or_post(tmp_path, kind, instant, expected_calls):
+    from trading_bot.intraday import run_intraday_check
+    calls = []
+    clock = FakeServiceClock(instant)
+    shared = policy(save(tmp_path, notice(kind)), clock)
+    run_intraday_check(**check_kwargs(clock, calls), policy=shared)
+    assert calls == expected_calls
+
+
+def test_intraday_early_close_and_unknown_absolute_cutoffs(tmp_path):
+    from trading_bot.intraday import session_phase_at
+    clock = FakeServiceClock(at(14))
+    shared = policy(save(tmp_path, notice(continuous_close=at(14).isoformat())), clock)
+    assert session_phase_at(clock(), policy=shared).value == 'RECONCILE_ONLY'
+    missing = policy(tmp_path / 'missing', clock)
+    assert session_phase_at(at(15, 20), policy=missing).value == 'RECONCILE_ONLY'
+    assert session_phase_at(at(15, 30), policy=missing).value == 'TERMINAL'
+
+
+def test_session_rechecked_after_slow_quote_before_post(tmp_path):
+    from trading_bot.intraday import run_intraday_check
+    from trading_bot.domain import Money
+    calls = []
+    clock = FakeServiceClock(at(15, 19, 59))
+    shared = policy(save(tmp_path, notice('delayed')), clock)
+    kwargs = check_kwargs(clock, calls)
+
+    def quote(ticker):
+        clock.advance(wall_seconds=1)
+        return Money(50_000, 'KRW')
+
+    kwargs['quote_reader'] = quote
+    result = run_intraday_check(**kwargs, policy=shared)
+    assert 'post' not in calls
+    assert result.phase.value == 'RECONCILE_ONLY'
+
+
+def test_watch_wakes_at_cutoff_and_terminates_without_post(tmp_path):
+    from trading_bot.intraday import run_intraday_watch
+    calls = []
+    clock = FakeServiceClock(at(9, 10))
+    shared = policy(save(tmp_path, notice('delayed')), clock)
+    advances = iter([6 * 3600 + 10 * 60, 10 * 60])
+    watch = run_intraday_watch(**check_kwargs(clock, calls), policy=shared,
+        sleeper=lambda seconds: clock.advance(wall_seconds=next(advances)),
+        stop_requested=lambda: False, terminalize=lambda: calls.append('terminalize'))
+    assert watch.final_phase.value == 'TERMINAL'
+    assert calls == ['reconcile', 'terminalize', 'reconcile']
+
+
+def test_watch_midnight_rollover_terminates_previous_day(tmp_path):
+    from trading_bot.intraday import run_intraday_watch
+    calls = []
+    clock = FakeServiceClock(at(14))
+    shared = policy(save(tmp_path, notice('unknown')), clock)
+    watch = run_intraday_watch(**check_kwargs(clock, calls), policy=shared,
+        sleeper=lambda seconds: clock.advance(wall_seconds=11 * 3600),
+        stop_requested=lambda: False, terminalize=lambda: calls.append('terminalize'),
+        max_iterations=2)
+    assert watch.final_phase.value == 'TERMINAL'
+    assert calls == ['terminalize', 'reconcile']
