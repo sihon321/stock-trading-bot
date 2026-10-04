@@ -21,6 +21,7 @@ def test_exact_reviewed_extras_and_independent_scripts():
     assert data["project"]["scripts"] == {
         "bot": "trading_bot.cli:app", "bot-web": "trading_bot.web_cli:app",
         "bot-alerts": "trading_bot.alert_cli:app",
+        "bot-service": "trading_bot.service_cli:app",
     }
     patterns = data["tool"]["setuptools"]["package-data"]["trading_bot"]
     assert "templates/**/*.html" in patterns
