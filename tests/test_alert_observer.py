@@ -130,10 +130,10 @@ def test_failure_durable_stop_event_and_status_readonly(tmp_path):
     def bad(cursor):
         raise RuntimeError('private secret')
     bot.evidence.observe_alert_sources = bad
-    with pytest.raises(ObserverEvidenceError):
-        bot.scan_once()
-    assert bot.status()['state'] == 'FAILED'
-    assert bot.status()['failure_code'] == 'SOURCE_FAILED'
+    bot.scan_once()
+    assert bot.status()['state'] == 'STOPPED'
+    assert bot.status()['failure_code'] is None
+    assert any(e.subject.problem_family=='SERVICE_SOURCE_UNAVAILABLE' for e in bot.store.list_incidents())
     before = bot.store.path.read_bytes()
     bot.status()
     assert bot.store.path.read_bytes() == before
@@ -199,19 +199,93 @@ def test_operational_schema_coexists_with_web_store(tmp_path):
     assert bot.status()['state'] == 'STOPPED'
 
 
-def test_mandatory_source_failure_and_checkpoint_failure_block_send(tmp_path, monkeypatch):
+def test_source_failure_preserves_outbox_but_checkpoint_failure_blocks_send(tmp_path, monkeypatch):
     bot = observer(tmp_path)
     env = replace(record('runs').envelope, schema_owner='audit', query_status='FAILED')
     bot.evidence.batch = replace(bot.evidence.batch, sources=(env,))
-    with pytest.raises(ObserverEvidenceError):
-        bot.scan_once()
-    assert bot.notifier.sent == []
+    bot.scan_once()
+    assert bot.notifier.sent
     assert bot.store.get_checkpoint() is None
     bot.evidence.batch = replace(bot.evidence.batch, sources=())
+    bot.notifier.sent.clear()
     monkeypatch.setattr(bot.store, 'set_checkpoint', lambda *_: (_ for _ in ()).throw(sqlite3.Error('secret')))
     with pytest.raises(ObserverEvidenceError):
         bot.scan_once()
     assert bot.notifier.sent == []
+    assert bot.store.get_checkpoint() is None
+
+
+def test_persistent_service_control_failure_keeps_owned_delivery_reminders_and_ack(tmp_path):
+    clock=Clock()
+    bot=observer(tmp_path,clock=clock)
+    bot.start()
+    incident=bot.store.observe(bot.detector.detect(bot.evidence.batch)[0])
+    failure=replace(record('runs').envelope,resource_id='service',schema_owner='service',query_status='FAILED',
+        source_observed_at=None,diagnostic_code='SOURCE_UNAVAILABLE')
+    control=replace(failure,resource_id='control',schema_owner='control')
+    bot.evidence.batch=AlertSourceBatch(clock(), sources=(failure,control),cursor='must-not-advance')
+    bot._scan(clock())
+    assert any('UNRESOLVED_ORDER' in text for text in bot.notifier.sent)
+    assert bot.store.get_checkpoint() is None
+    clock.advance(1799)
+    bot._scan(clock())
+    count=len(bot.notifier.sent)
+    clock.advance(1)
+    bot._scan(clock())
+    assert len(bot.notifier.sent)==count+1
+    assert bot.store.get(incident.episode_id).active
+    failures=[e for e in bot.store.list_incidents() if e.subject.problem_family=='SERVICE_SOURCE_UNAVAILABLE']
+    assert len(failures)==2 and all(e.occurrence_count==1 for e in failures)
+    bot.store.acknowledge(incident.episode_id,incident.revision,'operator')
+    clock.advance(1800)
+    bot._scan(clock())
+    assert len(bot.notifier.sent)==count+1
+    assert bot.status()['state']=='RUNNING'
+    # Fresh positive source evidence resolves source availability alone.
+    bot.evidence.batch=AlertSourceBatch(clock(),sources=(replace(failure,query_status='OK',
+        source_observed_at=clock(),diagnostic_code=None), control),cursor='healthy-partial')
+    bot._scan(clock())
+    bot._scan(clock())
+    assert not bot.store.get(failures[0].episode_id).active or not bot.store.get(failures[1].episode_id).active
+    assert bot.store.get(incident.episode_id).active
+    assert len([t for t in bot.notifier.sent if 'RECOVERY: SERVICE_SOURCE_UNAVAILABLE' in t])==1
+    bot.stop()
+
+
+def test_source_failure_unknown_delivery_never_blindly_retried(tmp_path):
+    bot=observer(tmp_path,transport=Transport(RuntimeError('private transport token')))
+    failure=replace(record('runs').envelope,schema_owner='service',query_status='FAILED',source_observed_at=None)
+    bot.evidence.batch=AlertSourceBatch(NOW,sources=(failure,))
+    bot.scan_once(); bot.scan_once()
+    assert len(bot.notifier.sent)==1
+    episode=bot.store.list_incidents()[0]
+    assert bot.store.list_attempts(episode.episode_id)[0].state==DeliveryState.UNKNOWN
+
+
+def test_lost_owner_or_own_store_failure_stops_sends_with_sources_down(tmp_path,monkeypatch):
+    bot=observer(tmp_path)
+    bot.start()
+    bot.store.observe(bot.detector.detect(bot.evidence.batch)[0])
+    with bot.store.connection() as conn:
+        conn.execute("UPDATE alert_observer SET owner='competitor'")
+    with pytest.raises(ObserverEvidenceError): bot._scan(NOW)
+    assert bot.notifier.sent==[]
+    bot._owned=False
+    second=observer(tmp_path/'second')
+    second.start()
+    monkeypatch.setattr(second.store,'get_checkpoint',lambda: (_ for _ in ()).throw(sqlite3.DatabaseError('private')))
+    with pytest.raises(sqlite3.DatabaseError): second._scan(NOW)
+    assert second.notifier.sent==[]
+    second.stop()
+
+
+def test_expectation_publication_failure_does_not_suppress_existing_outbox(tmp_path):
+    class Producer:
+        def publish(self): raise ValueError('private session token')
+    bot=observer(tmp_path,expectation_producer=Producer())
+    bot.scan_once()
+    assert any('UNRESOLVED_ORDER' in text for text in bot.notifier.sent)
+    assert any(e.subject.problem_family=='EXPECTATION_UNKNOWN' for e in bot.store.list_incidents())
     assert bot.store.get_checkpoint() is None
 
 
