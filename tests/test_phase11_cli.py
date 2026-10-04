@@ -413,3 +413,47 @@ def test_entry_before_cutoff_may_finalize_after_cutoff_without_new_sibling_call(
     assert calls==['005930'] and all(item['final_action']=='HOLD' for item in result['outcomes'])
     rows=conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches ORDER BY rowid').fetchall()
     assert rows==[('FINALIZED',),('EXPIRED_NEVER_DISPATCHED',)]
+
+
+def test_daily_provider_wait_releases_account_and_admission_locks():
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from pathlib import Path
+    conn = sqlite3.connect(':memory:')
+    deps = dependencies(conn)
+    runtime = deps['daily_dispatch_runtime']
+    original = deps['mutation_lease']
+    probes = []
+    class ProbeProvider(Provider):
+        def generate_signal(self, context):
+            assert original.closed
+            assert not conn.in_transaction
+            competitor = acquire_mutation_lease(conn, account_scope_hash=SCOPE.account_scope_hash,
+                lock_dir=Path(original.lock_path).parent, command='risk', cycle_id='risk-during-provider',
+                observed_at=runtime.clock())
+            assert not competitor.recovery_required
+            competitor.release()
+            with runtime.controls.admission_lock(): probes.append('both-released')
+            return super().generate_signal(context)
+    result = invoke(conn, run_id='provider-without-authority', factory=lambda: ProbeProvider([]), candidates=('005930',))
+    assert probes == ['both-released']
+    assert result['outcomes'][0]['final_action'] == 'HOLD'
+
+
+def test_daily_data_collection_never_holds_account_lease():
+    from trading_bot.cli import run_cycle
+    conn = sqlite3.connect(':memory:'); deps = dependencies(conn)
+    original = deps['mutation_lease']; seen = []
+    class UnownedData(DataSource):
+        def screen_daily_candidates(self, day):
+            assert original.closed
+            seen.append('screen')
+            return super().screen_daily_candidates(day)
+        def build_context(self, ticker):
+            assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RELEASED'
+            seen.append('context')
+            return super().build_context(ticker)
+    run_cycle(settings=make_settings(), data_source=UnownedData(('005930',)),
+        llm_provider_factory=lambda: Provider([]), broker=Broker(), audit_conn=conn,
+        notifier=Notifier(), trading_date='20260904', run_id='unowned-data',
+        portfolio_snapshot_reader=lambda: snapshot(snapshot_id=__import__('uuid').uuid4().hex), **deps)
+    assert seen == ['screen', 'context']
