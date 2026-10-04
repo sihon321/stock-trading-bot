@@ -13,6 +13,32 @@ CONTROLLER_SCHEMA_VERSION = 1
 PORTFOLIO_SCHEMA_VERSION = 4
 PORTFOLIO_SUPPORTED_READ_VERSIONS = frozenset({3, 4})
 PORTFOLIO_SCHEMA_OWNER = "phase11"
+SERVICE_SCHEMA_VERSION = 1
+CONTROL_SCHEMA_VERSION = 1
+SERVICE_SCHEMA_OWNER = 'phase15-service'
+CONTROL_SCHEMA_OWNER = 'phase15-control'
+
+# Pure declarations: owner migrators are tested against these exact capabilities.
+SERVICE_REPORT_SCHEMA = MappingProxyType({
+    'service_metadata': frozenset(('owner', 'version')),
+    'service_generations': frozenset('generation_id scope_hash target pid started_at stopped_at state'.split()),
+    'service_jobs': frozenset('job_id scope_hash target trading_date_kst kind due_at dispatch_deadline_at state universe_json universe_hash owner_generation revision'.split()),
+    'service_job_events': frozenset('event_id job_id sequence state reason_code source_ids_json observed_at'.split()),
+    'service_restart_attempts': frozenset('attempt_id generation_id admitted_at reason admitted'.split()),
+    'service_attention_events': frozenset('event_id state reason_code observed_at'.split()),
+    'service_launcher_events': frozenset('event_id generation_id reason_code observed_at'.split()),
+    'service_expectations': frozenset('expectation_id scope_hash target trading_date_kst kind due_at expected_until calendar_state session_source_id control_revision expected_running reason_code observed_at producer_kind config_hash config_effective_at login_source_id login_effective_at session_source_hash controls_observed_at evidence_json'.split()),
+    'service_expectation_health': frozenset('event_id scope_hash target trading_date_kst source_kind source_id state reason_code observed_at'.split()),
+    'service_provider_admissions': frozenset('dispatch_id evaluation_id scope_hash target trading_date_kst envelope_hash state reason_code control_revision session_source_id observed_at invocation_started_at'.split()),
+    'service_heartbeats': frozenset('worker_id generation_id observed_at phase job_id'.split()),
+})
+CONTROL_REPORT_SCHEMA = MappingProxyType({
+    'control_metadata': frozenset(('owner', 'version')),
+    'control_requests': frozenset('request_id actor requested_at scope_hash target action expected_revision acceptance_revision payload_hash'.split()),
+    'control_applications': frozenset('application_id request_id revision mode applied_at safety_evidence_ids_json result reason_code'.split()),
+    'control_request_audit': frozenset('event_id request_id actor scope_hash target event observed_at'.split()),
+    'submission_admissions': frozenset('admission_id scope_hash target intent_id submission_id control_revision state admitted_at finished_at'.split()),
+})
 
 AUDIT_REPORT_SCHEMA = MappingProxyType({
     'runs': frozenset({

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import base64
 import re
@@ -17,7 +18,7 @@ from . import evidence_contracts as contracts
 from .web_config import checked_path
 from .web_models import (AccountDTO, EvidenceRecord, EvidenceSelection, OverviewDTO,
                          ResourceScope, SourceEnvelope, PeriodSelection, RecordPage,
-                         WorkerDTO, AlertSourceBatch)
+                         WorkerDTO, AlertSourceBatch, ServiceHealthDTO, ControlStateDTO, KST)
 
 # Fixed capabilities: table, primary key, durable time and public fields only.
 _HISTORY = {
@@ -41,6 +42,35 @@ _HISTORY = {
     ('controller', 'drills'): ('drill_observations', 'id', 'observed_at', ('drill_id', 'observation_type', 'evidence_class', 'primary_run_id', 'reconciliation_id', 'ticker', 'order_intent_id', 'freeze_id')),
 }
 _KINDS = {kind for _, kind in _HISTORY} | {'holdings', 'fills', 'broker_orders'}
+
+_OPERATIONAL_HISTORY = {
+    ('service', 'service_jobs'): ('service_jobs','job_id','due_at'),
+    ('service', 'service_job_events'): ('service_job_events','event_id','observed_at'),
+    ('service', 'service_expectations'): ('service_expectations','expectation_id','observed_at'),
+    ('service', 'service_expectation_health'): ('service_expectation_health','event_id','observed_at'),
+    ('service', 'service_heartbeats'): ('service_heartbeats','worker_id','observed_at'),
+    ('service', 'service_restarts'): ('service_restart_attempts','attempt_id','admitted_at'),
+    ('service', 'service_attention'): ('service_attention_events','event_id','observed_at'),
+    ('service', 'service_provider_admissions'): ('service_provider_admissions','dispatch_id','observed_at'),
+    ('control', 'control_requests'): ('control_requests','request_id','requested_at'),
+    ('control', 'control_applications'): ('control_applications','application_id','applied_at'),
+    ('control', 'control_admissions'): ('submission_admissions','admission_id','admitted_at'),
+}
+# JSON payloads, canonical inputs, PID and unreviewed actor text are never exported.
+for (owner, kind), (table, key, stamp) in _OPERATIONAL_HISTORY.items():
+    schema = contracts.SERVICE_REPORT_SCHEMA if owner == 'service' else contracts.CONTROL_REPORT_SCHEMA
+    fields = tuple(sorted(schema[table] - {'evidence_json','universe_json','source_ids_json','safety_evidence_ids_json','actor','payload_hash'}))
+    _HISTORY[(owner, kind)] = (table, key, stamp, fields)
+    _KINDS.add(kind)
+
+
+def _operational_stamp(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        try:
+            return datetime.fromtimestamp(value, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            raise EvidenceUnavailable('INVALID_SOURCE_TIME') from None
+    return _stamp(value)
 
 
 def _clean(value):
@@ -115,6 +145,8 @@ def _envelope(resource, now, *, conn=None, **values):
         'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
         'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION,
     }.get(resource.owner)
+    if resource.owner in {'service','control'}:
+        version = 1
     return SourceEnvelope(resource.id, resource.owner,
         version,
         resource.account_hash, resource.target, now, **values)
@@ -127,6 +159,9 @@ def _transaction(resource):
         path = checked_path(resource.path)
         if not path.is_file():
             raise EvidenceUnavailable('SOURCE_MISSING')
+        if resource.owner in {'service','control'} and (path.stat().st_uid!=os.getuid()
+                or path.stat().st_mode & 0o077 or path.parent.stat().st_mode & 0o077):
+            raise EvidenceUnavailable('SOURCE_OWNER_UNSAFE')
         conn = sqlite3.connect(f'{path.as_uri()}?mode=ro', uri=True, isolation_level=None, timeout=1)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA query_only=ON')
@@ -140,17 +175,29 @@ def _transaction(resource):
         schemas = {'portfolio': contracts.PORTFOLIO_REPORT_SCHEMA,
                    'audit': contracts.PRIMARY_REPORT_SCHEMA,
                    'soak': contracts.SOAK_REPORT_SCHEMA,
-                   'controller': contracts.CONTROLLER_REPORT_SCHEMA}
+                   'controller': contracts.CONTROLLER_REPORT_SCHEMA,
+                   'service': contracts.SERVICE_REPORT_SCHEMA,
+                   'control': contracts.CONTROL_REPORT_SCHEMA}
         schema = schemas.get(resource.owner)
         if schema is None:
             raise EvidenceUnavailable('UNSUPPORTED_SOURCE_OWNER')
         if resource.owner == 'portfolio':
             actual = _portfolio_read_version(conn)
             schema = contracts.portfolio_read_schema(actual)
+        elif resource.owner in {'service','control'}:
+            rows = conn.execute(f'SELECT owner,version FROM {resource.owner}_metadata').fetchall()
+            expected_owner = {'service':contracts.SERVICE_SCHEMA_OWNER,'control':contracts.CONTROL_SCHEMA_OWNER}[resource.owner]
+            if len(rows)!=1 or tuple(rows[0])!=(expected_owner,1):
+                raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if tables!=set(schema):
+                raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
+            actual = 1
         else:
             actual = conn.execute('PRAGMA user_version').fetchone()[0]
         expected = {'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
-            'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION}.get(resource.owner)
+            'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION,
+            'service':1,'control':1}.get(resource.owner)
         if resource.owner != 'portfolio' and actual != expected:
             raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
         for table, columns in schema.items():
@@ -200,6 +247,12 @@ def _bounded_rows(conn, query, args=()):
 
 
 def _table_source(table, *, portfolio_version=None):
+    if table in contracts.SERVICE_REPORT_SCHEMA:
+        numeric_times={'started_at','stopped_at','due_at','dispatch_deadline_at','observed_at','admitted_at',
+            'expected_until','config_effective_at','login_effective_at','controls_observed_at','invocation_started_at'}
+        columns=sorted(contracts.SERVICE_REPORT_SCHEMA[table])
+        projection=','.join(f"strftime('%Y-%m-%dT%H:%M:%f+00:00',{c},'unixepoch') AS {c}" if c in numeric_times else c for c in columns)
+        return f'(SELECT {projection} FROM {table})'
     if table == 'portfolio_divergences':
         return '(SELECT d.*,s.observed_at FROM portfolio_divergences d JOIN portfolio_snapshots s ON s.snapshot_id=d.snapshot_id)'
     if table == 'daily_evaluations':
@@ -306,7 +359,8 @@ class OperatorEvidenceService:
     def overview(self, scope):
         return OverviewDTO(self.clock(), accounts=tuple(self._account(r) for r in self._resources(scope, 'portfolio')),
                            unresolved=self._unresolved(scope), workers=self._workers(scope), sources=self.source_status(scope),
-                           safety_blocks=self._safety_blocks(scope))
+                           safety_blocks=self._safety_blocks(scope), service_health=self.service_health(scope),
+                           controls=self.control_states(scope))
 
     def _safety_blocks(self, scope):
         """Positive persisted campaign latches, independent of observer/date filters.
@@ -361,6 +415,16 @@ class OperatorEvidenceService:
         _, key, time_key, fields = _HISTORY[(resource.owner, kind)]
         source_ids = []
         sid = None
+        if resource.owner in {'service','control'}:
+            if resource.owner=='service' and 'scope_hash' in row.keys() and (row['scope_hash'],row['target'])!=(resource.account_hash,resource.target):
+                raise EvidenceUnavailable('SCOPE_CONFLICT')
+            if resource.owner=='service' and kind in {'service_job_events','service_heartbeats'}:
+                parent=conn.execute('SELECT scope_hash,target FROM '+('service_jobs WHERE job_id=?' if kind=='service_job_events' else 'service_generations WHERE generation_id=?'),
+                    (row['job_id'] if kind=='service_job_events' else row['generation_id'],)).fetchone()
+                if parent is None or tuple(parent)!=(resource.account_hash,resource.target):
+                    raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
+            record = _wire_record(resource,kind,row,key,_operational_stamp(row[time_key]).isoformat(),fields,conn=conn)
+            return replace(record,envelope=replace(record.envelope,query_at=self.clock()))
         if resource.owner == 'audit':
             for run_key in ('run_id', 'origin_run_id', 'observer_run_id'):
                 if run_key in row.keys():
@@ -510,6 +574,120 @@ class OperatorEvidenceService:
                 workers.append(WorkerDTO(_envelope(resource, self.clock(), query_status='FAILED', diagnostic_code=str(exc)), f'{resource.id}:intraday'))
         return tuple(workers)
 
+    def control_states(self, scope=None):
+        result=[]
+        for resource in self._resources(scope,'control'):
+            try:
+                with _transaction(resource) as conn:
+                    scopes=sorted({(r.account_hash,r.target) for r in self._resources() if r.owner in {'service','control'}})
+                    fixed=getattr(self.settings,'control_resource',None)
+                    if fixed is not None:
+                        scopes=sorted(fixed.registered_scopes)
+                    digest=hashlib.sha256(json.dumps({'registered_scopes':[
+                        {'account_scope_hash':account,'execution_target':target} for account,target in scopes
+                    ]},separators=(',',':')).encode()).hexdigest()
+                    setup=conn.execute("SELECT scope_hash,target FROM control_request_audit WHERE event='OWNER_SETUP'").fetchall()
+                    if len(setup)!=1 or tuple(setup[0])!=(digest,'mock'):
+                        raise EvidenceUnavailable('CONTROL_SCOPE_CONFLICT')
+                    applied=conn.execute("SELECT * FROM control_applications WHERE result='APPLIED' ORDER BY revision DESC LIMIT 1").fetchone()
+                    if applied is None:
+                        raise EvidenceUnavailable('CONTROL_STATE_UNKNOWN')
+                    pending=conn.execute('SELECT * FROM control_requests WHERE acceptance_revision>? ORDER BY acceptance_revision DESC LIMIT 1',(applied['revision'],)).fetchone()
+                    stamp=max(_stamp(applied['applied_at']), _stamp(pending['requested_at']) if pending else _stamp(applied['applied_at']))
+                    ids=(f'control_applications:{applied["application_id"]}',)+( (f'control_requests:{pending["request_id"]}',) if pending else ())
+                    result.append(ControlStateDTO(_envelope(resource,self.clock(),source_observed_at=stamp,completeness='COMPLETE'),
+                        pending['acceptance_revision'] if pending else applied['revision'],applied['mode'],
+                        pending['action'] if pending else None,pending['request_id'] if pending else applied['request_id'],ids))
+            except EvidenceUnavailable as exc:
+                result.append(ControlStateDTO(_envelope(resource,self.clock(),query_status='FAILED',diagnostic_code=str(exc))))
+        return tuple(result)
+
+    def service_health(self, scope=None):
+        """Saved obligations and runtime observations remain distinct trust facts.
+
+        A 30-second poll never refreshes original config/login/session/control dates.
+        UNKNOWN current sources suppress inference; only independently saved prior
+        obligations establish absence. Total sleep can only be seen after resumption.
+        """
+        result=[]; now=self.clock(); day=str(now.astimezone(KST).date())
+        controls=self.control_states(scope)
+        for resource in self._resources(scope,'service'):
+            try:
+                with _transaction(resource) as conn:
+                    records=_bounded_rows(conn,"SELECT * FROM service_expectations WHERE scope_hash=? AND target=? AND trading_date_kst=? AND producer_kind='OBSERVER_DERIVED' ORDER BY observed_at,rowid LIMIT 10001",(resource.account_hash,resource.target,day))
+                    jobs=_bounded_rows(conn,'SELECT * FROM service_jobs WHERE scope_hash=? AND target=? AND trading_date_kst=? LIMIT 10001',(resource.account_hash,resource.target,day))
+                    heartbeat=conn.execute('SELECT * FROM service_heartbeats WHERE generation_id IN (SELECT generation_id FROM service_generations WHERE scope_hash=? AND target=?) ORDER BY observed_at DESC LIMIT 1',(resource.account_hash,resource.target)).fetchone()
+                    attention=conn.execute('SELECT * FROM service_attention_events ORDER BY event_id DESC LIMIT 1').fetchone()
+                    restarts=conn.execute('SELECT COUNT(*) FROM service_restart_attempts WHERE admitted_at>?',(now.timestamp()-600,)).fetchone()[0]
+                    source_health=conn.execute('SELECT * FROM service_expectation_health WHERE scope_hash=? AND target=? AND trading_date_kst=? ORDER BY event_id DESC LIMIT 1',(resource.account_hash,resource.target,day)).fetchone()
+                    control=next((c for c in controls if (c.envelope.account_hash,c.envelope.target)==(resource.account_hash,resource.target)),None)
+                    for kind in ('PREP','DAILY','RISK'):
+                        rows=[r for r in records if r['kind']==kind]
+                        current=rows[-1] if rows else None
+                        # Later observations cannot overwrite the proven due interval.
+                        proven=[r for r in rows if r['expected_running']=='EXPECTED' and r['due_at'] is not None and r['observed_at']<=r['due_at']]
+                        obligation=proven[-1] if proven else current
+                        subject=f'{resource.id}:{day}:{kind}'
+                        if obligation is None:
+                            result.append(ServiceHealthDTO(_envelope(resource,now,diagnostic_code='EXPECTATION_UNKNOWN'),subject,kind,trading_date_kst=day))
+                            continue
+                        saved=_json(obligation['evidence_json'])
+                        if (not isinstance(saved,dict) or saved.get('producer_kind')!='OBSERVER_DERIVED'
+                                or saved.get('scope')!={'account_scope_hash':resource.account_hash,'execution_target':resource.target}
+                                or saved.get('trading_date_kst')!=day or saved.get('kind')!=kind
+                                or saved.get('state')!=obligation['expected_running']):
+                            raise EvidenceUnavailable('EXPECTATION_PROVENANCE_CONFLICT')
+                        for column in ('config_hash','login_source_id','session_source_id','session_source_hash','control_revision','producer_kind','reason_code'):
+                            if saved.get(column)!=obligation[column]:
+                                raise EvidenceUnavailable('EXPECTATION_PROVENANCE_CONFLICT')
+                        for column in ('config_effective_at','login_effective_at','controls_observed_at','observed_at'):
+                            if _stamp(saved.get(column))!=_operational_stamp(obligation[column]):
+                                raise EvidenceUnavailable('EXPECTATION_PROVENANCE_CONFLICT')
+                        due=_operational_stamp(obligation['due_at']) if obligation['due_at'] is not None else None
+                        deadline=_operational_stamp(obligation['expected_until']) if obligation['expected_until'] is not None else None
+                        stamp=_operational_stamp(obligation['observed_at'])
+                        ids=[f'service_expectations:{obligation["expectation_id"]}']
+                        job=next((j for j in jobs if j['kind']==kind),None)
+                        event=conn.execute('SELECT * FROM service_job_events WHERE job_id=? ORDER BY sequence DESC LIMIT 1',(job['job_id'],)).fetchone() if job else None
+                        progress=_operational_stamp(event['observed_at']) if event else None
+                        if event: ids.append(f'service_job_events:{event["event_id"]}')
+                        if heartbeat: ids.append(f'service_heartbeats:{heartbeat["worker_id"]}')
+                        manual=bool(attention and attention['state']=='MANUAL_ATTENTION')
+                        expected={'EXPECTED':True,'NOT_EXPECTED':False,'UNKNOWN':None}.get(current['expected_running'])
+                        # Only DUE_HISTORY_UNKNOWN may use prior proven history; an
+                        # unavailable current input cannot establish current health.
+                        if expected is None and current['reason_code']=='DUE_HISTORY_UNKNOWN' and proven:
+                            expected=True
+                        if control is None or control.envelope.query_status!='OK': expected=None
+                        if source_health and source_health['state']!='AVAILABLE' and source_health['observed_at']>=current['observed_at']: expected=None
+                        if stamp>now or (progress and progress>now): expected=None
+                        if control and control.revision is not None and control.revision>obligation['control_revision']:
+                            if kind=='DAILY' and (control.applied_mode in {'PAUSED','KILLED'} or control.pending_action in {'PAUSE','KILL'}): expected=False
+                            else: expected=None
+                        if kind=='RISK' and deadline is not None and now>=deadline: expected=False
+                        state='EXPECTATION_UNKNOWN' if expected is None else 'NOT_EXPECTED' if expected is False else 'WAITING'
+                        if expected:
+                            if manual: state='SERVICE_MANUAL_ATTENTION'
+                            elif kind!='RISK' and deadline and now>=deadline and (job is None or job['state'] in {'MISSED','CLAIMED','DEFERRED'}): state='MISSED_SCHEDULE'
+                            elif kind=='RISK' and due and now>=due:
+                                hb=_operational_stamp(heartbeat['observed_at']) if heartbeat else None
+                                if (hb is None and (now-due).total_seconds()>=120) or (hb and (now-hb).total_seconds()>120): state='WORKER_STALLED'
+                                elif (progress and (now-progress).total_seconds()>105) or (progress is None and (now-due).total_seconds()>=120): state='WORKER_STALLED'
+                                elif hb: state='RECOVERY_BLOCKED' if heartbeat['phase']=='RECOVERY_BLOCKED' else 'RUNNING'
+                            elif job:
+                                state=job['state']
+                        observed=max(stamp,progress or stamp)
+                        if state=='WORKER_STALLED' and heartbeat: observed=max(observed,_operational_stamp(heartbeat['observed_at']))
+                        env=_envelope(resource,now,source_observed_at=observed,completeness='COMPLETE',
+                            provenance='OBSERVER_DERIVED',diagnostic_code=state if state in {'EXPECTATION_UNKNOWN','MISSED_SCHEDULE','WORKER_STALLED'} else None)
+                        result.append(ServiceHealthDTO(env,subject,kind,state,expected,due,deadline,progress,tuple(ids),
+                            'OBSERVER_DERIVED',day,obligation['control_revision'],obligation['session_source_id'],obligation['login_source_id'],obligation['config_hash'],
+                            restarts,manual,current['reason_code'],False if state in {'RECOVERY_BLOCKED','SERVICE_MANUAL_ATTENTION'} else None))
+            except EvidenceUnavailable as exc:
+                result.append(ServiceHealthDTO(_envelope(resource,now,query_status='FAILED',diagnostic_code=str(exc)),
+                    resource.id,'SOURCE','SERVICE_SOURCE_UNAVAILABLE'))
+        return tuple(result)
+
     def source_status(self, scope=None):
         statuses = []
         for resource in self._resources(scope):
@@ -517,14 +695,15 @@ class OperatorEvidenceService:
                 if resource.owner == 'portfolio':
                     statuses.append(self._account(resource).envelope)
                     continue
-                if resource.owner in {'audit', 'soak', 'controller'}:
+                if resource.owner in {'audit', 'soak', 'controller', 'service', 'control'}:
                     with _transaction(resource) as conn:
                         stamps = []
                         for (owner, _), (table, _, time_key, _) in _HISTORY.items():
                             if owner == resource.owner:
-                                stamp = conn.execute(f'SELECT {time_key} FROM {table} ORDER BY julianday({time_key}) DESC LIMIT 1').fetchone()
+                                order=time_key if resource.owner in {'service','control'} else f'julianday({time_key})'
+                                stamp = conn.execute(f'SELECT {time_key} FROM {table} ORDER BY {order} DESC LIMIT 1').fetchone()
                                 if stamp:
-                                    stamps.append(_stamp(stamp[0]))
+                                    stamps.append(_operational_stamp(stamp[0]) if resource.owner in {'service','control'} else _stamp(stamp[0]))
                         statuses.append(_envelope(resource, self.clock(), source_observed_at=max(stamps, default=None)))
                     continue
                 path = checked_path(resource.path)
@@ -572,6 +751,7 @@ class OperatorEvidenceService:
         facts = []
         kinds = {'transitions', 'transition_observations', 'transition_notifications', 'lease_events',
                  'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events'}
+        kinds.update(kind for _,kind in _OPERATIONAL_HISTORY)
         for resource in self._resources():
             try:
                 with _transaction(resource) as conn:
@@ -616,7 +796,7 @@ class OperatorEvidenceService:
         if len(next_cursor) > 65536:
             raise EvidenceUnavailable('ALERT_CURSOR_BOUND')
         return AlertSourceBatch(self.clock(), tuple(selected), self._workers(),
-                                self.source_status(), next_cursor)
+                                self.source_status(), next_cursor, self.service_health())
 
     def list_records(self, kind, scope, period=None, cursor=None, limit=50):
         if kind not in _KINDS or type(limit) is not int or not 1 <= limit <= 100:

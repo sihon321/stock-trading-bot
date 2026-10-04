@@ -57,7 +57,7 @@ def test_owner_migrated_pure_schema_and_query_only_bytes(tmp_path):
 
 def test_absent_runtime_missed_obligation_preserves_provenance(tmp_path):
     reader, _, clock, _ = health_fixture(tmp_path)
-    clock.advance(4200)
+    clock.advance(4800)
     daily = next(h for h in reader.service_health() if h.kind=='DAILY')
     risk = next(h for h in reader.service_health() if h.kind=='RISK')
     assert daily.state == 'MISSED_SCHEDULE'
@@ -124,3 +124,30 @@ import trading_bot.web_evidence
 '''
     result = subprocess.run([sys.executable,'-c',script], capture_output=True,text=True)
     assert result.returncode==0, result.stderr
+
+
+def test_stale_runtime_heartbeat_and_manual_attention_do_not_imply_health(tmp_path):
+    reader, journal, clock, _ = health_fixture(tmp_path)
+    with journal.connection() as conn:
+        conn.execute('INSERT INTO service_generations VALUES(?,?,?,?,?,?,?)',
+            ('fixture',SCOPE.account_scope_hash,'mock',__import__('os').getpid(),clock().timestamp(),None,'RUNNING'))
+    clock.advance(3700)
+    journal.heartbeat('service-leader','fixture',phase='RECOVERY_BLOCKED')
+    risk=next(h for h in reader.service_health() if h.kind=='RISK')
+    assert risk.state=='RECOVERY_BLOCKED' and risk.mutation_ready is False
+    clock.advance(121)
+    assert next(h for h in reader.service_health() if h.kind=='RISK').state=='WORKER_STALLED'
+    with journal.connection() as conn:
+        conn.execute("INSERT INTO service_attention_events VALUES(NULL,'MANUAL_ATTENTION','RESTART_EXHAUSTED',?)",(clock().timestamp(),))
+    health=reader.service_health()
+    assert next(h for h in health if h.kind=='RISK').state=='SERVICE_MANUAL_ATTENTION'
+    assert all(h.manual_attention for h in health)
+
+
+def test_global_control_owner_scope_mismatch_is_unavailable(tmp_path):
+    reader, _, _, topology=health_fixture(tmp_path)
+    with sqlite3.connect(topology.control_db_path) as conn:
+        conn.execute('DROP TRIGGER control_request_audit_no_update')
+        conn.execute("UPDATE control_request_audit SET scope_hash=?",('f'*64,))
+    assert reader.control_states()[0].envelope.query_status=='FAILED'
+    assert all(h.state=='EXPECTATION_UNKNOWN' for h in reader.service_health())

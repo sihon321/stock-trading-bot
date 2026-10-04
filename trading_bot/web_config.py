@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ResourceOwner = Literal['audit', 'portfolio', 'soak', 'controller', 'replay', 'backtest', 'shadow', 'calibration']
+ResourceOwner = Literal['audit', 'portfolio', 'soak', 'controller', 'replay', 'backtest', 'shadow', 'calibration', 'service', 'control']
 _ID = re.compile(r'\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z')
 
 
@@ -50,6 +50,24 @@ def checked_path(raw: Path) -> Path:
     return path
 
 
+class ControlResourceDescriptor(BaseModel):
+    """Fixed installation request authority; never selected by an evidence URL."""
+    model_config = ConfigDict(frozen=True, extra='forbid', hide_input_in_errors=True)
+    resource_id: str = Field(pattern=_ID)
+    path: Path
+    lock_dir: Path
+    registered_scopes: tuple[tuple[str, Literal['mock']], ...]
+    stop_domain: Literal['INSTALLATION_GLOBAL'] = 'INSTALLATION_GLOBAL'
+
+    @model_validator(mode='after')
+    def scopes(self):
+        if not self.registered_scopes or len(set(self.registered_scopes)) != len(self.registered_scopes):
+            raise ValueError('fixed unique installation scopes required')
+        if any(not re.fullmatch('[a-f0-9]{64}', scope[0]) for scope in self.registered_scopes):
+            raise ValueError('hashed mock scope required')
+        return self
+
+
 def overlaps(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
@@ -61,6 +79,7 @@ class WebSettings(BaseSettings):
     operational_db_path: Path = Path('data/web-operations/operator.db')
     artifact_root: Path = Path('data/web-artifacts')
     registered_resources: tuple[ResourceDescriptor, ...] = ()
+    control_resource: ControlResourceDescriptor | None = None
     bind_host: str = '127.0.0.1'
     port: int = Field(default=8765, ge=1, le=65535)
     private_mode: bool = False
@@ -151,6 +170,16 @@ class WebSettings(BaseSettings):
             sources.append(source)
             if overlaps(db.parent, root) or overlaps(artifact, root):
                 raise ValueError('writable roots overlap source locations')
+        if self.control_resource is not None:
+            request = self.control_resource
+            resource = self.resource(request.resource_id)
+            if resource.owner != 'control' or checked_path(resource.path) != checked_path(request.path):
+                raise ValueError('owner-checked control registration required')
+            if (resource.account_hash, resource.target) not in request.registered_scopes:
+                raise ValueError('registered control scope required')
+            lock = checked_path(request.lock_dir)
+            if overlaps(lock, db.parent) or overlaps(lock, artifact):
+                raise ValueError('control authority must be separate')
         # Fail closed on links placed in an existing writable tree, including SQLite sidecars.
         for root in (db.parent, artifact):
             if root.exists():

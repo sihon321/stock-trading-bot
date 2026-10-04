@@ -149,6 +149,48 @@ class WorkerDTO:
     lease_observed_at: datetime | None = None
     source_ids: tuple[str, ...] = ()
     snapshot_id: str | None = None
+    due_at: datetime | None = None
+    deadline_at: datetime | None = None
+    control_revision: int | None = None
+    applied_mode: str | None = None
+    pending_action: str | None = None
+    request_id: str | None = None
+    last_progress_at: datetime | None = None
+    restart_count: int = 0
+    manual_attention: bool = False
+
+
+@dataclass(frozen=True)
+class ServiceHealthDTO:
+    envelope: SourceEnvelope
+    subject_id: str
+    kind: str
+    state: str = 'EXPECTATION_UNKNOWN'
+    expected_running: bool | None = None
+    due_at: datetime | None = None
+    deadline_at: datetime | None = None
+    last_progress_at: datetime | None = None
+    source_ids: tuple[str, ...] = ()
+    producer_kind: str | None = None
+    trading_date_kst: str | None = None
+    control_revision: int | None = None
+    session_source_id: str | None = None
+    login_source_id: str | None = None
+    config_hash: str | None = None
+    restart_count: int = 0
+    manual_attention: bool = False
+    reason_code: str | None = None
+    mutation_ready: bool | None = None
+
+
+@dataclass(frozen=True)
+class ControlStateDTO:
+    envelope: SourceEnvelope
+    revision: int | None = None
+    applied_mode: str = 'UNKNOWN'
+    pending_action: str | None = None
+    request_id: str | None = None
+    source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -160,6 +202,8 @@ class OverviewDTO:
     sources: tuple[SourceEnvelope, ...] = ()
     atomic_cross_store: bool = False
     safety_blocks: tuple[EvidenceRecord, ...] = ()
+    service_health: tuple[ServiceHealthDTO, ...] = ()
+    controls: tuple[ControlStateDTO, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,6 +213,7 @@ class AlertSourceBatch:
     workers: tuple[WorkerDTO, ...] = ()
     sources: tuple[SourceEnvelope, ...] = ()
     cursor: str | None = None
+    service_health: tuple[ServiceHealthDTO, ...] = ()
 
 
 # Kind-specific aliases preserve one immutable detail/evidence projection contract.
