@@ -305,3 +305,47 @@ def test_concrete_trading_binding_rejects_boolean_guard_and_low_buy_threshold(tm
     with pytest.raises(RuntimeBlocked):binding._broker(None,None,None,None)
     kwargs['execution_config']=ExecutionConfig(.79,.8,.1,1000)
     with pytest.raises(TypeError):AccountTradingBinding(**kwargs)
+
+
+def test_terminal_risk_keeps_supervisor_for_next_day_fresh_recovery(tmp_path):
+    runtime,conn,clock,sequence=runtime_fixture(tmp_path,inputs_failure=True)
+    try:
+        runtime.start();runtime.tick()
+        old_day=clock().astimezone(session_evidence().continuous_open.tzinfo).date()
+        clock.advance(6*3600+20*60)
+        assert runtime.tick().terminal and runtime.state=='IDLE'
+        runtime.leader.assert_owner()
+        old_risk=runtime.job('RISK')
+        assert old_risk['state']=='COMPLETED'
+        count=len(sequence)
+        clock.advance(17*3600+40*60)
+        runtime.tick()
+        assert runtime.active_day!=old_day and runtime.state=='RUNNING'
+        assert sequence[count:count+3]==['snapshot','terminal','snapshot']
+        assert runtime.job('RISK')['trading_date_kst']!=str(old_day)
+        assert runtime.journal.load_job(old_risk['job_id'])['state']=='COMPLETED'
+    finally:runtime.stop();conn.close()
+
+
+def test_next_day_unknown_or_holiday_cannot_reuse_prior_session(tmp_path):
+    runtime,conn,clock,sequence=runtime_fixture(tmp_path,inputs_failure=True)
+    try:
+        runtime.start();runtime.tick()
+        clock.advance(24*3600)
+        original=runtime.policy.session_evidence_provider
+        runtime.policy.session_evidence_provider=UnknownSession()
+        count=len(sequence);runtime.tick()
+        assert runtime.state=='SESSION_UNKNOWN' and len(sequence)==count and runtime.child is None
+        runtime.policy.session_evidence_provider=HolidaySession()
+        runtime.tick();assert runtime.state=='IDLE' and len(sequence)==count
+        runtime.policy.session_evidence_provider=original
+        runtime.tick();assert runtime.state=='RUNNING' and len(sequence)>count
+    finally:runtime.stop();conn.close()
+
+
+class UnknownSession:
+    def for_date(self,day):return session_evidence('unknown',day)
+
+
+class HolidaySession:
+    def for_date(self,day):return session_evidence('holiday',day)

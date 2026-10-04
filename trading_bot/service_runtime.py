@@ -208,7 +208,7 @@ class ServiceRuntime:
                  policy: MarketCyclePolicy, daily_inputs: DailyInputSource,
                  provider_factory: ProviderChildFactory, trading: AccountTradingBinding | None = None,
                  clock=lambda:datetime.now(timezone.utc), monotonic=time.monotonic,
-                 offline_authority=None, barrier=lambda name:None):
+                 offline_authority=None, activation_check=None, barrier=lambda name:None):
         if (type(settings) is not ServiceSettings or type(journal) is not ServiceJournal
                 or type(controls) is not ControlStore or type(account_work) is not BoundedAccountWork
                 or type(composition) is not ServiceComposition or type(provider_factory) is not ProviderChildFactory
@@ -220,12 +220,14 @@ class ServiceRuntime:
         self.composition,self.work,self.policy=composition,account_work,policy
         self.daily_inputs,self.provider_factory,self.trading=daily_inputs,provider_factory,trading
         self.clock,self.monotonic,self.offline_authority,self.barrier=clock,monotonic,offline_authority,barrier
+        self.activation_check=activation_check
         self.scope=composition.scope or settings.registered_scopes[0]
         self.leader=ServiceLeader(settings,journal=journal,scope=self.scope)
         self.schedule=ServiceSchedule(self.scope)
         self.state='UNSTARTED'; self.child=None; self.last_dispatch_id=None
         self.no_new_dispatch=False; self.last_heartbeat=None; self.fresh=None
         self.inputs=(); self.last_risk_slot=None; self.applier=None
+        self.active_day=None
 
     def _validate(self):
         self.settings.validate_topology()
@@ -242,6 +244,15 @@ class ServiceRuntime:
         elif (self.composition.activation.authority!='OWNED_KIS_OBSERVED'
                 or self.trading is None or not callable(self.composition.guarded_broker_builder)):
             raise RuntimeBlocked('CONCRETE_PRODUCTION_BINDING_REQUIRED')
+        if self.offline_authority is None:
+            from .submission_authority import OwnedActivationCheck
+            if type(self.activation_check) is not OwnedActivationCheck or self.activation_check.settings!=self.settings:
+                raise RuntimeBlocked('CURRENT_OWNED_ACTIVATION_REQUIRED')
+            current=self.activation_check()
+            if (not current.allowed or current.authority!='OWNED_KIS_OBSERVED'
+                    or current.reason_codes==('SCOPED_FREEZE_CHECK_REQUIRED',)):
+                # Initial activation retains 15-06's conservative freeze denial.
+                raise RuntimeBlocked('CURRENT_ACTIVATION_BLOCKED')
 
     def _generation(self,state):
         self.leader.assert_owner()
@@ -261,6 +272,7 @@ class ServiceRuntime:
             self.state='RECOVERY_BLOCKED'; self.heartbeat(force=True)
             return self.state
         self._generation('RUNNING'); self.state='RUNNING'; self.heartbeat(force=True)
+        self.active_day=local(self.clock()).date()
         return self.state
 
     def recover(self):
@@ -332,6 +344,25 @@ class ServiceRuntime:
         if self.child is not None: self._poll_child()
         now=local(self.clock()); session=self.policy.session_evidence_provider.for_date(now.date())
         controls=self.controls.reader().effective_state(self.scope)
+        if self.active_day!=now.date():
+            if (session.trading_date_kst!=now.date() or session.eligibility=='UNKNOWN'
+                    or any(stamp>now for stamp in (session.observed_at,session.effective_at,session.reviewed_at))):
+                changed=self.state!='SESSION_UNKNOWN'; self.state='SESSION_UNKNOWN'
+                self.heartbeat(force=changed); return None
+            if session.eligibility=='HOLIDAY':
+                changed=self.state!='IDLE'; self.state='IDLE'
+                self.heartbeat(force=changed); return None
+            if self.child is not None:
+                # Let the previous consumed call finish/suppress boundedly. New
+                # date recovery must not relabel its pending entry UNKNOWN first.
+                self.state='RECOVERY_ONLY'; return None
+            try:
+                self._validate(); self._generation('RECOVERY_ONLY'); self.state='RECOVERY_ONLY'
+                self.recover()
+            except (Exception,AccountWorkTimeout):
+                self.state='RECOVERY_BLOCKED'; self.heartbeat(force=True); return None
+            self.active_day=now.date(); self.last_risk_slot=None
+            self._generation('RUNNING'); self.state='RUNNING'; self.heartbeat(force=True)
         rows=[]
         for kind in ('PREP','DAILY','RISK'):
             row=self.job(kind)
@@ -344,7 +375,16 @@ class ServiceRuntime:
             for e in derive_expectations(expectation_inputs,now):
                 self.journal.record_expectation(e.model_copy(update={'producer_kind':'RUNTIME_OBSERVED'}))
         if decision.terminal:
-            self.stop(); return decision
+            # Only the risk session ends. Successful launcher exit would disable
+            # next-day work under KeepAlive/SuccessfulExit=false.
+            if self.state!='IDLE':
+                if self.child is not None: self._poll_child(force_unknown=True)
+                self._event('RISK','COMPLETED','RISK_SESSION_TERMINAL')
+                remaining=self._remaining()
+                if remaining:
+                    self._event('DAILY','PARTIAL','UNFINISHED_AT_DEADLINE',remaining)
+                self.state='IDLE'; self.heartbeat(force=True)
+            return decision
         for missed in decision.missed:
             self._claim(missed)
             if self.child is None:
@@ -540,7 +580,7 @@ class ServiceRuntime:
         return type(self)(settings=self.settings,journal=self.journal,controls=self.controls,
             composition=self.composition,account_work=self.work,policy=self.policy,daily_inputs=self.daily_inputs,
             provider_factory=self.provider_factory,trading=self.trading,clock=self.clock,monotonic=self.monotonic,
-            offline_authority=self.offline_authority,barrier=self.barrier)
+            offline_authority=self.offline_authority,activation_check=self.activation_check,barrier=self.barrier)
 
     def run(self, *, wait=time.sleep):
         """Main-thread account worker; timer wakeups only, no sleep owns authority."""
