@@ -64,6 +64,10 @@ def attention_request_path(settings):
     return checked_path(settings.control_db_path).parent / 'attention-reset.json'
 
 
+def attention_history_path(settings,request_id):
+    return attention_request_path(settings).parent/'attention-reset-history'/f'{hashlib.sha256(request_id.encode()).hexdigest()}.json'
+
+
 @app.callback()
 def root(ctx: typer.Context, config: Path = typer.Option(..., '--config')):
     ctx.obj = config
@@ -152,6 +156,14 @@ def reset_attention(ctx: typer.Context, request_id: str=typer.Option(...,'--requ
         if reader.effective_state().acceptance_revision!=expected_revision: raise ValueError('revision conflict')
         path=attention_request_path(settings)
         from .service_activation import _protected_json
+        history=attention_history_path(settings,request_id)
+        if history.exists() and not path.exists():
+            saved=_protected_json(history,65536)
+            if (saved['request_id']!=request_id or saved['expected_revision']!=expected_revision
+                    or saved['actor']!=owner_actor() or saved['scope']!=InstallationScope(
+                        registered_scopes=settings.registered_scopes).model_dump(mode='json')):
+                raise ValueError('reset replay conflict')
+            typer.echo('RECORDED: previous explicit reset request retained; no new reset');return
         prior=_protected_json(path,65536) if path.exists() else None
         # Validate shared identity and bounded scope using the same request contract.
         value=ControlRequest(request_id=request_id,actor=owner_actor(),requested_at=
@@ -258,6 +270,7 @@ def _build_production_runtime(settings):
     from .service_models import DailyDispatchEnvelope
 
     class Policy(ServiceContract):
+        model_config=ServiceContract.model_config|{'strict':True}
         ohlcv_adjusted: bool
         pykrx_request_timeout_seconds: float=Field(gt=0,le=15)
         screener_max_candidates: int=Field(ge=1,le=20)
@@ -291,7 +304,7 @@ def _build_production_runtime(settings):
                 and not evidence.reconciliation_unknown and not evidence.reconciliation_incomplete),
             safety_latched=evidence.safety_latched, frozen_tickers=reader.read_freezes(),source_hashes=evidence.source_hashes[:3])
 
-    policy_values=Policy.model_validate(_protected_json(settings.trading_config_path.parent/'service-policy.json',65536))
+    policy_values=Policy.model_validate_json(json.dumps(_protected_json(settings.trading_config_path.parent/'service-policy.json',65536)))
     trading=load_mock_trading_settings(settings.trading_config_path)
     # Current Codex CLI has no verified single-shot implementation: deny before clients/DBs.
     if trading.llm_provider is LLMProviderName.CODEX_CLI:

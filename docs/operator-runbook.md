@@ -404,3 +404,81 @@ TXT는 한국어 보고서, JSON은 구조화 결과, CSV는 표 검토용이다
 
 - 선택적 실제 phone **mobile data** + 사설 VPN에서 HTTPS 주소의 인증서가 신뢰되는지, VPN 밖에서 도달하지 않는지, 로그인이 필수인지 확인한다. PC·휴대폰 동시 로그인, 한쪽 로그아웃, 12시간 절대 만료와 암호 재설정 후 전체 세션 폐기를 실제 구성에서 확인한다.
 - PC/390px/320px와 시스템 light/dark에서 안전 개요→원천→상세→다운로드/읽음을 읽어 본다. UNKNOWN·원천 나이·000660 동결·읽음과 복구의 차이가 한국어로 명확한지 확인한다. 두 확인은 주문·알림 전송·정책 변경·실계좌 승격의 허가를 부여하지 않는다.
+
+## Phase 15 소유자 로그인 서비스와 독립 관찰자
+
+이 절의 명령은 향후 소유자가 명시적으로 설정·설치를 승인한 뒤 사용할 절차다. Phase 15 구현·테스트는 실제 LaunchAgent 설치, launchctl 호출, 계정/LLM/Discord 호출, 기존 운영 DB 읽기·migration을 수행하지 않았다. 실제 macOS 로그인·로그아웃·절전·깨우기와 사설 휴대폰 수용 검사는 별도 확인 사항이다.
+
+소스에서 `python3 -m trading_bot.service_cli --help`를 사용할 수 있다. `bot-service` 진입점은 pyproject에 등록되어 있으며 기존 환경의 executable refresh는 검토된 프로젝트 설치 시에 수행한다. 이 계획은 패키지를 재설치하지 않는다. 서비스 명령은 항상 루트 옵션 `--config`의 보호된 **절대 JSON 경로**를 사용한다. 거래 `.env`나 환경 변수로 계정/실거래 대상을 선택하지 않는다.
+
+```bash
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json setup-disabled \
+  --root /Users/OWNER/bot-service-state --account-scope-hash ACTUAL_SAVED_MOCK_SCOPE_HASH
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json status
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json acceptance-status
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json render-launchagents
+```
+
+OWNER와 scope는 설명용 값이다. 실제 account hash는 기존 mock identity의 hash를 사용한다. setup-disabled는 새 분리 경로에만 허용된다. 서비스 journal·control·lock·거래 증거·관찰자 운영 DB·artifact 경로를 분리하고 디렉터리 0700·파일 0600으로 만든다. 초기 상태는 **DISABLED / PAUSED**, acceptance receipt는 없다. 거래용 파일·session proof·기존 primary/soak/controller evidence를 만들어낸 것으로 간주하지 않는다. 생성된 observer.json은 secret-free이며 Discord가 필요하면 해당 observer 파일에만 명시적으로 설정한다.
+
+status·제어 요청·setup·render는 KIS/LLM 객체와 OS 서비스 실행을 구성하지 않는다. dry-run은 명시적 `--fixture`의 기존 replay bundle과 별도 **소유자 임시 output root**만 사용한다. 출력은 `replay-result.json`, 의미는 OFFLINE_ONLY이며 실제 approval/campaign/day credit가 아니다. production config/journal 경로와 겹치는 출력은 거부된다.
+
+### 요청과 승인 전송
+
+```bash
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json pause \
+  --request-id OWNER_CHOSEN_STABLE_ID --expected-revision CURRENT_ACCEPTED_REVISION
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json resume \
+  --request-id A_DIFFERENT_STABLE_ID --expected-revision CURRENT_ACCEPTED_REVISION
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json kill \
+  --request-id ANOTHER_STABLE_ID --expected-revision CURRENT_ACCEPTED_REVISION
+```
+
+CLI와 인증된 웹은 동일한 설치 전체 scope·revision·요청 writer를 사용한다. CLI actor는 `local-owner-uid-<uid>`로 서버가 정하고 요청 시각은 고정 저장한다. 같은 ID의 수동 재시도는 기존 timestamp를 재사용하며 내용/revision 충돌은 거부한다. REQUESTED/pending은 서비스의 APPLIED와 다르다. PAUSE는 BUY/일일 평가를 제한하며 안전한 held risk SELL과 reconciliation을 남긴다. KILL은 모든 신규 BUY/SELL을 제한한다. 이미 입장한 주문 취소·강제 청산을 약속하지 않는다. RESUME은 기존 kill/동결/안전 래치를 자동 초기화하지 않는다.
+
+서비스 `ControlApplier`는 설치 owner actor만 resume할 수 있다. 기존 웹의 소유자 계정 username/저장 session actor가 이 **동일한 설치 owner actor**와 일치하는지 설치 단계에서 확인한다. 불일치 상태의 resume은 OWNER_REQUIRED로 거부되며 pause/kill 요청·관찰은 가능하다. 계정 actor를 추측하거나 기존 setup 감사 이력을 수정해 맞추지 않는다. 실제 사설 휴대폰 인증·CSRF·actor 연결 확인은 Phase 15 마지막 수용 검사에 포함한다.
+
+record-acceptance는 보호된 `--receipt-input`, 두 개의 명시적 `--verified-task-1 --verified-task-2`, `--campaign-id`, `--profile-fingerprint`, 모든 `--source-id`를 요구한다. 후보 receipt에는 **09-08 task 1과 09-08 task 2**의 actor·approved_at·evidence IDs가 모두 들어 있어야 한다. 명령의 flags는 승인 전송 입력일 뿐 실제 완료 증거를 대신하지 않는다. 기존 primary/soak/controller의 읽기 전용 owned reader로 20개 eligible KIS-observed days, 모든 controlled drill, immutable campaign/profile, source hashes, reconciliation/UNKNOWN/동결/래치 및 checkpoint 연결을 공유 validator로 검증한다. SYNTHETIC·누락·불일치·변경된 증거는 기록을 거부한다. 성공 시 receipt만 독점·원자적으로 기록하고 다시 읽어 확인하며 mode/controls/freeze는 유지한다.
+
+두 실제 09-08 승인은 현재 없고 **000660**은 동일 subject의 확정 terminal broker evidence 전까지 동결이다. Codex CLI 0.144.6의 실제 single-shot transport 능력도 검증되지 않아 생산 서비스 구성은 거부된다. 이 서비스는 KIS_MOCK만 구성하며 실계좌 승격·자동 정책 변경은 Phase 16의 독립 수동 승인 영역이다.
+
+### 실제 mock 구성에 필요한 보호된 파일
+
+service.json의 trading_config_path는 기존 strict init-only mock credential/config JSON이다. 같은 보호된 부모 디렉터리에 **accepted-profile.json**과 **service-policy.json**을 둔다. accepted-profile은 기존 KIS-mock compatibility schema·ACCEPTED/KIS_OBSERVED·공식 V-prefixed TR profile과 저장 campaign fingerprint를 정확히 맞춘다. 파일명이 있다는 사실은 승인 증거가 아니다.
+
+service-policy.json은 다음 필드를 **모두 명시적으로** 요구하며 unknown field·잘못된 타입·범위를 거부한다. 계정, target, journal 경로, LLM credential/provider, receipt override 필드는 허용되지 않는다.
+
+| 필드 | 의미 / 제한 |
+|---|---|
+| ohlcv_adjusted, pykrx_request_timeout_seconds | bool과 0 초과·15초 이하 bounded data GET |
+| screener_max_candidates, screener_markets | 1–20 후보와 명시적 KR market tuple |
+| screener_min_trading_value, screener_min_volume_ratio, screener_excluded_states | 양수 screening 기준과 제외 상태 tuple |
+| naver_news_enabled, naver_news_max_items, naver_news_max_chars | 명시적 bool, 최대 5 항목·2000자 |
+| buy_confidence_threshold, sell_confidence_threshold | 0.8–1 |
+| buy_cash_fraction, max_position_value | 0 초과·1 이하 cash fraction, 양수 position cap |
+| stop_loss_pct, take_profit_pct, daily_loss_threshold | 0 초과·1 미만 비율과 양수 손실 한도 |
+
+활성 run/launch는 receipt와 현재 owned safety를 다시 확인한다. 실제 `ServiceRuntime`은 primary 감사 writer, fresh `BoundedAccountWork` mutation lease, whole-account snapshot/reconciliation, current quote, concrete `KISBroker`/`SubmissionAuthority`/`OwnedActivationCheck`를 연결한다. data/provider/cadence 대기 중 account authority를 보유하지 않는다. 저장 prompt와 consumed dispatch는 재호출되지 않는다. daily loss 입력은 같은 날짜에 저장된 첫 complete whole-account equity와 현재 equity의 감소를 보수적으로 비교하며 unknown baseline은 BUY를 허용하지 않는다.
+
+### 설치·시작·중지·제거
+
+render는 두 plist의 내용을 반환할 뿐 설치·파일 생성·bootstrap하지 않는다. 명시적인 install-launchagents만 소유자 `~/Library/LaunchAgents`에 고정 label **com.stock-trading-bot.service**와 **com.stock-trading-bot.alerts**를 등록한다. 둘 다 절대 interpreter·`-m`·config·working/log 경로, RunAtLoad, `KeepAlive: {SuccessfulExit: false}`, ThrottleInterval=10, ExitTimeOut=30을 사용한다. plist/argv/environment에는 credential·webhook을 넣지 않는다. 다른 파일 bytes나 등록 origin path의 label 충돌, 불명확한 소유자 GUI domain은 거부한다.
+
+```bash
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json install-launchagents
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json start
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json stop
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json remove-launchagents
+```
+
+소유자 domain은 `gui/<uid>`이며 system daemon으로 설치하지 않는다. start는 고정 등록만 bootstrap/kickstart하고 `kickstart -k`를 resume 수단으로 쓰지 않는다. stop은 거래 agent를 bootout/SIGTERM하고 독립 관찰자는 계속 남긴다. remove는 두 agent를 bootout하고 본 구현의 일치하는 plist만 제거한다. config, journal, control history, freeze, receipt, logs는 남는다. 삭제·재설치로 주문 불확실성을 지우지 않는다.
+
+첫 로그인/정상 중지 후 시작과 unexpected exit를 구분한다. 최소 launcher가 account/credential worker 구성 전에 실제 leader flock을 얻고 이전 generation을 검사하며, unexpected restart는 **직전 600초에 최대 3회**를 durable reserve한다. 구성 직후 crash도 소비된다. clock rollback·불명확한 이전 시각은 차단된다. 예산 소진은 MANUAL_ATTENTION을 저장하고 exit 0으로 끝나 조건부 KeepAlive를 멈춘다. 제한 때문에 거부된 launcher는 네 번째 worker admission이 아니다.
+
+reset-attention은 `--request-id`와 `--expected-revision`을 받는 요청 전송이다. 고정 control 부모의 보호된 pending JSON과 소비된 요청 history를 보관한다. 이후 launcher만 충분한 600초 경과·현재 receipt·fresh owned account recovery/reconciliation·현재 control revision을 검증해 reset한다. 실패/불명확성은 attention을 유지하고 무제한 restart loop를 만들지 않는다. 같은 소비된 ID는 재사용해 새로운 reset을 만들 수 없다. control pause/kill 및 이전 restart/history는 삭제하지 않는다.
+
+거래 risk session은 15:30에 terminal이 되어도 supervisor/leader는 **IDLE로 다음 날까지 남는다**. 다음 exact trading date에 fresh activation, controls, session과 account recovery를 다시 확인한다. 명시적 SIGTERM만 정상 service stop이다. login/awake만으로 당일 09:20 catch-up deadline이나 15:20 POST cutoff를 늘리지 않는다. logout은 GUI agent의 실행 가능성을 없애며 sleep/power loss 동안 같은 Mac의 observer도 알릴 수 없다. wake/relogin 후 elapsed gaps·current deadlines를 다시 읽으며 놓친 backlog를 재생하지 않는다.
+
+독립 alerts agent는 bot-alerts의 보호된 observer.json과 명시적인 `--expectation-service-config service.json`으로 watch한다. 서비스와 다른 process/label/lifetime이며 거래 restart budget을 공유하지 않는다. observer는 일반 ServiceJournal·ServiceRuntime·trading credentials/broker/provider/account authority 없이 read-only controls와 exact-date session, **expectation/expectation-health 두 테이블만 쓰는 SQL allowlist facade**를 갖는다. 거래의 첫 tick 이전·restart exhaustion 이후·자정에도 source/expectation 증거를 만든다. installed watch의 1초 제한 `launchctl print gui/<uid>` probe는 명시적 owner UID와 session identity를 확인한다. print 출력은 안정된 API가 아니므로 누락·실패·변경·모순은 UNKNOWN이고 로그인 성공을 추측하지 않는다. status/disabled setup/render/dry-run은 probe를 호출하지 않는다.
+
+실제 disabled 설치 후 로그인/로그아웃·절전/깨우기·SIGTERM·제거, 한국어 PC/휴대폰 제어, 사설 HTTPS/로그인 및 actor 매칭을 소유자가 확인해야 한다. 이 수용 검사는 자동 테스트의 plist·fake process·임시 DB 증명과 별도이며 아직 수행하지 않았다.

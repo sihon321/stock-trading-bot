@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+from datetime import datetime, timezone
 from threading import Event
 
 import typer
@@ -39,13 +40,68 @@ def load_settings(config: Path):
 
 
 @app.callback()
-def root(ctx: typer.Context, config: Path = typer.Option(..., '--config')):
-    ctx.obj = config
+def root(ctx: typer.Context, config: Path = typer.Option(..., '--config'),
+         expectation_service_config: Path | None = typer.Option(None,'--expectation-service-config')):
+    ctx.obj = (config,expectation_service_config)
+
+
+def build_expectation_producer(settings,*,service_config,clock=lambda:datetime.now(timezone.utc),login_probe=None):
+    """Only secret-free registration, exact-date sources and narrow evidence writer."""
+    from .service_config import ServiceSettings
+    from .service_activation import _protected_json
+    from .service_models import ServiceMode
+    from .service_schedule import ExpectationProducer
+    from .service_store import expectation_writer_from_settings
+    from .control_store import control_request_capabilities
+    from .web_config import ControlResourceDescriptor
+    raw=_protected_json(service_config,65536)
+    enabled=raw.get('service_enabled',False);mode=ServiceMode(raw.get('mode','DISABLED'))
+    if type(enabled) is not bool or enabled!=(mode!=ServiceMode.DISABLED):
+        raise ValueError('explicit source mode registration required')
+    # Observer capabilities retain paths/scopes when trading-only inputs are absent.
+    # publish rereads the actual active registration and records UNKNOWN on failure.
+    registration=ServiceSettings(**(raw|{'service_enabled':False,'mode':'DISABLED'}))
+    if any(overlaps(checked_path(service_config).parent,root) for root in
+           (registration.service_db_path.absolute().parent,registration.control_db_path.absolute().parent,
+            registration.lock_dir.absolute())): raise ValueError('separate observer registration required')
+    if (settings.expectation_service_config_path is None
+            or protected_registration_path(settings.expectation_service_config_path)!=protected_registration_path(service_config)):
+        raise ValueError('explicit fixed expectation registration required')
+    scopes=registration.registered_scopes
+    for owner,path in [('service',registration.service_db_path),('control',registration.control_db_path)]:
+        matching=[r for r in settings.registered_resources if r.owner==owner]
+        if (len(matching)!=len(scopes) or {(r.account_hash,r.target) for r in matching}
+                !={(s.account_scope_hash,s.execution_target) for s in scopes}
+                or any(checked_path(r.path)!=checked_path(path) for r in matching)):
+            raise ValueError('exact registered observer sources required')
+    descriptor=ControlResourceDescriptor(resource_id='installation-control',path=registration.control_db_path,
+        lock_dir=registration.lock_dir,registered_scopes=tuple((s.account_scope_hash,s.execution_target) for s in scopes))
+    reader,_=control_request_capabilities(descriptor,actor=f'local-observer-uid-{os.getuid()}',clock=clock)
+    if login_probe is None:
+        from .service_launchd import gui_login_probe
+        login_probe=gui_login_probe(service_config,clock=clock)
+    return ExpectationProducer(registration,config_path=service_config,login_probe=login_probe,
+        control_reader=reader,writer=expectation_writer_from_settings(registration,clock=clock),clock=clock)
+
+
+def protected_registration_path(path):
+    from .service_config import protected_file
+    return protected_file(path)
 
 
 def _run(config, command):
     try:
-        observer = AlertObserver(load_settings(config))
+        config,expectation_config=config if isinstance(config,tuple) else (config,None)
+        settings=load_settings(config)
+        producer=None
+        if command!='status' and expectation_config is not None:
+            try:
+                producer=build_expectation_producer(settings,service_config=expectation_config)
+            except (ValueError,OSError,sqlite3.Error):
+                # The observer publishes source-unavailable health and retains its
+                # independent delivery lifetime rather than depending on trading startup.
+                producer=None
+        observer = AlertObserver(settings,expectation_producer=producer)
         if command == 'status':
             typer.echo(json.dumps(observer.status(), ensure_ascii=False, sort_keys=True))
         elif command == 'once':

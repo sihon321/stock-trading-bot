@@ -128,10 +128,162 @@ def test_narrow_observer_factory_never_constructs_general_service_or_trading(tmp
             id=owner,path=path,owner=owner,account_hash=settings.registered_scopes[0].account_scope_hash,target='mock')
             for owner,path in [('service',settings.service_db_path),('control',settings.control_db_path)]))
     with NoExternalCapabilities() as external,patch('trading_bot.service_store.ServiceJournal',side_effect=AssertionError('general journal')):
+        from tests.service_fixtures import FakeOwnerLoginProbe
         producer=build_expectation_producer(observer,service_config=config,clock=lambda:NOW,
-            login_probe=SimpleNamespace(observe_owner_gui=lambda:__import__('tests.service_fixtures',fromlist=['']).owner_login_evidence()))
+            login_probe=FakeOwnerLoginProbe(clock=lambda:NOW))
         assert producer.writer.__slots__==('__journal',)
         before=settings.control_db_path.read_bytes()
         records=producer.publish()
         assert len(records)==3 and all(r.state=='UNKNOWN' for r in records)
         assert settings.control_db_path.read_bytes()==before and not external.attempts
+
+
+def test_actual_runtime_tick_crash_retains_unexpected_generation_and_budget(tmp_path):
+    from trading_bot.service_launchd import launch_worker
+    from trading_bot.service_store import ServiceJournal
+    from tests.test_service_recovery import runtime_fixture
+    clock=FakeServiceClock()
+    initial,*_=runtime_fixture(tmp_path,clock=clock)
+    settings=initial.settings;count=[]
+    def factory(settings):
+        runtime=initial.successor()
+        runtime.tick=lambda:(_ for _ in ()).throw(RuntimeError('OFFLINE_TICK_CRASH'))
+        count.append(runtime)
+        return runtime
+    for _ in range(4):
+        with pytest.raises(RuntimeError,match='OFFLINE_TICK_CRASH'):
+            launch_worker(settings,runtime_factory=factory,clock=clock,offline_authority=initial.offline_authority)
+        clock.advance(10)
+    assert launch_worker(settings,runtime_factory=factory,clock=clock,offline_authority=initial.offline_authority)=='MANUAL_ATTENTION'
+    assert len(count)==4
+    with ServiceJournal(settings).connection() as conn:
+        generations=conn.execute("SELECT state,stopped_at FROM service_generations WHERE state='UNEXPECTED_EXIT'").fetchall()
+        assert len(generations)==4 and all(g['state']=='UNEXPECTED_EXIT' and g['stopped_at'] is None for g in generations)
+        assert conn.execute('SELECT COUNT(*) FROM service_restart_attempts').fetchone()[0]==3
+
+
+def test_narrow_expectation_writer_denies_all_other_table_writes(tmp_path):
+    import sqlite3
+    from trading_bot.service_store import expectation_writer_from_settings
+    settings,_=configured(tmp_path)
+    writer=expectation_writer_from_settings(settings,clock=lambda:NOW)
+    owner=writer._ExpectationWriter__journal
+    with owner.connection() as conn:
+        with pytest.raises(sqlite3.DatabaseError):conn.execute('DELETE FROM service_jobs')
+        with pytest.raises(sqlite3.DatabaseError):conn.execute("INSERT INTO service_attention_events(state,reason_code,observed_at) VALUES('RESET','FAKE',0)")
+        with pytest.raises(sqlite3.DatabaseError):conn.execute('CREATE TABLE arbitrary(value TEXT)')
+    assert not hasattr(writer,'initialize') and not hasattr(writer,'reserve_restart')
+
+
+def test_observer_cli_explicit_expectation_config_status_never_probes(tmp_path):
+    from typer.testing import CliRunner
+    from trading_bot.alert_cli import app
+    settings,config=configured(tmp_path)
+    observer=tmp_path/'registration'/'observer.json'
+    observer.write_text(json.dumps({'operational_db_path':str(tmp_path/'observer'/'operations.db'),
+        'expectation_service_config_path':str(config),'registered_resources':[
+            {'id':owner,'owner':owner,'path':str(path),'account_hash':settings.registered_scopes[0].account_scope_hash,'target':'mock'}
+            for owner,path in [('service',settings.service_db_path),('control',settings.control_db_path)]]}));observer.chmod(0o600)
+    with patch('trading_bot.alert_cli.build_expectation_producer',side_effect=AssertionError('status probe')):
+        result=CliRunner().invoke(app,['--config',str(observer),'--expectation-service-config',str(config),'status'])
+    assert result.exit_code==0,result.output
+
+
+def test_attention_reset_requires_elapsed_window_and_fresh_owned_recovery(tmp_path):
+    from dataclasses import replace
+    from tests.test_service_cli import production_fixture
+    from trading_bot.service_cli import build_production_runtime,attention_request_path,attention_history_path
+    from trading_bot.service_launchd import _consume_attention_request
+    from trading_bot.service_store import ServiceJournal
+    from trading_bot.control_store import ControlStore
+    settings,reader,composition,calendar,now=production_fixture(tmp_path)
+    clock=FakeServiceClock(now);journal=ServiceJournal(settings,clock=clock)
+    for number in range(3): assert journal.reserve_restart(f'restart-{number}',reason='UNEXPECTED_EXIT')
+    assert not journal.reserve_restart('denied',reason='UNEXPECTED_EXIT')
+    config=tmp_path/'registration'/'service.json';config.parent.mkdir(mode=0o700)
+    config.write_text(settings.model_dump_json());config.chmod(0o600)
+    calls=[]
+    def fresh_composition(settings,**kwargs):
+        built=composition(settings,**kwargs);original=built.read_portfolio
+        return replace(built,read_portfolio=lambda request:replace(original(request),observed_at=clock()))
+    def factory(settings):
+        calls.append('fresh-recovery');return build_production_runtime(settings)
+    with NoExternalCapabilities() as external,patch('trading_bot.service_cli.clock',clock), \
+            patch('trading_bot.service_cli.acceptance_reader',return_value=reader), \
+            patch('trading_bot.service_composition.build_service_composition',side_effect=fresh_composition), \
+            patch('trading_bot.data_source.ObservedKRXCalendar',calendar), \
+            patch('trading_bot.pykrx_adapter.PykrxOhlcvAdapter',return_value=object()):
+        result=invoke(config,'reset-attention','--request-id','explicit-reset','--expected-revision','0')
+        assert result.exit_code==0,result.output
+        clock.advance(599)
+        assert not _consume_attention_request(settings,journal,factory,clock=clock) and not calls
+        clock.advance(2)
+        assert _consume_attention_request(settings,journal,factory,clock=clock)
+        assert len(calls)==1 and not external.attempts
+        assert not attention_request_path(settings).exists()
+        assert attention_history_path(settings,'explicit-reset').exists()
+        # Same consumed ID cannot enqueue another reset in a subsequent episode.
+        replay=invoke(config,'reset-attention','--request-id','explicit-reset','--expected-revision','0')
+        assert replay.exit_code==0 and not attention_request_path(settings).exists()
+        assert ControlStore(settings).reader().effective_state().mode=='PAUSED'
+        with journal.connection() as conn:
+            assert conn.execute('SELECT state FROM service_attention_events ORDER BY event_id DESC LIMIT 1').fetchone()[0]=='RESET'
+            assert conn.execute('SELECT COUNT(*) FROM service_restart_attempts').fetchone()[0]==3
+
+
+def test_reset_validation_failure_exits_clean_without_restart_loop(tmp_path):
+    from trading_bot.service_launchd import launch_worker
+    from trading_bot.service_cli import attention_request_path
+    settings,_=configured(tmp_path)
+    settings=settings.model_copy(update={'mode':'KIS_MOCK','service_enabled':True})
+    attention_request_path(settings).write_text('{"malformed":"untrusted"}');attention_request_path(settings).chmod(0o600)
+    assert launch_worker(settings,runtime_factory=lambda _:pytest.fail('unapproved reset'))=='MANUAL_ATTENTION'
+    assert launch_worker(settings,runtime_factory=lambda _:pytest.fail('unapproved reset'))=='MANUAL_ATTENTION'
+
+
+def test_registered_observer_produces_midnight_without_trading_or_general_writes(tmp_path):
+    from trading_bot.alert_cli import build_expectation_producer
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.web_config import ResourceDescriptor
+    from trading_bot.service_store import ServiceJournal
+    from tests.service_fixtures import FakeOwnerLoginProbe
+    from datetime import datetime,timezone
+    settings,config=configured(tmp_path)
+    observer=ObserverSettings(operational_db_path=tmp_path/'observer'/'observer.db',
+        expectation_service_config_path=config,registered_resources=tuple(ResourceDescriptor(
+            id=owner,path=path,owner=owner,account_hash=settings.registered_scopes[0].account_scope_hash,target='mock')
+            for owner,path in [('service',settings.service_db_path),('control',settings.control_db_path)]))
+    clock=FakeServiceClock(datetime(2026,10,5,14,59,tzinfo=timezone.utc))
+    journal=ServiceJournal(settings)
+    def general_rows():
+        with journal.connection() as conn:
+            return {table:tuple(tuple(r) for r in conn.execute(f'SELECT * FROM {table}')) for table in
+                ('service_generations','service_jobs','service_restart_attempts','service_attention_events','service_provider_admissions')}
+    before=general_rows();control_before=settings.control_db_path.read_bytes()
+    with NoExternalCapabilities() as external,patch('trading_bot.service_store.ServiceJournal',side_effect=AssertionError('general journal')):
+        producer=build_expectation_producer(observer,service_config=config,clock=clock,
+            login_probe=FakeOwnerLoginProbe(clock=clock))
+        first=producer.publish();clock.advance(120);second=producer.publish()
+        assert first[0].trading_date_kst!=second[0].trading_date_kst and not external.attempts
+    assert general_rows()==before and settings.control_db_path.read_bytes()==control_before
+    with journal.connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM service_expectations').fetchone()[0]==6
+        assert conn.execute('SELECT COUNT(*) FROM service_expectation_health').fetchone()[0]>=2
+
+
+def test_observer_factory_survives_missing_active_trading_sources(tmp_path):
+    from trading_bot.alert_cli import build_expectation_producer
+    from trading_bot.alert_config import ObserverSettings
+    from tests.service_fixtures import FakeOwnerLoginProbe
+    settings,config=configured(tmp_path)
+    active=settings.model_copy(update={'service_enabled':True,'mode':'KIS_MOCK'})
+    config.write_text(active.model_dump_json())
+    settings.trading_config_path.unlink()
+    observer=ObserverSettings(operational_db_path=tmp_path/'observer'/'operations.db',
+        expectation_service_config_path=config,registered_resources=[
+            {'id':owner,'owner':owner,'path':path,'account_hash':settings.registered_scopes[0].account_scope_hash,'target':'mock'}
+            for owner,path in [('service',settings.service_db_path),('control',settings.control_db_path)]])
+    with NoExternalCapabilities() as external:
+        producer=build_expectation_producer(observer,service_config=config,clock=lambda:NOW,
+            login_probe=FakeOwnerLoginProbe(clock=lambda:NOW))
+        assert len(producer.publish())==3 and not external.attempts

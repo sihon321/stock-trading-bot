@@ -348,6 +348,52 @@ class ExpectationWriter:
                 (scope.account_scope_hash,scope.execution_target,str(trading_date_kst),source_kind,source_id,state,reason_code,timestamp(observed_at)))
 
 
+class _ExpectationOwner:
+    """Settings-only owner with an SQL write allowlist; no general journal constructor."""
+    _scope = ServiceJournal._scope
+    _record_expectation = ServiceJournal._record_expectation
+
+    def __init__(self, settings, clock):
+        self.settings=settings.model_copy(update={'service_enabled':False,'mode':'DISABLED'})
+        self.clock=clock
+        self.path=self.settings.validate_topology()[0]
+
+    @contextmanager
+    def connection(self):
+        self.settings.validate_topology()
+        fd=protected_descriptor(self.path); conn=None
+        try:
+            conn=sqlite3.connect(self.path.as_uri()+'?mode=rw',uri=True,timeout=1)
+            conn.row_factory=sqlite3.Row
+            conn.execute('PRAGMA foreign_keys=ON');_owned(conn)
+            def allow(action,table,column,database,trigger):
+                if action in (sqlite3.SQLITE_INSERT,sqlite3.SQLITE_UPDATE,sqlite3.SQLITE_DELETE):
+                    return sqlite3.SQLITE_OK if action==sqlite3.SQLITE_INSERT and table in {
+                        'service_expectations','service_expectation_health'} else sqlite3.SQLITE_DENY
+                if action in (sqlite3.SQLITE_ATTACH,sqlite3.SQLITE_DETACH,sqlite3.SQLITE_ALTER_TABLE,
+                        sqlite3.SQLITE_CREATE_TABLE,sqlite3.SQLITE_DROP_TABLE,sqlite3.SQLITE_CREATE_TRIGGER,
+                        sqlite3.SQLITE_DROP_TRIGGER,sqlite3.SQLITE_CREATE_INDEX,sqlite3.SQLITE_DROP_INDEX):
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+            conn.set_authorizer(allow);conn.execute('BEGIN IMMEDIATE')
+            yield conn
+            conn.commit()
+        except BaseException:
+            if conn is not None: conn.rollback()
+            raise
+        finally:
+            if conn is not None: conn.close()
+            os.close(fd)
+
+
+def expectation_writer_from_settings(settings,*,clock=None):
+    """Observer-only registered append port; never initializes or migrates storage."""
+    if type(settings) is not ServiceSettings: raise TypeError('registered service settings required')
+    writer=ExpectationWriter.__new__(ExpectationWriter)
+    writer._ExpectationWriter__journal=_ExpectationOwner(settings,clock or (lambda:datetime.now(timezone.utc)))
+    return writer
+
+
 class ProviderAdmissionWriter:
     """One consumed operational row; terminal evidence never creates replay authority."""
     __slots__=('__journal','__dispatch_id','__scope','__envelope_hash')

@@ -570,7 +570,7 @@ class ServiceRuntime:
             if saved is None or saved[0]!='FINALIZED': result.append(ticker)
         return tuple(result)
 
-    def stop(self):
+    def stop(self, *, clean_stop=True):
         if self.state in ('UNSTARTED','STOPPED'): return
         self.no_new_dispatch=True; self.state='STOPPING'; self.heartbeat(force=True)
         deadline=self.monotonic()+self.settings.shutdown_timeout_seconds
@@ -590,7 +590,7 @@ class ServiceRuntime:
                 self._event('DAILY','PARTIAL','SERVICE_STOPPED',tuple(v.ticker for v in self.inputs))
         finally:
             self.work.budget_factory=previous_budget
-            self.leader.close(clean_stop=True); self.state='STOPPED'
+            self.leader.close(clean_stop=clean_stop); self.state='STOPPED'
 
     def successor(self):
         return type(self)(settings=self.settings,journal=self.journal,controls=self.controls,
@@ -603,11 +603,21 @@ class ServiceRuntime:
         """Main-thread account worker; timer wakeups only, no sleep owns authority."""
         previous=signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM,lambda signum,frame:setattr(self,'no_new_dispatch',True))
+        failed=False
         try:
             if self.state=='UNSTARTED': self.start()
             while self.state!='STOPPED':
                 if self.no_new_dispatch: self.stop(); break
                 self.tick()
                 if self.state!='STOPPED': wait(min(1.,30.))
+        except BaseException:
+            failed=not self.no_new_dispatch
+            try:
+                self.stop(clean_stop=not failed)
+            except BaseException:
+                # Preserve the original failure; no healthy durable exit is claimed.
+                pass
+            raise
         finally:
-            self.stop(); signal.signal(signal.SIGTERM,previous)
+            try: self.stop(clean_stop=not failed)
+            finally: signal.signal(signal.SIGTERM,previous)
