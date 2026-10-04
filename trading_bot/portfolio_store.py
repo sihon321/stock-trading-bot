@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from trading_bot.audit_models import (
     DailyEvaluationEvent,
     DailyEvaluationEventType,
     DailyEvaluationStatus,
+    DailyDispatchState,
     OperationalSeverity,
     TransitionNotification,
     TransitionObservation,
@@ -24,9 +26,10 @@ from trading_bot.audit_models import (
     render_transition_notification,
 )
 from trading_bot.portfolio import PortfolioSnapshot
+from trading_bot.service_models import DailyDispatchEnvelope
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _TERMINAL_EVENTS = {
     DailyEvaluationEventType.SIGNAL_FINALIZED,
     DailyEvaluationEventType.LLM_UNAVAILABLE,
@@ -127,6 +130,40 @@ _LEASE_SCHEMA = (
         ON mutation_lease_events(account_scope_hash, id)""",
 )
 
+_DISPATCH_SCHEMA = (
+    """CREATE TABLE daily_evaluation_dispatches (
+        evaluation_id TEXT PRIMARY KEY REFERENCES daily_evaluations(evaluation_id),
+        execution_target TEXT, envelope_json TEXT, envelope_hash TEXT,
+        dispatch_state TEXT NOT NULL, dispatch_id TEXT UNIQUE,
+        dispatched_at TEXT, finalized_at TEXT, execution_intent_id TEXT)""",
+    """CREATE TABLE daily_dispatch_identities (
+        evaluation_id TEXT PRIMARY KEY REFERENCES daily_evaluations(evaluation_id),
+        account_scope_hash TEXT NOT NULL, execution_target TEXT NOT NULL,
+        trading_date_kst TEXT NOT NULL, ticker TEXT NOT NULL,
+        UNIQUE(account_scope_hash,execution_target,trading_date_kst,ticker))""",
+    """CREATE TRIGGER immutable_daily_dispatch_envelope
+        BEFORE UPDATE OF evaluation_id,execution_target,envelope_json,envelope_hash
+        ON daily_evaluation_dispatches BEGIN
+        SELECT RAISE(ABORT,'immutable dispatch envelope'); END""",
+    """CREATE TRIGGER immutable_daily_dispatch_consumption
+        BEFORE UPDATE ON daily_evaluation_dispatches
+        WHEN (OLD.dispatch_id IS NOT NULL AND
+            (NEW.dispatch_id IS NOT OLD.dispatch_id OR NEW.dispatched_at IS NOT OLD.dispatched_at))
+          OR (OLD.dispatch_state <> 'NEVER_DISPATCHED' AND
+              NEW.dispatch_state IN ('NEVER_DISPATCHED','DISPATCHED'))
+        BEGIN SELECT RAISE(ABORT,'consumed dispatch cannot reset'); END""",
+    """CREATE TRIGGER immutable_daily_input BEFORE UPDATE OF
+        evaluation_id,trading_date_kst,ticker,provenance_json,canonical_input,
+        canonical_input_hash,account_scope_hash,started_at ON daily_evaluations
+        BEGIN SELECT RAISE(ABORT,'immutable canonical input'); END""",
+    """CREATE TRIGGER immutable_daily_dispatch_delete BEFORE DELETE
+        ON daily_evaluation_dispatches BEGIN SELECT RAISE(ABORT,'immutable dispatch'); END""",
+    """CREATE TRIGGER immutable_daily_identity_update BEFORE UPDATE
+        ON daily_dispatch_identities BEGIN SELECT RAISE(ABORT,'immutable dispatch identity'); END""",
+    """CREATE TRIGGER immutable_daily_identity_delete BEFORE DELETE
+        ON daily_dispatch_identities BEGIN SELECT RAISE(ABORT,'immutable dispatch identity'); END""",
+)
+
 
 @dataclass(frozen=True)
 class StoredDailyEvaluation:
@@ -169,10 +206,13 @@ def portfolio_schema_version(conn: sqlite3.Connection) -> int:
     ).fetchone()
     if exists is None:
         return 0
-    row = conn.execute(
-        "SELECT version FROM portfolio_schema_metadata WHERE owner='phase11'"
-    ).fetchone()
-    return int(row[0]) if row else 0
+    rows = conn.execute("SELECT owner,version FROM portfolio_schema_metadata").fetchall()
+    if len(rows) != 1 or rows[0][0] != 'phase11':
+        raise RuntimeError('unsupported portfolio schema owner')
+    version = rows[0][1]
+    if type(version) is not int or version not in {1, 2, 3, 4}:
+        raise RuntimeError('unsupported portfolio schema version')
+    return version
 
 
 def migrate_portfolio(
@@ -216,8 +256,21 @@ def migrate_portfolio(
             )
             conn.execute(_SCHEMA[-2].replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
             conn.execute(_SCHEMA[-1].replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
-        for statement in _LEASE_SCHEMA:
+        if version in {0, 1, 2}:
+            for statement in _LEASE_SCHEMA:
+                conn.execute(statement)
+        for statement in _DISPATCH_SCHEMA:
             conn.execute(statement)
+        conn.execute("""INSERT INTO daily_evaluation_dispatches(
+            evaluation_id,dispatch_state,finalized_at)
+            SELECT e.evaluation_id, CASE
+                WHEN e.status='FINALIZED' THEN 'FINALIZED'
+                WHEN EXISTS(SELECT 1 FROM daily_evaluation_events v
+                    WHERE v.evaluation_id=e.evaluation_id AND v.event_type='PROVIDER_ATTEMPT')
+                    THEN 'DISPATCHED_UNKNOWN'
+                ELSE 'BLOCKED_LEGACY' END, e.finalized_at FROM daily_evaluations e""")
+        if fail_after_step == 'dispatches':
+            raise RuntimeError('injected portfolio migration failure')
         if version == 0:
             conn.execute(
                 "INSERT INTO portfolio_schema_metadata(owner, version) VALUES ('phase11', ?)",
@@ -582,6 +635,9 @@ def start_daily_evaluation(
     canonical_input: bytes,
     account_scope_hash: str,
     observed_at: datetime | None = None,
+    execution_target: str | None = None,
+    envelope: DailyDispatchEnvelope | None = None,
+    lease: Any = None,
 ) -> StoredDailyEvaluation:
     if len(ticker) != 6 or not ticker.isdigit():
         raise ValueError("ticker must be a 6-digit KRX code")
@@ -592,10 +648,21 @@ def start_daily_evaluation(
         raise ValueError("provenance must contain HELD and/or SCREENED")
     scope = _stable_code(account_scope_hash, "account_scope_hash")
     stamp = _aware(observed_at)
+    if execution_target is not None or envelope is not None:
+        if execution_target != 'mock':
+            raise RuntimeError('unsupported execution target')
+        if not isinstance(envelope, DailyDispatchEnvelope):
+            raise ValueError('frozen dispatch envelope required')
+        envelope = DailyDispatchEnvelope.model_validate(envelope)
+        if envelope.prompt_bytes != canonical_input:
+            raise ValueError('canonical input must match frozen envelope')
+        _assert_dispatch_owner(conn, lease, scope, stamp)
     digest = hashlib.sha256(canonical_input).hexdigest()
     evaluation_id = str(uuid.uuid4())
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if envelope is not None:
+            _assert_dispatch_owner(conn, lease, scope, stamp, in_transaction=True)
         cursor = conn.execute(
             """INSERT OR IGNORE INTO daily_evaluations(
                evaluation_id, trading_date_kst, ticker, provenance_json,
@@ -609,6 +676,16 @@ def start_daily_evaluation(
             ),
         )
         if cursor.rowcount == 1:
+            conn.execute("""INSERT INTO daily_evaluation_dispatches(
+                evaluation_id,execution_target,envelope_json,envelope_hash,dispatch_state)
+                VALUES(?,?,?,?,?)""", (evaluation_id, execution_target,
+                envelope.model_dump_json() if envelope else None,
+                envelope.envelope_hash if envelope else None,
+                DailyDispatchState.NEVER_DISPATCHED.value if envelope else
+                DailyDispatchState.BLOCKED_LEGACY.value))
+            if envelope is not None:
+                conn.execute('INSERT INTO daily_dispatch_identities VALUES(?,?,?,?,?)',
+                    (evaluation_id, scope, execution_target, trading_date_kst.isoformat(), ticker))
             conn.execute(
                 """INSERT INTO daily_evaluation_events(
                    evaluation_id, event_type, detail_json, observed_at)
@@ -626,6 +703,11 @@ def start_daily_evaluation(
                     (trading_date_kst.isoformat(), ticker),
                 ).fetchone()[0]
             )
+            committed = load_daily_dispatch(conn, evaluation_id)
+            if committed['account_scope_hash'] != scope:
+                raise RuntimeError('daily identity account scope collision')
+            if committed['execution_target'] != execution_target:
+                raise RuntimeError('daily identity target collision or blocked legacy')
         conn.commit()
     except Exception:
         conn.rollback()
@@ -643,6 +725,7 @@ def append_daily_evaluation_event(
     reason_code: str | None = None,
     detail: Mapping[str, Any] | None = None,
     observed_at: datetime | None = None,
+    lease: Any = None,
 ) -> int:
     event = DailyEvaluationEvent(
         evaluation_id=_stable_code(evaluation_id, "evaluation_id"),
@@ -654,6 +737,11 @@ def append_daily_evaluation_event(
         observed_at=_aware(observed_at),
     )
     terminal = event.event_type in _TERMINAL_EVENTS
+    dispatch = load_daily_dispatch(conn, evaluation_id)
+    if dispatch['execution_target'] is not None:
+        _assert_dispatch_owner(conn, lease, dispatch['account_scope_hash'], event.observed_at)
+        if terminal or event.event_type is DailyEvaluationEventType.PROVIDER_ATTEMPT:
+            raise RuntimeError('use one-shot dispatch claim/finalize owner methods')
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -723,20 +811,200 @@ def load_daily_evaluation(
     )
 
 
-def recover_started_evaluations(
-    conn: sqlite3.Connection, *, observed_at: datetime | None = None
-) -> int:
-    ids = [
-        str(row[0]) for row in conn.execute(
-            "SELECT evaluation_id FROM daily_evaluations WHERE status=? ORDER BY started_at",
-            (DailyEvaluationStatus.STARTED.value,),
-        )
-    ]
-    for evaluation_id in ids:
-        append_daily_evaluation_event(
-            conn, evaluation_id,
-            event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
-            action="HOLD", reason_code="LLM_UNAVAILABLE",
-            detail={"recovery": True}, observed_at=observed_at,
-        )
-    return len(ids)
+def _assert_dispatch_owner(conn, lease, scope, now, *, in_transaction=False):
+    """Prove real live account authority and recheck its durable row under the write lock."""
+    from trading_bot.mutation_lease import MutationLease
+    if (not isinstance(lease, MutationLease) or lease.closed
+            or lease.account_scope_hash != scope or lease.state.value != 'ACTIVE'):
+        raise RuntimeError('active scoped account owner required')
+    source = conn.execute('PRAGMA database_list').fetchone()[2]
+    owner_source = lease._conn.execute('PRAGMA database_list').fetchone()[2]
+    if (source != owner_source or (not source and conn is not lease._conn)):
+        raise RuntimeError('same trading store owner required')
+    if not in_transaction:
+        lease.assert_active_owner(observed_at=now)
+    row = conn.execute('SELECT owner_token,state FROM mutation_leases WHERE account_scope_hash=?',
+                       (scope,)).fetchone()
+    if row is None or tuple(row) != (lease.owner_token, 'ACTIVE'):
+        raise RuntimeError('active account owner no longer current')
+
+
+def load_daily_dispatch(conn: sqlite3.Connection, evaluation_id: str) -> dict[str, Any]:
+    """Committed owner read-back; callers must not hand raw envelope JSON to saved readers."""
+    row = conn.execute('''SELECT d.evaluation_id,e.account_scope_hash,e.trading_date_kst,
+        e.ticker,e.status,e.canonical_input_hash,e.started_at,d.execution_target,
+        d.envelope_json,d.envelope_hash,d.dispatch_state,d.dispatch_id,d.dispatched_at,
+        d.finalized_at,d.execution_intent_id
+        FROM daily_evaluation_dispatches d JOIN daily_evaluations e
+        ON e.evaluation_id=d.evaluation_id WHERE d.evaluation_id=?''', (evaluation_id,)).fetchone()
+    if row is None:
+        raise ValueError('daily dispatch not found')
+    keys = ('evaluation_id','account_scope_hash','trading_date_kst','ticker','status',
+            'canonical_input_hash','started_at','execution_target','envelope_json','envelope_hash',
+            'dispatch_state','dispatch_id','dispatched_at','finalized_at','execution_intent_id')
+    return dict(zip(keys, row))
+
+
+def _intact_envelope(conn, dispatch):
+    try:
+        envelope = DailyDispatchEnvelope.model_validate_json(dispatch['envelope_json'])
+        raw = conn.execute('SELECT canonical_input FROM daily_evaluations WHERE evaluation_id=?',
+                           (dispatch['evaluation_id'],)).fetchone()[0]
+        identity = conn.execute('SELECT account_scope_hash,execution_target,trading_date_kst,ticker '
+            'FROM daily_dispatch_identities WHERE evaluation_id=?', (dispatch['evaluation_id'],)).fetchone()
+        if (envelope.envelope_hash != dispatch['envelope_hash']
+                or envelope.prompt_hash != dispatch['canonical_input_hash']
+                or envelope.prompt_bytes != bytes(raw) or dispatch['execution_target'] != 'mock'
+                or identity is None or tuple(identity) != tuple(dispatch[k] for k in
+                    ('account_scope_hash','execution_target','trading_date_kst','ticker'))):
+            raise ValueError()
+        return envelope
+    except (ValueError, TypeError):
+        raise RuntimeError('frozen envelope or scoped identity is invalid') from None
+
+
+def _dispatch_window(dispatch, now, deadline):
+    stamp, end = _aware(now), _aware(deadline)
+    day = date.fromisoformat(dispatch['trading_date_kst'])
+    cutoff = datetime(day.year, day.month, day.day, 9, 20, tzinfo=ZoneInfo('Asia/Seoul'))
+    if end > cutoff or end.astimezone(ZoneInfo('Asia/Seoul')).date() != day:
+        raise RuntimeError('dispatch deadline must not exceed 09:20 KST')
+    if stamp.astimezone(ZoneInfo('Asia/Seoul')).date() != day or stamp >= end:
+        return False
+    started = datetime.fromisoformat(dispatch['started_at'])
+    if stamp < _aware(started):
+        raise RuntimeError('dispatch clock precedes committed input')
+    return True
+
+
+def _dispatch_event(conn, evaluation_id, kind, now, detail=None):
+    conn.execute('''INSERT INTO daily_evaluation_events(
+        evaluation_id,event_type,detail_json,observed_at) VALUES(?,?,?,?)''',
+        (evaluation_id, kind.value, json.dumps(sanitize_detail(detail), sort_keys=True), now.isoformat()))
+
+
+def claim_daily_dispatch(conn, evaluation_id, lease, now, deadline):
+    """Consume once, committing before any transport call; returns the exact handoff facts."""
+    stamp = _aware(now)
+    scope = getattr(lease, 'account_scope_hash', None)
+    _assert_dispatch_owner(conn, lease, scope, stamp)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        _assert_dispatch_owner(conn, lease, scope, stamp, in_transaction=True)
+        dispatch = load_daily_dispatch(conn, evaluation_id)
+        if dispatch['account_scope_hash'] != scope:
+            raise RuntimeError('daily dispatch scope mismatch')
+        if dispatch['dispatch_state'] != DailyDispatchState.NEVER_DISPATCHED.value:
+            raise RuntimeError('daily dispatch already consumed or blocked')
+        _intact_envelope(conn, dispatch)
+        if not _dispatch_window(dispatch, stamp, deadline):
+            raise RuntimeError('dispatch input expired at deadline or date')
+        dispatch_id = str(uuid.uuid4())
+        conn.execute('''UPDATE daily_evaluation_dispatches SET dispatch_state='DISPATCHED',
+            dispatch_id=?,dispatched_at=? WHERE evaluation_id=?''',
+            (dispatch_id, stamp.isoformat(), evaluation_id))
+        _dispatch_event(conn, evaluation_id, DailyEvaluationEventType.DISPATCH_CLAIMED, stamp,
+                        {'dispatch_id': dispatch_id})
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return load_daily_dispatch(conn, evaluation_id)
+
+
+def _finalize_dispatch(conn, dispatch, stamp, *, action, confidence, reason_code, unknown,
+                       execution_intent_id=None, final_state=None):
+    if dispatch['status'] != 'STARTED':
+        raise RuntimeError('daily dispatch already finalized')
+    if dispatch['dispatched_at'] and stamp < _aware(datetime.fromisoformat(dispatch['dispatched_at'])):
+        raise RuntimeError('finalization precedes dispatch')
+    if unknown:
+        action, confidence, reason_code = 'HOLD', 0.0, 'LLM_UNAVAILABLE'
+    event = DailyEvaluationEvent(dispatch['evaluation_id'],
+        DailyEvaluationEventType.LLM_UNAVAILABLE if unknown else DailyEvaluationEventType.SIGNAL_FINALIZED,
+        action, confidence, reason_code, {}, stamp)
+    state = final_state or (DailyDispatchState.DISPATCHED_UNKNOWN if unknown else DailyDispatchState.FINALIZED)
+    conn.execute('UPDATE daily_evaluations SET status=\'FINALIZED\',finalized_at=? WHERE evaluation_id=?',
+                 (stamp.isoformat(), dispatch['evaluation_id']))
+    conn.execute('''UPDATE daily_evaluation_dispatches SET dispatch_state=?,finalized_at=?,
+        execution_intent_id=? WHERE evaluation_id=?''',
+        (state.value, stamp.isoformat(), execution_intent_id, dispatch['evaluation_id']))
+    _dispatch_event(conn, dispatch['evaluation_id'],
+        DailyEvaluationEventType.DISPATCH_UNKNOWN if unknown else DailyEvaluationEventType.DISPATCH_FINALIZED, stamp)
+    conn.execute('''INSERT INTO daily_evaluation_events(evaluation_id,event_type,action,
+        confidence,reason_code,detail_json,observed_at) VALUES(?,?,?,?,?,'{}',?)''',
+        (event.evaluation_id,event.event_type.value,event.action,event.confidence,event.reason_code,stamp.isoformat()))
+
+
+def finalize_daily_dispatch(conn, evaluation_id, *, lease, now, action='HOLD', confidence=0.0,
+                            reason_code='LLM_UNAVAILABLE', unknown=False, execution_intent_id=None):
+    stamp = _aware(now)
+    scope = getattr(lease, 'account_scope_hash', None)
+    _assert_dispatch_owner(conn, lease, scope, stamp)
+    if execution_intent_id is not None:
+        execution_intent_id = _stable_code(execution_intent_id, 'execution_intent_id')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        _assert_dispatch_owner(conn, lease, scope, stamp, in_transaction=True)
+        dispatch = load_daily_dispatch(conn, evaluation_id)
+        if dispatch['account_scope_hash'] != scope:
+            raise RuntimeError('daily dispatch scope mismatch')
+        if dispatch['dispatch_state'] != 'DISPATCHED':
+            raise RuntimeError('only a consumed dispatch can finalize')
+        _intact_envelope(conn, dispatch)
+        _finalize_dispatch(conn, dispatch, stamp, action=action, confidence=confidence,
+            reason_code=reason_code, unknown=unknown, execution_intent_id=execution_intent_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return load_daily_dispatch(conn, evaluation_id)
+
+
+def recover_daily_dispatches(conn, *, lease, account_scope_hash, execution_target,
+                             trading_date_kst, now, deadline):
+    stamp = _aware(now)
+    _assert_dispatch_owner(conn, lease, account_scope_hash, stamp)
+    if execution_target != 'mock':
+        raise RuntimeError('unsupported recovery target')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        _assert_dispatch_owner(conn, lease, account_scope_hash, stamp, in_transaction=True)
+        ids = [row[0] for row in conn.execute('''SELECT d.evaluation_id
+            FROM daily_evaluation_dispatches d JOIN daily_evaluations e USING(evaluation_id)
+            WHERE e.account_scope_hash=? AND e.trading_date_kst=? AND e.status='STARTED'
+            AND (d.execution_target=? OR d.execution_target IS NULL) ORDER BY e.started_at,e.evaluation_id''',
+            (account_scope_hash,trading_date_kst.isoformat(),execution_target))]
+        for evaluation_id in ids:
+            dispatch = load_daily_dispatch(conn, evaluation_id)
+            state = DailyDispatchState(dispatch['dispatch_state'])
+            if state is DailyDispatchState.NEVER_DISPATCHED:
+                _intact_envelope(conn, dispatch)
+                if _dispatch_window(dispatch, stamp, deadline):
+                    continue
+                _dispatch_event(conn, evaluation_id, DailyEvaluationEventType.DISPATCH_EXPIRED, stamp)
+                _finalize_dispatch(conn, dispatch, stamp, action='HOLD', confidence=0,
+                    reason_code='LLM_UNAVAILABLE', unknown=True,
+                    final_state=DailyDispatchState.EXPIRED_NEVER_DISPATCHED)
+            else:
+                _finalize_dispatch(conn, dispatch, stamp, action='HOLD', confidence=0,
+                    reason_code='LLM_UNAVAILABLE', unknown=True,
+                    final_state=DailyDispatchState.BLOCKED_LEGACY if state is DailyDispatchState.BLOCKED_LEGACY else None)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return tuple(load_daily_dispatch(conn, identity) for identity in ids)
+
+
+def recover_started_evaluations(conn, *, observed_at=None, lease=None, account_scope_hash=None,
+                                execution_target=None, trading_date_kst=None, deadline=None):
+    """Compatibility name; global recovery without exclusive account authority is forbidden."""
+    if lease is None:
+        raise RuntimeError('scoped active owner required for evaluation recovery')
+    if any(value is None for value in (account_scope_hash,execution_target,trading_date_kst,deadline)):
+        raise RuntimeError('owner recovery requires explicit scope, target, date and deadline')
+    rows = recover_daily_dispatches(conn, lease=lease, account_scope_hash=account_scope_hash,
+        execution_target=execution_target,trading_date_kst=trading_date_kst,
+        now=_aware(observed_at),deadline=deadline)
+    return sum(row['status'] == 'FINALIZED' for row in rows)

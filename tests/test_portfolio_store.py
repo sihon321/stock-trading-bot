@@ -165,7 +165,7 @@ def test_portfolio_migration_failure_rolls_back_and_retry_succeeds(tmp_path):
     migrate_portfolio(conn)
     assert conn.execute(
         "SELECT version FROM portfolio_schema_metadata WHERE owner='phase11'"
-    ).fetchone()[0] == 3
+    ).fetchone()[0] == 4
     expected = {
         "portfolio_snapshots", "portfolio_holdings", "portfolio_orders",
         "portfolio_fills", "portfolio_divergences", "daily_evaluations",
@@ -225,7 +225,7 @@ def test_first_envelope_and_scope_target_are_immutable_and_claim_consumes(tmp_pa
     path = tmp_path / "audit.db"
     conn = connect_portfolio_store(path)
     with _owner(conn, tmp_path) as owner:
-        first = _start(conn, owner)
+        first = _start(conn, owner, observed_at=_early())
         again = _start(conn, owner, envelope=_envelope(b"replacement"))
         assert again.evaluation_id == first.evaluation_id
         saved = store.load_daily_dispatch(conn, first.evaluation_id)
@@ -378,3 +378,64 @@ def test_frozen_envelope_tampering_and_wrong_deadline_refuse_recovery(tmp_path):
         conn.commit()
         with pytest.raises(RuntimeError, match="envelope"):
             store.claim_daily_dispatch(conn, evaluation.evaluation_id, owner, _early(), _deadline())
+
+
+def test_scoped_concurrent_claim_has_one_winner_and_terminal_cannot_reset(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    store, state = _dispatch_api()
+    path = tmp_path / "audit.db"
+    conn = connect_portfolio_store(path)
+    with _owner(conn, tmp_path) as owner:
+        evaluation = _start(conn, owner, observed_at=_early())
+        # After the real owner's outer check, independent connections serialize the
+        # durable token recheck and claim; no external call occurs in this test.
+        owner.assert_active_owner(observed_at=_early())
+        def claim():
+            from unittest.mock import patch
+            connection = sqlite3.connect(path)
+            try:
+                with patch.object(owner, 'assert_active_owner'):
+                    try:
+                        return store.claim_daily_dispatch(connection, evaluation.evaluation_id,
+                            owner, _early(), _deadline())["dispatch_id"]
+                    except RuntimeError:
+                        return None
+            finally:
+                connection.close()
+        # Sharing a real lease's SQLite handle across threads is forbidden. The
+        # helper's provenance lookup is read-only, so allow that test handle only.
+        shared = sqlite3.connect(path, check_same_thread=False)
+        owner._conn = shared
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: claim(), range(2)))
+            assert sum(value is not None for value in results) == 1
+        finally:
+            owner._conn = conn
+            shared.close()
+        final = store.finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=owner,
+            now=_early(), action="HOLD", confidence=0.5, reason_code="MODEL_HOLD")
+        assert final["dispatch_state"] == state.FINALIZED
+        assert final["execution_intent_id"] is None
+        with pytest.raises(RuntimeError, match="consumed"):
+            store.finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=owner, now=_early())
+        with pytest.raises(sqlite3.IntegrityError, match="reset"):
+            conn.execute("UPDATE daily_evaluation_dispatches SET dispatch_state='NEVER_DISPATCHED'")
+        conn.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("UPDATE daily_evaluations SET canonical_input=?", (b"replaced",))
+        conn.rollback()
+
+
+def test_unknown_versions_and_legacy_finalized_classification(tmp_path):
+    store, state = _dispatch_api()
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    _legacy_db(conn)
+    conn.execute("UPDATE daily_evaluations SET status='FINALIZED',finalized_at=?", (NOW.isoformat(),))
+    conn.commit()
+    migrate_portfolio(conn)
+    assert store.load_daily_dispatch(conn, 'legacy')["dispatch_state"] == state.FINALIZED
+    conn.execute("UPDATE portfolio_schema_metadata SET version=999")
+    conn.commit()
+    with pytest.raises(RuntimeError, match="version"):
+        migrate_portfolio(conn)
