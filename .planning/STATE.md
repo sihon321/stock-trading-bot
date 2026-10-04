@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 6
+current_plan: 7
 status: executing
-stopped_at: Phase 15 plans 01-05 and 07 completed; wave 2 integration corrected; next 15-06
-last_updated: "2026-10-04T05:32:16.359Z"
+stopped_at: Completed 15-06-PLAN.md; 15-07 already completed; next 15-08
+last_updated: "2026-10-04T06:00:09.004Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 6
+Current Plan: 7
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 6 (15-06-PLAN.md; 15-07 integration completed early)
+Plan: 7 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -152,6 +152,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Actual live ServiceLeader ownership alone mints control application capability; fresh all-account owner resume and current source/revision checks cannot grant independent trading activation.
 - [Phase 15]: Daily dispatch uses immutable consumed envelopes, actual transport-entry acknowledgement and no SDK, HTTP or outer retries.
 - [Phase 15]: Unverified actual Codex retry capabilities fail closed; account-lease release around daily provider waits remains 15-09 integration.
+- [Phase 15]: Both explicit 09-08 approvals bind immutable campaign/profile/owner evidence; offline shape verdicts cannot authorize production mock construction.
+- [Phase 15]: Initial activation retains applicable ticker freezes and separately denies global UNKNOWN/latches; per-ticker final admission and otherwise-safe risk protection remain 15-08/09 integration.
+- [Phase 15]: Actual mock composition binds accepted V-prefixed TR IDs, explicit init-only mock credentials and mandatory later final guard/audit seams; unverified actual Codex remains fail closed.
 
 ### Pending Todos
 
@@ -188,6 +191,7 @@ None yet.
 | Phase 15 P04 | 12min | 2 tasks | 6 files |
 | Phase 15 P05 | 13min | 2 tasks | 3 files |
 | Phase 15 P07 | 22min | 2 tasks | 7 files |
+| Phase 15 P06 | 25min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -221,9 +225,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T05:32:16.352Z
-Stopped at: Phase 15 plans 01-05 and 07 completed; wave 2 integration corrected; next 15-06
-Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-06-PLAN.md
+Last session: 2026-10-04T06:00:08.997Z
+Stopped at: Completed 15-06-PLAN.md; 15-07 already completed; next 15-08
+Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-08-PLAN.md
 
 ## Operator Next Steps
 
