@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 8
+current_plan: 9
 status: executing
-stopped_at: 15-06 complete; wave 3 regression running; next 15-08
-last_updated: "2026-10-04T06:02:35.369Z"
+stopped_at: Completed 15-08-PLAN.md
+last_updated: "2026-10-04T09:55:15.427Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 8
+Current Plan: 9
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 8 (15-08; 15-07 already complete)
+Plan: 9 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -155,6 +155,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Both explicit 09-08 approvals bind immutable campaign/profile/owner evidence; offline shape verdicts cannot authorize production mock construction.
 - [Phase 15]: Initial activation retains applicable ticker freezes and separately denies global UNKNOWN/latches; per-ticker final admission and otherwise-safe risk protection remain 15-08/09 integration.
 - [Phase 15]: Actual mock composition binds accepted V-prefixed TR IDs, explicit init-only mock credentials and mandatory later final guard/audit seams; unverified actual Codex remains fail closed.
+- [Phase 15]: FinalPostEntry binds one exact adapter/account/order/prepared request to a live admission flock and independently rechecks committed primary evidence immediately before HTTP POST.
+- [Phase 15]: Token and hashkey preparation happen before the global flock; the lock spans bounded single POST and terminal evidence without an open SQLite transaction.
+- [Phase 15]: Manual and proof submissions retain original approvals and IDs while using shared restrictive controls without requiring an unattended activation receipt.
+- [Phase 15]: Known historical ticker freezes remain applicable without an identity receipt; only independently validated same-subject release can discharge them.
 
 ### Pending Todos
 
@@ -192,6 +196,7 @@ None yet.
 | Phase 15 P05 | 13min | 2 tasks | 3 files |
 | Phase 15 P07 | 22min | 2 tasks | 7 files |
 | Phase 15 P06 | 25min | 2 tasks | 4 files |
+| Phase 15 P08 | 224min | 2 tasks | 16 files |
 
 ## Deferred Items
 
@@ -225,9 +230,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T06:02:35.361Z
-Stopped at: 15-06 complete; wave 3 regression running; next 15-08
-Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-08-PLAN.md
+Last session: 2026-10-04T09:55:15.420Z
+Stopped at: Completed 15-08-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
