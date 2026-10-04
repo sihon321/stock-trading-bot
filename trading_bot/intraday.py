@@ -29,6 +29,7 @@ from trading_bot.mutation_lease import (
     stop_after_ownership_loss,
 )
 from trading_bot.kis_broker import AmbiguousSubmissionError
+from trading_bot.market_cycle import MarketCyclePolicy, MarketSession
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -225,17 +226,28 @@ def transition_observations_for_iteration(
     return tuple(observations)
 
 
-def session_phase_at(observed_at: datetime) -> IntradaySessionPhase:
+def session_phase_at(observed_at: datetime, *,
+                     policy: MarketCyclePolicy | None = None) -> IntradaySessionPhase:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("intraday clock must be timezone-aware")
     current = observed_at.astimezone(KST).time()
+    # Owner's absolute limits dominate missing, delayed and exceptional notices.
+    if current >= time(15, 30):
+        return IntradaySessionPhase.TERMINAL
+    if current >= time(15, 20):
+        return IntradaySessionPhase.RECONCILE_ONLY
+    if policy is not None:
+        evidence = policy.classify(observed_at)
+        if evidence.session in (MarketSession.UNKNOWN, MarketSession.CLOSED_DAY):
+            return IntradaySessionPhase.RECOVERY_ONLY
+        if evidence.session is MarketSession.PRE_OPEN:
+            return IntradaySessionPhase.PREFLIGHT_READ_ONLY
+        if evidence.executable:
+            return IntradaySessionPhase.ACTIVE
+        return IntradaySessionPhase.RECONCILE_ONLY
     if current < time(9, 0):
         return IntradaySessionPhase.PREFLIGHT_READ_ONLY
-    if current < time(15, 20):
-        return IntradaySessionPhase.ACTIVE
-    if current < time(15, 30):
-        return IntradaySessionPhase.RECONCILE_ONLY
-    return IntradaySessionPhase.TERMINAL
+    return IntradaySessionPhase.ACTIVE
 
 
 def run_intraday_check(
@@ -252,14 +264,18 @@ def run_intraday_check(
     terminalize: Callable[[IntradayIterationResult], object] | None = None,
     reconcile: Callable[[], object] = lambda: True,
     persist_unresolved: Callable[[], object] | None = None,
+    policy: MarketCyclePolicy | None = None,
 ) -> IntradayIterationResult:
     """Run one fresh, independently identified, LLM-free held-position pass."""
 
     iteration_id = uuid.uuid4().hex
-    phase = session_phase_at(clock())
-    if getattr(lease, "recovery_required", False):
+    phase = session_phase_at(clock(), policy=policy)
+    if (getattr(lease, "recovery_required", False)
+            and phase not in (IntradaySessionPhase.RECONCILE_ONLY, IntradaySessionPhase.TERMINAL)):
         phase = IntradaySessionPhase.RECOVERY_ONLY
     if phase is not IntradaySessionPhase.ACTIVE:
+        if phase is IntradaySessionPhase.RECONCILE_ONLY:
+            reconcile()
         outcome = (
             IntradayIterationOutcome.BLOCKED
             if phase is IntradaySessionPhase.RECOVERY_ONLY
@@ -334,6 +350,14 @@ def run_intraday_check(
                     if terminalize is not None:
                         terminalize(result)
                     return result
+                if policy is not None:
+                    current_phase = session_phase_at(clock(), policy=policy)
+                    if current_phase is not IntradaySessionPhase.ACTIVE:
+                        result = IntradayIterationResult(
+                            iteration_id, current_phase, IntradayIterationOutcome.BLOCKED,
+                            snapshot.snapshot_id, tuple(exits), current_phase.value,
+                        )
+                        return result
                 submitted = True
                 exit_submitter(candidate, quote)
         result = IntradayIterationResult(
@@ -441,6 +465,7 @@ def run_intraday_watch(
     mutation_guard: Callable[[], object] = lambda: None,
     terminalize: Callable[[], object] | None = None,
     persist_unresolved: Callable[[], object] | None = None,
+    policy: MarketCyclePolicy | None = None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
@@ -449,6 +474,7 @@ def run_intraday_watch(
     iterations: list[IntradayIterationResult] = []
     interrupted = False
     final_phase = IntradaySessionPhase.PREFLIGHT_READ_ONLY
+    watch_date = None
     while max_iterations is None or len(iterations) < max_iterations:
         if stop_requested():
             interrupted = True
@@ -456,7 +482,12 @@ def run_intraday_watch(
             _release(lease, reconcile, terminalize, persist_unresolved)
             break
         now = clock()
-        final_phase = session_phase_at(now)
+        final_phase = session_phase_at(now, policy=policy)
+        if watch_date is None:
+            watch_date = now.astimezone(KST).date()
+        elif now.astimezone(KST).date() != watch_date:
+            # An overnight wake cannot resurrect the preceding day's watch.
+            final_phase = IntradaySessionPhase.TERMINAL
         if final_phase is IntradaySessionPhase.TERMINAL:
             _release(lease, reconcile, terminalize, persist_unresolved)
             break
@@ -465,7 +496,7 @@ def run_intraday_watch(
             sleeper(interval_seconds)
             continue
         result = run_intraday_check(
-            clock=lambda value=now: value,
+            clock=clock if policy is not None else lambda value=now: value,
             snapshot_reader=snapshot_reader,
             quote_reader=quote_reader,
             risk_config=risk_config,
@@ -476,6 +507,7 @@ def run_intraday_watch(
             stop_requested=stop_requested,
             reconcile=reconcile,
             persist_unresolved=persist_unresolved,
+            policy=policy,
             terminalize=(
                 (lambda result: terminalize()) if terminalize is not None else None
             ),
