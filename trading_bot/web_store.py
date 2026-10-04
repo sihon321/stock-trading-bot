@@ -219,6 +219,30 @@ class WebStore:
         with self.connection() as conn:
             self._append_action(conn, actor, action, result_code, resource_id, at, details or {})
 
+    def append_control_action(self, *, actor, resource_id, request_id, accepted_revision, at, note=''):
+        """Idempotent cross-store correlation after durable control acceptance.
+
+        This separate method preserves the original generic count-only audit API.
+        Control requests remain authoritative if this later transaction fails.
+        """
+        from uuid import UUID
+        if (str(UUID(request_id)) != request_id or type(accepted_revision) is not int
+                or not 1 <= accepted_revision <= 10**12 or not isinstance(note, str) or len(note) > 500):
+            raise ValueError('bounded control audit details required')
+        identifier(actor)
+        self.settings.resource(resource_id)
+        details = dict(request_id=request_id, accepted_revision=accepted_revision, note=note)
+        with self.connection() as conn:
+            existing = conn.execute("SELECT actor,resource_id,details_json FROM web_actions "
+                "WHERE action='CONTROL_REQUEST' AND json_extract(details_json,'$.request_id')=?",
+                (request_id,)).fetchall()
+            if existing:
+                if len(existing) != 1 or existing[0]['actor'] != actor or existing[0]['resource_id'] != resource_id or json.loads(existing[0]['details_json'])['accepted_revision'] != accepted_revision:
+                    raise ValueError('control audit correlation conflict')
+                return
+            conn.execute('INSERT INTO web_actions(actor,action,result_code,resource_id,observed_at,details_json) VALUES(?,?,?,?,?,?)',
+                (actor,'CONTROL_REQUEST','REQUESTED',resource_id,timestamp(at),json.dumps(details,sort_keys=True)))
+
     def record_artifact(self, artifact_id, *, resource_id, actor, filename, format, at):
         identifier(artifact_id)
         identifier(actor)

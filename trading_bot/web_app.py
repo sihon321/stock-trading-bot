@@ -27,7 +27,7 @@ OPERATIONAL_VIEWS = {
     'fills': ('/fills', '체결'), 'runs': ('/runs', '실행 이력'), 'workers': ('/workers', '작업 상태'),
 }
 RESERVED_GET_PATHS = {'/alerts', '/reports', '/validation/replay', '/validation/backtest',
-    '/validation/shadow', '/validation/soak', '/validation/calibration', '/validation/readiness'}
+    '/validation/shadow', '/validation/soak', '/validation/calibration', '/validation/readiness', '/controls'}
 FORM_ERROR = '요청을 확인할 수 없습니다. 화면을 다시 연 뒤 입력 내용을 확인하고 다시 시도하세요.'
 RECORD_ERROR = '요청한 증거를 열 수 없습니다. 목록으로 돌아가 등록된 증거를 선택하세요.'
 
@@ -166,6 +166,53 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         evidence_service=evidence_service or OperatorEvidenceService(settings, clock=clock), report_service=report_service, alert_store=alert_store,
         operator_clock=clock, operator_view_builders={})
     csrf = CSRFProtect(app)
+
+    from .web_control import WebControlRequestService, ACTIONS
+    control_service = WebControlRequestService(settings.control_resource, clock=clock) if settings.control_resource else None
+    app.extensions['control_request_service'] = control_service
+
+    def controls_view(resource_id=None, *, result=None, error=None, note=''):
+        if resource_id is not None and (control_service is None or resource_id != settings.control_resource.resource_id):
+            abort(404)
+        facts = None
+        if control_service is not None:
+            try:
+                facts = control_service.snapshot(actor=g.operator_session.actor)
+            except (OSError, ValueError, sqlite3.Error):
+                error = error or '제어 저장소를 확인할 수 없습니다. 상태는 UNKNOWN입니다.'
+        common = common_view('운영 제어', '/controls', facts=facts, result=result, error=error,
+            note=note, resource_id=settings.control_resource.resource_id if control_service else None)
+        return app.jinja_env.from_string('''{% extends "operator/base.html" %}
+            {% block errors %}{% if error %}<p>{{ error }}</p>{% endif %}{% endblock %}
+            {% block content %}{% if result %}<p>{{ result.status }} · {{ result.request_id }} · 적용 대기</p>
+            {% if result.audit_pending %}<p>요청은 저장되었습니다. 웹 감사 기록은 대기 중입니다.</p>{% endif %}{% endif %}
+            {% if facts %}<p>적용 상태 {{ facts.state.applied.mode }} · revision {{ facts.state.applied.revision }}</p>
+            {% for row in facts.admissions %}<p>이전 승인 주문 · {{ row.state }} · {{ row.submission_id }}</p>{% endfor %}{% endif %}
+            {% endblock %}''').render(**common)
+
+    @app.get('/controls')
+    @app.get('/controls/<resource_id>')
+    def controls(resource_id=None):
+        if request.args:
+            abort(400)
+        return controls_view(resource_id)
+
+    @app.post('/controls/<resource_id>/<action>')
+    def request_control(resource_id, action):
+        if control_service is None or resource_id != settings.control_resource.resource_id or action not in ACTIONS:
+            abort(404)
+        if request.args:
+            abort(400)
+        note = _clean(request.form.get('note', ''))[:500]
+        try:
+            result = control_service.append_request(action, request.form, actor=g.operator_session.actor,
+                audit=store.append_control_action)
+        except (ValueError, TypeError):
+            return controls_view(resource_id, error=FORM_ERROR, note=note), 400
+        status = 409 if result.status == 'CONFLICT' else 503 if result.status == 'UNAVAILABLE' or result.audit_pending else 200
+        error = '제어 revision이 변경되었거나 요청 ID가 충돌했습니다. 최신 상태를 확인하세요.' if status == 409 else (
+            '제어 요청을 확인할 수 없습니다. 저장 증거를 새로 조회하세요.' if result.status == 'UNAVAILABLE' else None)
+        return controls_view(resource_id, result=result, error=error, note=note), status
 
     def safe_error(code, status):
         if request.path.startswith('/api/'):

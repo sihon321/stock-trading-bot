@@ -17,7 +17,7 @@ import weakref
 
 from .service_config import ServiceSettings
 from .service_models import AppliedControl, ControlMode, ControlRequest, InstallationScope, ServiceScope
-from .web_config import checked_path
+from .web_config import checked_path, ControlResourceDescriptor
 
 CONTROL_OWNER = 'phase15-control'
 CONTROL_SCHEMA_VERSION = 1
@@ -368,6 +368,47 @@ class ControlReader:
     def list_requests(self, *, limit=50): return self._list('control_requests',limit)
     def list_applications(self, *, limit=50): return self._list('control_applications',limit)
     def list_admissions(self, *, limit=50): return self._list('submission_admissions',limit)
+
+    def get_request(self, request_id):
+        """Exact replay lookup, independent of the bounded display history."""
+        _identity(request_id)
+        with self.__store._connection() as conn:
+            row = conn.execute('SELECT * FROM control_requests WHERE request_id=?', (request_id,)).fetchone()
+            return self.__store._request_from_row(row) if row else None
+
+
+class _RegisteredRequestStore:
+    """Request-only owner adapter: no setup, service application or trading writer."""
+    _connection = ControlStore._connection
+    _verify_setup = ControlStore._verify_setup
+    _request_from_row = ControlStore._request_from_row
+    _effective = ControlStore._effective
+
+    def __init__(self, descriptor, clock):
+        if not isinstance(descriptor, ControlResourceDescriptor):
+            raise TypeError('fixed control descriptor required')
+        self.path = checked_path(descriptor.path)
+        self.lock_path = checked_path(descriptor.lock_dir) / 'admission.lock'
+        self.scope = InstallationScope(registered_scopes=tuple(ServiceScope(
+            account_scope_hash=account, execution_target=target)
+            for account, target in descriptor.registered_scopes))
+        self.scope_hash = hashlib.sha256(self.scope.model_dump_json().encode()).hexdigest()
+        self.clock = clock
+
+    def _validate_paths(self):
+        for root in (checked_path(self.path.parent), checked_path(self.lock_path.parent)):
+            info = root.stat()
+            if not root.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('owner protected control roots required')
+
+    def admission_lock(self):
+        return AdmissionLock(self)
+
+
+def control_request_capabilities(descriptor, *, actor, clock=None):
+    """Only read/append-request facades for an already initialized fixed resource."""
+    owner = _RegisteredRequestStore(descriptor, clock or (lambda: datetime.now(timezone.utc)))
+    return ControlReader(owner), ControlRequestWriter(owner, actor=actor)
 
 
 class ControlRequestWriter:
