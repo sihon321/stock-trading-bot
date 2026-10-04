@@ -73,7 +73,7 @@ def test_control_is_global_narrow_frozen_and_attributable():
     applied = m.AppliedControl(revision=1, mode='KILLED', request_id=request.request_id,
                               applied_at=NOW, safety_evidence_ids=('gate-blocked',))
     assert applied.request_id == request.request_id
-    assert 'trading_date_kst' not in applied.model_fields
+    assert 'trading_date_kst' not in type(applied).model_fields
 
 
 def test_exact_session_dates_and_bounds_and_unknown():
@@ -127,6 +127,7 @@ def test_dispatch_pins_bytes_and_suppression_never_grants_replay():
     envelope = m.DailyDispatchEnvelope(**values)
     assert envelope.envelope_hash == m.DailyDispatchEnvelope(**values).envelope_hash
     assert raw.decode() not in repr(envelope)
+    assert m.DailyDispatchEnvelope.model_validate_json(envelope.model_dump_json()) == envelope
     with pytest.raises(ValidationError):
         m.DailyDispatchEnvelope(**(values | {'prompt_hash': HASH}))
     admission = m.ProviderCallAdmission(dispatch_id='dispatch-1', evaluation_id='evaluation-1',
@@ -134,6 +135,7 @@ def test_dispatch_pins_bytes_and_suppression_never_grants_replay():
         state='SUPPRESSED_NO_CALL', reason_code='PAUSED', control_revision=1,
         session_source_id='reviewed-session', observed_at=NOW, invocation_started_at=None)
     assert admission.restores_dispatch_authority is False
+    assert admission.model_copy(update={'state': 'PREPARED'}).restores_dispatch_authority is False
     with pytest.raises(ValidationError):
         admission.state = 'PREPARED'
     with pytest.raises(ValidationError):
@@ -234,3 +236,64 @@ def test_service_imports_do_not_acquire_trading_capabilities():
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
+
+def test_state_allowlists_numeric_bounds_and_hidden_invalid_inputs():
+    m = models()
+    assert {v.value for v in m.ServiceJobState} == {
+        'DUE', 'CLAIMED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'MISSED', 'BLOCKED', 'UNKNOWN'}
+    assert {v.value for v in m.ProviderAdmissionState} == {
+        'PREPARED', 'IN_FLIGHT', 'SUPPRESSED_NO_CALL', 'UNKNOWN', 'FINISHED'}
+    for enum in (m.ServiceJobState, m.ServiceMode, m.ControlMode, m.ControlAction,
+                 m.OwnerLoginState, m.SessionEligibility, m.ProviderAdmissionState):
+        with pytest.raises(ValueError):
+            enum('INVALID')
+    for value in (-1, True, 1.5):
+        with pytest.raises(ValidationError):
+            m.AppliedControl(revision=value, mode='RUNNING', request_id=None,
+                             applied_at=NOW, safety_evidence_ids=())
+    with pytest.raises(ValidationError) as exc:
+        m.ServiceScope(account_scope_hash='credential-never-show', execution_target='mock')
+    assert 'credential-never-show' not in str(exc.value)
+    with pytest.raises(ValidationError):
+        scope().model_copy(update={'execution_target': 'real'})
+
+
+def test_unconfirmed_login_and_expectation_remain_explicit():
+    m = models()
+    for state in ('ABSENT', 'UNKNOWN'):
+        evidence = m.OwnerLoginEvidence(owner_uid=1, gui_session_id=None, source_id='probe',
+            observed_at=NOW, effective_at=NOW, state=state)
+        assert evidence.state == state
+    with pytest.raises(ValidationError):
+        m.OwnerLoginEvidence(owner_uid=1, gui_session_id=None, source_id='probe',
+            observed_at=NOW, effective_at=NOW, state='CONFIRMED')
+    values = expectation_values() | dict(state='UNKNOWN', eligibility='UNKNOWN',
+        continuous_open=None, continuous_close=None, due_at=None, deadline_at=None,
+        reason_code='SESSION_UNKNOWN')
+    assert m.ServiceExpectation(**values).state == 'UNKNOWN'
+
+
+def test_topology_rejects_hardlinks_and_aliases_between_owners(tmp_path):
+    import os
+    file = tmp_path / 'private.json'
+    file.write_text('{}')
+    file.chmod(0o600)
+    alias = tmp_path / 'alias.json'
+    os.link(file, alias)
+    with pytest.raises(ValidationError):
+        settings_class()(session_evidence_path=alias)
+    with pytest.raises(ValidationError):
+        settings_class()(service_db_path=tmp_path / 'ops' / 'service.db',
+                         control_db_path=tmp_path / 'ops' / 'control.db')
+
+
+def test_settings_never_read_dotenv_even_when_explicit_override_supplied(tmp_path, monkeypatch):
+    import dotenv
+    import dotenv.main
+    def denied(*args, **kwargs):
+        raise AssertionError('dotenv loading is forbidden')
+    monkeypatch.setattr(dotenv, 'load_dotenv', denied)
+    monkeypatch.setattr(dotenv.main, 'dotenv_values', denied)
+    path = tmp_path / '.env'
+    path.write_text('BOT_SERVICE_MODE=KIS_MOCK')
+    assert settings_class()(_env_file=path).mode == 'DISABLED'
