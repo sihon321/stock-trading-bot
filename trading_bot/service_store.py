@@ -6,15 +6,13 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
-import uuid
 
 from .service_config import ServiceSettings
 from .service_models import (LogicalJobKey, ProviderCallAdmission, ProviderAdmissionState,
-                             ServiceExpectation, ServiceJobState, ServiceScope)
+                             KST, ServiceExpectation, ServiceJobState, ServiceScope)
 from .web_config import checked_path
 from .web_store import timestamp
 
@@ -148,19 +146,22 @@ class ServiceJournal:
         self.settings.validate_topology()
         private_directory(self.path.parent)
         fd = protected_descriptor(self.path)
-        conn = sqlite3.connect(self.path.as_uri()+'?mode=rw', uri=True, timeout=1)
-        conn.row_factory = sqlite3.Row
+        conn = None
         try:
+            conn = sqlite3.connect(self.path.as_uri()+'?mode=rw', uri=True, timeout=1)
+            conn.row_factory = sqlite3.Row
             conn.execute('PRAGMA foreign_keys=ON')
             conn.execute('BEGIN IMMEDIATE')
             _owned(conn)
             yield conn
             conn.commit()
         except BaseException:
-            conn.rollback()
+            if conn is not None:
+                conn.rollback()
             raise
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
             os.close(fd)
 
     def claim_job(self, key: LogicalJobKey, *, due_at, dispatch_deadline_at, owner_generation):
@@ -168,7 +169,7 @@ class ServiceJournal:
         identity(owner_generation)
         if timestamp(due_at) >= timestamp(dispatch_deadline_at):
             raise ValueError('ordered dispatch slot required')
-        if any(v.astimezone(__import__('zoneinfo').ZoneInfo('Asia/Seoul')).date() != key.trading_date_kst for v in (due_at, dispatch_deadline_at)):
+        if any(v.astimezone(KST).date() != key.trading_date_kst for v in (due_at, dispatch_deadline_at)):
             raise ValueError('exact-date dispatch slot required')
         with self.connection() as c:
             if c.execute('SELECT 1 FROM service_jobs WHERE job_id=?', (key.logical_id,)).fetchone():
@@ -231,7 +232,8 @@ class ServiceJournal:
         prior=c.execute('SELECT MAX(admitted_at) FROM service_restart_attempts').fetchone()[0]
         denied=None
         if latest is not None and latest['state']=='MANUAL_ATTENTION': denied='MANUAL_ATTENTION'
-        elif not predecessor_timing_known or (prior is not None and now<prior): denied='CLOCK_OR_PREDECESSOR_UNKNOWN'
+        elif (not predecessor_timing_known or (prior is not None and now<prior)
+              or (latest is not None and now<latest['observed_at'])): denied='CLOCK_OR_PREDECESSOR_UNKNOWN'
         elif c.execute('SELECT COUNT(*) FROM service_restart_attempts WHERE admitted_at>=?',(now-600,)).fetchone()[0]>=3: denied='RESTART_EXHAUSTED'
         if denied:
             if latest is None or latest['state']!='MANUAL_ATTENTION':
@@ -284,15 +286,32 @@ class ServiceJournal:
             execution_target=a.scope.execution_target,trading_date_kst=str(a.trading_date_kst),envelope_hash=a.envelope_hash,dispatch_state='DISPATCHED')
         if not isinstance(consumed_dispatch,dict) or any(consumed_dispatch.get(k)!=v for k,v in expected.items()):
             raise ValueError('exact consumed trading dispatch required')
-        try: started=datetime.fromisoformat(consumed_dispatch['dispatch_started_at'])
+        try: started=datetime.fromisoformat(consumed_dispatch['dispatched_at'])
         except (KeyError,ValueError,TypeError): raise ValueError('committed consumed timestamp required') from None
         if timestamp(started)>timestamp(a.observed_at): raise ValueError('future consumed handoff')
+        if started.astimezone(KST).date()!=a.trading_date_kst: raise ValueError('exact-date consumed handoff')
         with self.connection() as c:
+            universe=c.execute("SELECT universe_json FROM service_jobs WHERE scope_hash=? AND target=? AND trading_date_kst=? AND kind='DAILY'",
+                (a.scope.account_scope_hash,a.scope.execution_target,str(a.trading_date_kst))).fetchone()
+            if universe is None or universe[0] is None:
+                raise ValueError('committed daily universe required before provider handoff')
             if c.execute('SELECT 1 FROM service_provider_admissions WHERE dispatch_id=? OR evaluation_id=?',(a.dispatch_id,a.evaluation_id)).fetchone():
                 raise ValueError('dispatch already consumed operationally')
             c.execute('INSERT INTO service_provider_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)',
                 (a.dispatch_id,a.evaluation_id,a.scope.account_scope_hash,a.scope.execution_target,str(a.trading_date_kst),a.envelope_hash,a.state.value,a.reason_code,a.control_revision,a.session_source_id,timestamp(a.observed_at)))
         return ProviderAdmissionWriter(self,a.dispatch_id,a.scope,a.envelope_hash)
+
+    def recover_provider_admissions(self, *, observed_at=None):
+        """Parent recovery only: preserve consumption, never grant another call."""
+        with self.connection() as c:
+            return self._recover_provider_admissions(c,timestamp(observed_at or self.clock()))
+
+    def _recover_provider_admissions(self,c,now):
+        count=0
+        for scope in self.settings.registered_scopes:
+            count+=c.execute("UPDATE service_provider_admissions SET state='UNKNOWN',reason_code='PREDECESSOR_EXIT',observed_at=MAX(observed_at,?) WHERE scope_hash=? AND target=? AND state IN ('PREPARED','IN_FLIGHT')",
+                (now,scope.account_scope_hash,scope.execution_target)).rowcount
+        return count
 
     def load_provider_admission(self,dispatch_id):
         with self.connection() as c:

@@ -35,7 +35,7 @@ def admission():
 def consumed():
     return dict(dispatch_id='dispatch1', evaluation_id='eval1', account_scope_hash=SCOPE.account_scope_hash,
         execution_target='mock', trading_date_kst=NOW.date().isoformat(), envelope_hash='b'*64,
-        dispatch_state='DISPATCHED', dispatch_started_at=NOW.isoformat())
+        dispatch_state='DISPATCHED', dispatched_at=NOW.isoformat())
 
 
 def expectation(producer='OBSERVER_DERIVED', **updates):
@@ -123,9 +123,34 @@ def test_restart_clock_reversal_and_unknown_predecessor_fail_closed(tmp_path):
     assert not j.request_attention_reset(safety_validated=True, recovery_validated=False)
 
 
+def test_rollback_after_explicit_reset_retains_denial(tmp_path):
+    j,clock=store(tmp_path)
+    for i in range(3): assert j.reserve_restart(f'g{i}',reason='CRASH')
+    assert not j.reserve_restart('fourth',reason='CRASH')
+    clock.advance(700)
+    assert j.request_attention_reset(safety_validated=True,recovery_validated=True)
+    clock.advance(-1)
+    assert not j.reserve_restart('after-clock-rollback',reason='CRASH')
+
+
+def test_failed_connect_closes_protected_descriptor(tmp_path,monkeypatch):
+    j,_=store(tmp_path)
+    module=importlib.import_module('trading_bot.service_store')
+    descriptors=[]
+    original=module.protected_descriptor
+    def capture(*args,**kwargs):
+        fd=original(*args,**kwargs); descriptors.append(fd); return fd
+    monkeypatch.setattr(module,'protected_descriptor',capture)
+    monkeypatch.setattr(module.sqlite3,'connect',lambda *a,**kw: (_ for _ in ()).throw(sqlite3.OperationalError('synthetic connect failure')))
+    with pytest.raises(sqlite3.OperationalError): j.load_job(key().logical_id)
+    with pytest.raises(OSError): os.fstat(descriptors[-1])
+
+
 def test_provider_single_consumed_handoff_and_bound_narrow_writer(tmp_path):
     j, _ = store(tmp_path)
     with pytest.raises(ValueError): j.prepare_provider_admission(admission(), consumed_dispatch=consumed() | {'dispatch_state':'NEVER_DISPATCHED'})
+    with pytest.raises(ValueError): j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
+    claim(j); j.commit_universe(key().logical_id, ('000660',))
     writer = j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
     assert not hasattr(writer, 'claim_job') and not hasattr(writer, 'initialize')
     with pytest.raises(ValueError): writer.transition_prepared('IN_FLIGHT', reason_code='ENTERED', observed_at=NOW)
@@ -138,11 +163,47 @@ def test_provider_single_consumed_handoff_and_bound_narrow_writer(tmp_path):
 
 def test_provider_unknown_and_finished_cannot_replay(tmp_path):
     j, _ = store(tmp_path)
+    claim(j); j.commit_universe(key().logical_id, ('000660',))
     writer = j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
     writer.transition_prepared('IN_FLIGHT', reason_code='ENTERED', observed_at=NOW, invocation_started_at=NOW)
     writer.transition_prepared('UNKNOWN', reason_code='CHILD_CRASH', observed_at=NOW+timedelta(seconds=1))
     with pytest.raises(ValueError): writer.transition_prepared('FINISHED', reason_code='LATE', observed_at=NOW+timedelta(seconds=2))
     with pytest.raises(ValueError): j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
+
+
+def test_prepared_crash_becomes_unknown_without_new_transport_authority(tmp_path):
+    j, _ = store(tmp_path)
+    claim(j); j.commit_universe(key().logical_id, ('000660',))
+    writer=j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
+    assert j.recover_provider_admissions()==1
+    assert j.load_provider_admission('dispatch1').state.value=='UNKNOWN'
+    with pytest.raises(ValueError): writer.transition_prepared('IN_FLIGHT', reason_code='LATE', observed_at=NOW, invocation_started_at=NOW)
+
+
+def test_failed_suppression_never_calls_and_consumption_survives(tmp_path,monkeypatch):
+    j, _ = store(tmp_path)
+    claim(j); j.commit_universe(key().logical_id, ('000660',))
+    writer=j.prepare_provider_admission(admission(), consumed_dispatch=consumed())
+    calls=[]
+    original=j.connection
+    def unavailable(): raise sqlite3.OperationalError('synthetic unavailable')
+    with monkeypatch.context() as patch:
+        patch.setattr(j,'connection',unavailable)
+        with pytest.raises(sqlite3.OperationalError):
+            writer.transition_prepared('SUPPRESSED_NO_CALL', reason_code='UNAVAILABLE', observed_at=NOW)
+            calls.append('CALL')
+    assert calls==[]
+    assert j.recover_provider_admissions()==1
+    assert j.load_provider_admission('dispatch1').state.value=='UNKNOWN'
+
+
+def test_expectation_writer_rejects_foreign_scope_and_job_revision_conflict(tmp_path):
+    j,_=store(tmp_path)
+    from trading_bot.service_models import ServiceScope
+    with pytest.raises(ValueError): j.expectation_writer().record_derived(expectation(scope=ServiceScope(account_scope_hash='f'*64,execution_target='mock')))
+    claim(j)
+    j.append_job_event(key().logical_id,'RUNNING',reason_code='READY',expected_revision=0)
+    with pytest.raises(ValueError): j.append_job_event(key().logical_id,'COMPLETED',reason_code='STALE',expected_revision=0)
 
 
 def test_expectation_scoped_append_only_provenance_and_runtime_separation(tmp_path):
