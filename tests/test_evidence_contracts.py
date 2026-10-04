@@ -102,3 +102,119 @@ def test_reader_rejects_schema_drift_and_keeps_shared_contract():
             reporting.ReadOnlyAuditRepository._validate_schema(connection)
     finally:
         connection.close()
+
+
+def _retained_v3(path):
+    # Retain an actual old owner declaration, without calling the new migrator.
+    from trading_bot import portfolio_store as owner
+    conn = sqlite3.connect(path)
+    for statement in owner._SCHEMA + owner._LEASE_SCHEMA:
+        conn.execute(statement)
+    conn.execute("INSERT INTO portfolio_schema_metadata VALUES('phase11',3)")
+    conn.commit()
+    return conn
+
+
+@pytest.mark.parametrize('version', [3, 4])
+def test_portfolio_supported_versions_have_exact_pure_contracts(tmp_path, version):
+    from trading_bot import evidence_contracts as c, portfolio_store as owner
+    assert c.PORTFOLIO_SCHEMA_VERSION == 4
+    assert c.PORTFOLIO_SUPPORTED_READ_VERSIONS == frozenset({3, 4})
+    conn = _retained_v3(tmp_path / 'saved.db') if version == 3 else owner.connect_portfolio_store(tmp_path / 'saved.db')
+    schema = c.portfolio_read_schema(version)
+    assert set(schema) == {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    for table, columns in schema.items():
+        assert columns == _columns(conn, table)
+    assert ('daily_evaluation_dispatches' in schema) == (version == 4)
+    assert c.PORTFOLIO_REPORT_SCHEMA is c.PORTFOLIO_REPORT_SCHEMA_V4
+    with pytest.raises(ValueError, match='version'):
+        c.portfolio_read_schema(999)
+    conn.close()
+
+
+@pytest.mark.parametrize('version', [3, 4])
+def test_saved_portfolio_reader_version_timestamp_and_private_envelope(tmp_path, version):
+    from trading_bot import evidence_contracts as contracts
+    assert contracts.PORTFOLIO_SCHEMA_VERSION == 4
+    from datetime import date, datetime, timedelta, timezone
+    from hashlib import sha256
+    from trading_bot import portfolio_store as owner
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from trading_bot.service_models import DailyDispatchEnvelope
+    from trading_bot.web_config import ResourceDescriptor, WebSettings
+    from trading_bot.web_evidence import OperatorEvidenceService
+    from trading_bot.web_models import PeriodSelection, ResourceScope
+    path = tmp_path / 'saved.db'
+    scope = 'a' * 64
+    stamp = datetime(2026, 10, 5, 0, 10, tzinfo=timezone.utc)
+    conn = _retained_v3(path) if version == 3 else owner.connect_portfolio_store(path)
+    if version == 3:
+        conn.execute("INSERT INTO daily_evaluations VALUES('saved','2026-10-05','005930','[\"HELD\"]',?,?,?,'STARTED',?,NULL)",
+            (b'private canonical input', 'b' * 64, scope, stamp.isoformat()))
+        conn.commit()
+    else:
+        envelope = DailyDispatchEnvelope(prompt_bytes=b'private canonical input',
+            prompt_hash=sha256(b'private canonical input').hexdigest(), system_prompt='private system',
+            schema_hash='b' * 64, provider='openai', model='synthetic', temperature=0, prompt_version='v1')
+        with acquire_mutation_lease(conn, account_scope_hash=scope, lock_dir=tmp_path / 'locks',
+                command='synthetic', cycle_id='synthetic', observed_at=stamp) as lease:
+            saved = owner.start_daily_evaluation(conn, trading_date_kst=date(2026, 10, 5),
+                ticker='005930', provenance=('HELD',), canonical_input=envelope.prompt_bytes,
+                account_scope_hash=scope, observed_at=stamp, execution_target='mock', envelope=envelope, lease=lease)
+            owner.claim_daily_dispatch(conn, saved.evaluation_id, lease, stamp,
+                stamp.replace(minute=20))
+    before = tuple(conn.iterdump())
+    resource = ResourceDescriptor(id='portfolio', owner='portfolio', path=path,
+        account_hash=scope, target='mock')
+    settings = WebSettings(operational_db_path=tmp_path / 'web.db', artifact_root=tmp_path / 'artifacts',
+        registered_resources=(resource,))
+    reader = OperatorEvidenceService(settings, clock=lambda: stamp + timedelta(hours=2))
+    period = PeriodSelection(stamp - timedelta(hours=1), stamp + timedelta(hours=1))
+    page = reader.list_records('evaluations', scope=ResourceScope(scope, 'mock'), period=period)
+    assert page.total == 1
+    record = page.rows[0]
+    assert record.envelope.schema_version == version
+    assert record.envelope.source_observed_at == stamp
+    assert record.envelope.account_hash == scope
+    assert b'private canonical input' not in repr(record).encode()
+    assert b'private system' not in repr(record).encode()
+    if version == 4:
+        assert record.data['dispatch_state'] == 'DISPATCHED'
+        assert record.data['dispatch_id']
+        assert record.data['envelope_hash'] == envelope.envelope_hash
+        assert record.data['execution_target'] == 'mock'
+        assert record.envelope.provenance == 'saved_daily_dispatch'
+    else:
+        assert 'dispatch_id' not in record.data
+    reader.observe_alert_sources()
+    reader.overview(ResourceScope(scope, 'mock'))
+    assert tuple(conn.iterdump()) == before
+    if version == 4:
+        conn.execute('DROP TRIGGER immutable_daily_dispatch_envelope')
+        conn.execute("UPDATE daily_evaluation_dispatches SET execution_target='real'")
+        conn.commit()
+        failed = reader.list_records('evaluations', scope=ResourceScope(scope, 'mock'), period=period)
+        assert failed.total is None and not failed.rows
+        assert failed.envelopes[0].diagnostic_code == 'SCOPE_CONFLICT'
+    conn.close()
+
+
+def test_v4_missing_dispatch_capability_and_unknown_owner_are_unavailable(tmp_path):
+    from trading_bot import portfolio_store as owner
+    from trading_bot.web_config import ResourceDescriptor
+    from trading_bot.web_evidence import _transaction, EvidenceUnavailable
+    path = tmp_path / 'saved.db'
+    conn = owner.connect_portfolio_store(path)
+    resource = ResourceDescriptor(id='portfolio', owner='portfolio', path=path,
+        account_hash='a' * 64, target='mock')
+    conn.execute('ALTER TABLE daily_evaluation_dispatches RENAME COLUMN envelope_hash TO unsupported_hash')
+    conn.commit()
+    with pytest.raises(EvidenceUnavailable, match='UNSUPPORTED_SCHEMA'):
+        with _transaction(resource):
+            pass
+    conn.execute("UPDATE portfolio_schema_metadata SET owner='foreign'")
+    conn.commit()
+    with pytest.raises(EvidenceUnavailable, match='UNSUPPORTED_SCHEMA'):
+        with _transaction(resource):
+            pass
+    conn.close()
