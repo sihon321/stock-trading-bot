@@ -5,9 +5,9 @@ milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
 current_plan: 14
-status: executing
-stopped_at: Completed 15-13-PLAN.md
-last_updated: "2026-10-04T16:40:10.759Z"
+status: verifying
+stopped_at: Completed 15-14-PLAN.md; independent phase verification pending
+last_updated: "2026-10-04T17:27:44.938Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -35,7 +35,7 @@ Current Plan: 14
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
 Plan: 14 of 14
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-04 — Phase 15 execution started
 
 ## Performance Metrics
@@ -170,6 +170,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Durable control acceptance precedes idempotent web audit; missing correlation remains visible and manual retry retains request ID and revision.
 - [Phase 15]: 15-13: concrete mock runtime follows durable pre-worker leadership; unexpected exits consume restart budget and reset requires 600s plus owned activation and bounded recovery, preserving controls/history.
 - [Phase 15]: 15-13: separate GUI observer composes only protected secret-free registration, narrow expectation writer and read-only controls/exact-session evidence; actual approval, GUI and phone acceptance remain pending.
+- [Phase 15]: 15-14: dry-run rebuilds all runtime paths under owned temporary authority and executes actual scheduling/consumed-dispatch recovery with frozen canonical inputs before any provider construction.
+- [Phase 15]: 15-14: offline completion and the 1874-test full regression do not complete either 09-08 approval, GUI/private-device acceptance or unattended activation; requirement completion awaits independent whole-phase verification.
+- [Phase 15]: 15-14: exact existing O_RDWR source descriptors support control reads while FD writes and source SQL mutations remain denied; request SQL permits only request/audit insertion.
 
 ### Pending Todos
 
@@ -213,6 +216,7 @@ None yet.
 | Phase 15 P11 | 27min | 2 tasks | 9 files |
 | Phase 15 P12 | 12min | 2 tasks | 10 files |
 | Phase 15 P13 | 264min | 2 tasks | 10 files |
+| Phase 15 P14 | 24min | 2 tasks | 7 files |
 
 ## Deferred Items
 
@@ -246,8 +250,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T16:40:10.346Z
-Stopped at: Completed 15-13-PLAN.md
+Last session: 2026-10-04T17:27:44.931Z
+Stopped at: Completed 15-14-PLAN.md; independent phase verification pending
 Resume file: None
 
 ## Operator Next Steps
