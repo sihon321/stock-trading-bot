@@ -29,6 +29,51 @@ def setup(tmp_path):
     return module, settings, journal, clock
 
 
+def test_trading_control_reference_is_explicit_credential_free():
+    from trading_bot.config import Settings
+    field=Settings.model_fields['service_control_config_path']
+    assert str(field.default).endswith('stock-trading-bot/service.json')
+
+
+@pytest.mark.parametrize('root', ['manual_mock','direct_kis','proof','soak','intraday','saved_buy'])
+def test_money_roots_missing_controls_cannot_submit(tmp_path,root):
+    from tests.test_service_controls import submission_fixture
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    from trading_bot.kis_broker import KISBroker
+    from trading_bot.kis_order import KisOrderAccount
+    from trading_bot import cli
+    j,primary,lease,guard,broker,adapter,args=submission_fixture(tmp_path)
+    try:
+        if root=='manual_mock':
+            from conftest import make_settings
+            settings=make_settings(service_control_config_path=tmp_path/'missing.json')
+            broker=cli._build_broker(settings,token_manager=None,account=KisOrderAccount('12345678','01'))
+        elif root in ('direct_kis','saved_buy'):
+            broker=KISBroker(order_adapter=adapter,account=KisOrderAccount('12345678','01'),market_clock=lambda:True)
+        elif root=='proof':
+            with pytest.raises(Exception): cli._proof_submission_context(tmp_path/'missing.json', adapter)
+            return
+        elif root=='soak':
+            with pytest.raises(Exception): cli._build_submission_authority(tmp_path/'missing.json')
+            return
+        else:
+            from tests.test_exit_manager import _snapshot
+            from trading_bot.exit_manager import submit_exit, evaluate_exit_candidate, ExitTrigger, ExitTriggerKind
+            broker=KISBroker(order_adapter=adapter,account=KisOrderAccount('12345678','01'),market_clock=lambda:True)
+            candidate=evaluate_exit_candidate(ExitTrigger(ExitTriggerKind.DAILY_LLM_SELL,'005930','submission-run','LLM'),_snapshot())
+            with pytest.raises(Exception): submit_exit(candidate,broker=broker,limit_price=Money(70000),
+                portfolio_refresh=args['portfolio_refresh'],lease_guard=lease,cycle_snapshot_id='current',origin_run_id='submission-run')
+            return
+        with pytest.raises(Exception): broker.place_order(Order(Ticker('005930'),OrderSide.BUY,1,Money(70000)),**args)
+        assert adapter.post_attempts==0
+    finally: lease.release();primary.close()
+
+
+def test_composition_binding_requires_concrete_final_authority():
+    from trading_bot.service_composition import BrokerGuardBindings
+    assert 'submission_authority' in BrokerGuardBindings.__dataclass_fields__
+
+
 def test_spawn_live_owner_cannot_be_displaced_by_stale_heartbeat(tmp_path):
     module, settings, journal, _ = setup(tmp_path)
     ctx=multiprocessing.get_context('spawn')
