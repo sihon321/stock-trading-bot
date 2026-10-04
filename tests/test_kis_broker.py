@@ -123,7 +123,7 @@ def test_unguarded_mutable_call_is_rejected_before_evidence_or_post() -> None:
         evidence_sink=events.append,
     )
 
-    with pytest.raises(MarketClosedError, match="paired"):
+    with pytest.raises(MarketClosedError, match="FINAL_SUBMISSION_AUTHORITY_REQUIRED"):
         broker.place_order(_order(quantity=1))
 
     assert adapter.post_attempts == 0

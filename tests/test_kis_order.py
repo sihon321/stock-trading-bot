@@ -105,7 +105,7 @@ def _adapter(
     query_timeout_seconds=None,
     max_retries=3,
 ) -> KisOrderAdapter:
-    return KisOrderAdapter(
+    return KisOrderAdapter.for_test_legacy_mutation(
         token_manager=_FakeTokenManager(),
         domain=DOMAIN,
         tr_id_profile=tr_id_profile,

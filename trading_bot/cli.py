@@ -210,7 +210,7 @@ class _LeaseGuardedBroker:
     def place_order(self, order: Any, **kwargs: Any) -> Any:
         if self._execution_intent_id is not None:
             kwargs['order_intent_id'] = self._execution_intent_id
-        if isinstance(self._broker, KISBroker):
+        if isinstance(self._broker, (KISBroker, MockBroker)):
             refresh = self._portfolio_refresh
             kwargs.update(
                 portfolio_refresh=(
@@ -1070,16 +1070,40 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
         quote_adapter=quote,
     )
     llm = build_llm_provider(mock_settings)
+    try:
+        final_authority=_build_submission_authority(_control_config_reference(settings),policy=policy)
+    except (OSError,ValueError,RuntimeError):
+        final_authority=None  # Read-only reconciliation remains available.
     broker = KISBroker(
         order_adapter=adapter,
         account=account,
         pre_submit_quote_reader=quote.fetch_current_price,
+        submission_authority=final_authority,
     )
 
     def execute_designated(
         run_id: str, post_submission: Callable[[], None]
     ) -> dict[str, Any]:
         tracker = _PostSubmissionTracker(post_submission)
+        from trading_bot.submission_authority import SubmissionAuthority
+        if type(final_authority) is not SubmissionAuthority:
+            raise ValueError('FINAL_SUBMISSION_AUTHORITY_REQUIRED')
+        from trading_bot.portfolio_store import append_portfolio_snapshot
+        from trading_bot.service_models import ServiceScope
+        scope=final_authority.assert_account(account,adapter)
+        migrate_portfolio(primary)
+        lease=acquire_mutation_lease(primary,account_scope_hash=scope.account_scope_hash,
+            lock_dir=Path(settings.primary_audit_db_path).parent/'.mutation-locks',command='soak',cycle_id=run_id)
+        def fresh_snapshot():
+            now=datetime.now(timezone.utc)
+            day=now.astimezone(ZoneInfo('Asia/Seoul')).date()
+            cutoff=final_authority.policy.completed_bar_cutoff(day)
+            if not cutoff.available: raise ValueError('SOAK_CALENDAR_UNKNOWN')
+            snapshot=collect_portfolio_snapshot(adapter=adapter,account=account,profile=profile,
+                trading_date=day,previous_trading_date=cutoff.cutoff_date,
+                account_scope_hash=scope.account_scope_hash,observed_at=now)
+            append_portfolio_snapshot(primary,snapshot,cycle_id=run_id,observation_id=snapshot.snapshot_id)
+            return snapshot
 
         def order_event_hook(event: Any) -> None:
             if event.event_type is OrderEventType.INTENT_CREATED:
@@ -1108,12 +1132,13 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
             (), True, {str(row[0]): ReasonCode.AMBIGUOUS_SUBMISSION for row in frozen_rows}
         )
         try:
+            lease.assert_active_owner()  # Unknown predecessor requires explicit recovery.
             result = run_cycle(
                 execute=True,
                 settings=mock_settings,
                 data_source=data_source,
                 llm_provider=llm,
-                broker=broker,
+                broker=_LeaseGuardedBroker(broker,lease,portfolio_refresh=fresh_snapshot),
                 audit_conn=primary,
                 notifier=NoopNotifier(),
                 run_cycle=_run_llm_cycle,
@@ -1123,7 +1148,8 @@ def _build_soak_runtime(settings: SoakSettings, campaign_id: str) -> _SoakRuntim
                 order_event_hook=order_event_hook,
             )
         finally:
-            tracker.flush_pending()
+            try: tracker.flush_pending()
+            finally: lease.release()
         result["submissions"] = tracker.submission_count
         return result
 
@@ -1275,19 +1301,65 @@ def _account_from_env(settings: Settings | None = None) -> Optional[KisOrderAcco
     return KisOrderAccount(cano=cano, account_product_code=product_code)
 
 
+def _build_submission_authority(config_path: Path, *, policy=None):
+    """Load existing protected registration; never initialize or resume controls."""
+    from trading_bot.service_config import load_service_settings
+    from trading_bot.control_store import ControlStore
+    from trading_bot.submission_authority import SubmissionAuthority
+    from trading_bot.session_evidence import SessionEvidenceProvider
+    settings=load_service_settings(Path(config_path))
+    clock=lambda:datetime.now(timezone.utc)
+    if policy is None:
+        policy=MarketCyclePolicy(ObservedKRXCalendar(PykrxOhlcvAdapter(
+            adjusted=True,request_timeout_seconds=10.0)))
+    policy=MarketCyclePolicy(policy._calendar,session_evidence_provider=SessionEvidenceProvider(
+        settings.session_evidence_path,clock))
+    store=ControlStore(settings,clock=clock)
+    store.reader().effective_state()  # Missing/corrupt setup is denial, never bootstrap.
+    return SubmissionAuthority(store,policy=policy,clock=clock)
+
+
+def _control_config_reference(settings):
+    return getattr(settings,'service_control_config_path',
+        Path.home()/'.config/stock-trading-bot/service.json')
+
+
+def _proof_submission_context(config_path, adapter):
+    from trading_bot.submission_authority import ProofSubmissionContext
+    authority=_build_submission_authority(config_path)
+    quote=KisQuoteAdapter(token_manager=adapter._token_manager,domain=adapter._domain,
+        tr_id='FHKST01010100',timeout_seconds=10.0,request_limiter=adapter._request_limiter)
+    return ProofSubmissionContext(authority,adapter=adapter,quote_reader=quote.fetch_current_price)
+
+
 def _build_broker(
     settings: Settings,
     *,
     token_manager: Optional[KisTokenManager],
     account: Optional[KisOrderAccount] = None,
     quote_adapter: Any = None,
+    submission_authority: Any = None,
 ) -> Any:
+    if submission_authority is None:
+        try:
+            submission_authority = _build_submission_authority(settings.service_control_config_path)
+        except (OSError, ValueError, RuntimeError):
+            # Inquiry remains usable; the mutation boundary explicitly denies.
+            submission_authority = None
     if settings.trading_mode is TradingMode.MOCK:
+        scope = None
+        if submission_authority is not None and account is not None:
+            from trading_bot.service_models import ServiceScope
+            scope = ServiceScope(account_scope_hash=canonical_account_scope_hash('mock',
+                f'{account.cano[-4:]}:{account.account_product_code}'),execution_target='mock')
         return MockBroker(
             cash=Money(10_000_000.0, "KRW"),
             pre_submit_quote_reader=(
                 quote_adapter.fetch_current_price if quote_adapter is not None else None
             ),
+            submission_authority=submission_authority,
+            submission_scope=scope,
+            require_submission_authority=True,
         )
 
     if token_manager is None:
@@ -1298,7 +1370,7 @@ def _build_broker(
             "real KIS broker requires KIS_ACCOUNT_CANO and optional "
             "KIS_ACCOUNT_PRODUCT_CODE in the environment"
         )
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {'submission_authority':submission_authority}
     if quote_adapter is not None:
         kwargs["pre_submit_quote_reader"] = quote_adapter.fetch_current_price
     return build_kis_broker(
@@ -1391,7 +1463,7 @@ def build_runtime(
         broker=_build_broker(
             resolved_settings,
             token_manager=token_manager,
-            account=kis_account,
+            account=account,
             quote_adapter=quote_adapter,
         ),
         audit_conn=sqlite_audit.connect(resolved_settings.audit_db_path),
@@ -2282,7 +2354,8 @@ def soak_start_command(
                 field_contract_version="kis-mock-compat-v1",
             )
             adapter = _build_soak_adapter(settings)
-            service = _proof_service_factory(adapter=adapter)
+            service = _proof_service_factory(adapter=adapter,submission_context=_proof_submission_context(
+                _control_config_reference(settings),adapter))
             proof_result = service.run(ProofOrderRequest(
                 campaign_id=campaign_id,
                 ticker=ticker,
@@ -2586,6 +2659,7 @@ def _default_intraday_command_runner(mode: str, interval_seconds: int | None) ->
             lease_guard=lease,
             cycle_snapshot_id=latest[0].snapshot_id,
             origin_run_id=cycle_id,
+            submission_authority=getattr(runtime.broker,'_submission_authority',None),
         )
 
     def audit(result: Any) -> None:

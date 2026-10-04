@@ -234,7 +234,7 @@ def test_money_boundary_refreshes_regates_asserts_and_posts_once(side: OrderSide
     now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
     adapter = _BoundaryAdapter(sequence)
     events = []
-    broker = KISBroker(
+    broker = KISBroker.for_test_legacy_mutation(
         order_adapter=adapter,
         account=KisOrderAccount("12345678", "01"),
         market_clock=lambda: True,
@@ -269,7 +269,7 @@ def test_money_boundary_blocks_changed_truth_or_lease_loss_with_zero_post(side: 
     ):
         adapter = _BoundaryAdapter([])
         now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
-        broker = KISBroker(
+        broker = KISBroker.for_test_legacy_mutation(
             order_adapter=adapter,
             account=KisOrderAccount("12345678", "01"),
             market_clock=lambda: True,
@@ -297,7 +297,7 @@ def test_money_boundary_evidence_failure_prevents_post_and_token_is_not_persiste
         if event.event_type.value == "SUBMISSION_ATTEMPTED":
             raise OSError("audit unavailable")
 
-    broker = KISBroker(
+    broker = KISBroker.for_test_legacy_mutation(
         order_adapter=adapter,
         account=KisOrderAccount("12345678", "01"),
         market_clock=lambda: True,
@@ -325,7 +325,7 @@ def test_refreshed_risk_exit_that_clears_never_reaches_kis_post(kind: str) -> No
     adapter = _BoundaryAdapter(sequence)
     now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
     events = []
-    broker = KISBroker(
+    broker = KISBroker.for_test_legacy_mutation(
         order_adapter=adapter,
         account=KisOrderAccount("12345678", "01"),
         market_clock=lambda: True,
@@ -359,7 +359,7 @@ def test_refreshed_risk_exit_posts_once_only_after_revalidation() -> None:
     sequence: list[str] = []
     adapter = _BoundaryAdapter(sequence)
     now = datetime(2026, 9, 4, 1, tzinfo=timezone.utc)
-    broker = KISBroker(
+    broker = KISBroker.for_test_legacy_mutation(
         order_adapter=adapter,
         account=KisOrderAccount("12345678", "01"),
         market_clock=lambda: True,

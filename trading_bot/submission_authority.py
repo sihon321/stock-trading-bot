@@ -62,6 +62,34 @@ class SubmissionAdmission:
             admitted_at=self.admitted_at.isoformat())
 
 
+class FinalPostEntry:
+    """Exact-order single-use transport capability from a live admission flock."""
+    def __init__(self, authority, admission, adapter, account, order, snapped_price, prepared, origin):
+        if type(authority) is not SubmissionAuthority or authority._active is None:
+            raise SubmissionDenied('LIVE_ADMISSION_REQUIRED')
+        self.authority,self.admission,self.adapter,self.account=authority,admission,adapter,account
+        self.order,self.price,self.prepared,self.origin=order,snapped_price,prepared,origin
+        self._used=False
+
+    def enter(self, adapter, account, order, snapped_price, prepared):
+        if (self._used or adapter is not self.adapter or account!=self.account or order!=self.order
+            or snapped_price!=self.price or prepared is not self.prepared):
+            raise SubmissionDenied('POST_ENTRY_IDENTITY_OR_REPLAY_DENIED')
+        self._used=True
+        active=self.authority._active
+        if active is None or active[1]!=self.admission:
+            raise SubmissionDenied('LIVE_ADMISSION_REQUIRED')
+        lock,admission,scope,lease,evidence=active
+        lock.assert_owned(self.authority.store)
+        state=self.authority.store.reader().effective_state(scope)
+        if (state.acceptance_revision!=admission.control_revision or not state.allows_risk_sell
+            or (order.side is OrderSide.BUY and not state.allows_buy)):
+            raise SubmissionDenied('CURRENT_CONTROL_DENIED')
+        self.authority._saved_safety(scope,admission.intent_id,order.ticker.value,
+            attempted_submission=admission.submission_id)
+        self.authority.verify_attempt(admission,order,self.origin,lease=lease,fresh_evidence=evidence)
+
+
 class SubmissionAuthority:
     def __init__(self, store: ControlStore, *, policy: MarketCyclePolicy, clock=None,
                  offline_authority: OfflineActivationAuthority | None = None,
@@ -81,6 +109,8 @@ class SubmissionAuthority:
         self.offline_authority = offline_authority
         self.unattended, self.activation_check = unattended, activation_check
         self._prepared_session = None
+        self._active=None
+        self._scope_aliases={}
 
     def _session_allows(self, prepared, now):
         """Only local protected notice readback while holding admission.lock."""
@@ -96,25 +126,34 @@ class SubmissionAuthority:
             and notice.continuous_open<=now<notice.continuous_close
             and now.astimezone(ZoneInfo('Asia/Seoul')).time()<time(15,20))
 
-    def assert_account(self, account, adapter):
+    def assert_account(self, account, adapter, *, expected_scope=None):
         domain = getattr(adapter, '_domain', None)
         if self.offline_authority is not None:
             from .kis_order import KisOrderAdapter
-            if isinstance(adapter, KisOrderAdapter):
+            if isinstance(adapter, KisOrderAdapter) and not adapter._test_only_allow_unguarded_mutation:
                 raise SubmissionDenied('OFFLINE_AUTHORITY_CANNOT_USE_KIS_ADAPTER')
+        else:
+            from .kis_order import KisOrderAdapter
+            if type(adapter) is not KisOrderAdapter:
+                raise SubmissionDenied('ACTUAL_KIS_ADAPTER_REQUIRED')
         if domain is not None and domain.rstrip('/') != 'https://openapivts.koreainvestment.com:29443':
             raise SubmissionDenied('SERVICE_TARGET_REAL_DENIED')
-        scope = ServiceScope(account_scope_hash=canonical_account_scope_hash(
-            'mock', f'{account.cano[-4:]}:{account.account_product_code}'),execution_target='mock')
-        if scope not in self.store.settings.registered_scopes:
+        # Existing Phase09 receipts use suffix; Phase11 manual leases include
+        # product code. Preserve each owner identity instead of rewriting it.
+        candidates=tuple(ServiceScope(account_scope_hash=canonical_account_scope_hash('mock',value),
+            execution_target='mock') for value in (account.cano[-4:],f'{account.cano[-4:]}:{account.account_product_code}'))
+        matches=tuple(s for s in candidates if s in self.store.settings.registered_scopes
+            and (expected_scope is None or s.account_scope_hash==expected_scope))
+        if len(matches)!=1:
             raise SubmissionDenied('ACCOUNT_SCOPE_MISMATCH')
+        self._scope_aliases[matches[0].account_scope_hash]={s.account_scope_hash for s in candidates}
         timeout = getattr(adapter, '_timeout_seconds', 10)
         if not 0 < timeout <= 10:
             raise SubmissionDenied('POST_TIMEOUT_UNBOUNDED')
-        return scope
+        return matches[0]
 
-    def _saved_safety(self, scope, intent_id, ticker):
-        from .soak_reporting import ReadOnlySoakRepository, build_soak_report
+    def _saved_safety(self, scope, intent_id, ticker, *, attempted_submission=None):
+        from .soak_reporting import ReadOnlySoakRepository, build_soak_report, _valid_release
         paths = self.store.settings.trading_journal_paths
         if len(paths)!=3:
             raise SubmissionDenied('EXACT_TRADING_JOURNALS_REQUIRED')
@@ -122,19 +161,31 @@ class SubmissionAuthority:
         iterator = repo.transactions()
         primary, soak, controller = next(iterator)
         try:
+            aliases=self._scope_aliases.get(scope.account_scope_hash,{scope.account_scope_hash})
             if primary.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise SubmissionDenied('AUDIT_INTEGRITY_UNKNOWN')
             sources = [f'control:{self.store.scope_hash}']
             # Same local intent remains consumed even if a control commit failed.
-            if primary.execute("SELECT 1 FROM order_events WHERE order_intent_id=? AND event_type='SUBMISSION_ATTEMPTED'",(intent_id,)).fetchone():
+            attempts=primary.execute("SELECT submission_id FROM order_events WHERE order_intent_id=? AND event_type='SUBMISSION_ATTEMPTED'",(intent_id,)).fetchall()
+            if attempts and (attempted_submission is None or len(attempts)!=1 or attempts[0][0]!=attempted_submission):
                 raise SubmissionDenied('INTENT_ALREADY_ATTEMPTED')
             terminal_intents=set()
             frozen=set()
+            run_scopes={}
+            for item in primary.execute('SELECT origin_cycle_id,account_scope_hash FROM mutation_lease_events'):
+                if item[0]: run_scopes.setdefault(item[0],set()).add(item[1])
             for row in soak.execute('SELECT campaign_id FROM soak_campaigns ORDER BY campaign_id'):
                 data=repo._load(primary,soak,controller,campaign_id=row[0])
                 # Use the immutable owner identity table, not an ambient selected campaign.
                 identities=soak.execute('SELECT * FROM soak_identity_receipts WHERE campaign_id=?',(row[0],)).fetchall()
-                applicable=any(r['target']=='mock' and canonical_account_scope_hash('mock',r['account_suffix'])==scope.account_scope_hash for r in identities)
+                known_scopes={canonical_account_scope_hash('mock',r['account_suffix']) for r in identities if r['target']=='mock'}
+                for event in data['events']:
+                    if event['run_id'] and known_scopes:
+                        run_scopes.setdefault(event['run_id'],set()).update(known_scopes)
+                # Historical proof campaigns have no identity receipt. Their
+                # known ticker freezes remain restrictions; absence must not
+                # silently make the original 000660 ambiguity disappear.
+                applicable=not known_scopes or bool(known_scopes & aliases)
                 if not applicable:
                     continue
                 class Saved:
@@ -144,8 +195,10 @@ class SubmissionAuthority:
                     raise SubmissionDenied('GLOBAL_SAFETY_UNKNOWN')
                 frozen.update(report.freezes.tickers)
                 # Only shipped report validation can recognize a terminal freeze release.
-                active={str(r['order_intent_id']) for r in data['freezes'] if r['ticker'] in report.freezes.tickers}
-                terminal_intents.update(str(r['order_intent_id']) for r in data['releases'] if str(r['order_intent_id']) not in active)
+                for frozen_subject in data['freezes']:
+                    releases=[r for r in data['releases'] if r['freeze_id']==frozen_subject['freeze_id']]
+                    if len(releases)==1 and _valid_release(data,frozen_subject,releases[0]):
+                        terminal_intents.add(str(frozen_subject['order_intent_id']))
                 sources.append(f'campaign:{row[0]}')
             if ticker in frozen:
                 raise SubmissionDenied('TICKER_FROZEN')
@@ -154,12 +207,16 @@ class SubmissionAuthority:
             for row in rows:
                 if row['target'] not in ('mock','kis_mock'):
                     continue
+                attributed=run_scopes.get(row['origin_run_id'])
+                if attributed and not attributed & aliases:
+                    continue
                 key=row['order_intent_id']
                 if row['event_type'] in ('SUBMISSION_ATTEMPTED','SUBMISSION_AMBIGUOUS','SUBMISSION_ACCEPTED'):
                     unresolved[key]=row['ticker']
                 elif row['event_type']=='RECONCILED':
                     unresolved.pop(key,None)
-            if any(key not in terminal_intents and value==ticker for key,value in unresolved.items()):
+            if any(key not in terminal_intents and value==ticker
+                and not (key==intent_id and attempted_submission is not None) for key,value in unresolved.items()):
                 raise SubmissionDenied('TICKER_UNRESOLVED')
             digest=hashlib.sha256(json.dumps([(r['id'],r['event_type']) for r in rows]).encode()).hexdigest()
             sources.append(f'audit:{digest}')
@@ -203,6 +260,9 @@ class SubmissionAuthority:
                 if not self._session_allows(prepared_session, now):
                     raise SubmissionDenied('CURRENT_SESSION_DENIED')
                 sources=self._saved_safety(scope,intent_id,order.ticker.value)
+                notice=self.policy.session_evidence_provider.for_date(snapshot.trading_date)
+                sources+=(f'snapshot:{snapshot.snapshot_id}',f'session:{notice.source_id}:{notice.source_hash}',
+                    f'quote:{quote.observed_at.isoformat()}')
                 with self.store._connection() as conn:
                     # Missing primary attempt after a crash has no attributable ticker.
                     prior=conn.execute("SELECT intent_id FROM submission_admissions WHERE scope_hash=? AND state IN ('IN_FLIGHT','UNKNOWN')",(scope.account_scope_hash,)).fetchall()
@@ -224,6 +284,7 @@ class SubmissionAuthority:
                     submission_id=submission_id,control_revision=state.acceptance_revision,admitted_at=now)
                 admission=SubmissionAdmission(admission_id,intent_id,submission_id,state.acceptance_revision,'IN_FLIGHT',sources,now)
                 self._prepared_session=prepared_session
+                self._active=(lock,admission,scope,lease,fresh_evidence)
                 try:
                     yield admission
                 except BaseException:
@@ -234,6 +295,8 @@ class SubmissionAuthority:
                     raise
                 else:
                     self.store._finish_admission(lock,admission_id,state='FINISHED',finished_at=max(now,self.clock()))
+                finally:
+                    self._active=None
         except SubmissionDenied:
             raise
         except Exception:
@@ -244,6 +307,9 @@ class SubmissionAuthority:
         repo=ReadOnlyAuditRepository(self.store.settings.trading_journal_paths[0]); conn=repo._connect()
         try:
             repo._validate_schema(conn)
+            run=conn.execute('SELECT target,dry_run FROM runs WHERE run_id=?',(origin_run_id,)).fetchone()
+            if run is None or run['target'] not in ('mock','kis_mock') or run['dry_run']:
+                raise SubmissionDenied('PRIMARY_RUN_TARGET_DENIED')
             rows=conn.execute("SELECT * FROM order_events WHERE order_intent_id=? AND event_type='SUBMISSION_ATTEMPTED'",(admission.intent_id,)).fetchall()
             if (len(rows)!=1 or rows[0]['submission_id']!=admission.submission_id
                 or rows[0]['origin_run_id']!=origin_run_id or rows[0]['ticker']!=order.ticker.value
@@ -254,7 +320,7 @@ class SubmissionAuthority:
         # The primary sink is mutable application code. It must not invalidate
         # the account lease or advance the clock beyond admission freshness.
         if lease is not None:
-            if type(lease) is not MutationLease:
+            if type(lease) is not MutationLease or lease.cycle_id!=origin_run_id:
                 raise SubmissionDenied('ACTUAL_ACCOUNT_OWNER_REQUIRED')
             lease.assert_active_owner(observed_at=self.clock())
             snapshot,quote=fresh_evidence
@@ -263,3 +329,71 @@ class SubmissionAuthority:
                 or not self.policy.quote_freshness(QuoteObservation(quote.observed_at),now).fresh
                 or not self._session_allows(self._prepared_session,now)):
                 raise SubmissionDenied('FINAL_FRESHNESS_EXPIRED')
+
+
+class ProofSubmissionContext:
+    """Explicit manual proof authority; it does not require unattended acceptance.
+
+    The proof owner retains its original IDs and accounting. This owner adds
+    fresh account exclusion and admission before the original attempted event.
+    """
+    def __init__(self, authority, *, adapter, quote_reader):
+        if type(authority) is not SubmissionAuthority or authority.unattended:
+            raise ValueError('manual final authority required')
+        self.authority,self.adapter,self.quote_reader=authority,adapter,quote_reader
+        self._active=None
+        self.post_kwargs={}
+
+    @contextmanager
+    def __call__(self, request, order, ids):
+        from . import sqlite_audit
+        from .portfolio_store import migrate_portfolio, append_portfolio_snapshot
+        from .mutation_lease import acquire_mutation_lease
+        from .portfolio import collect_portfolio_snapshot
+        from .kis_order import MOCK_TR_PROFILE_CANDIDATES
+        paths=tuple(Path(p).resolve() for p in self.authority.store.settings.trading_journal_paths)
+        if paths!=tuple(Path(p).resolve() for p in (request.primary_audit_db_path,request.soak_db_path,request.controller_db_path)):
+            raise SubmissionDenied('PROOF_JOURNAL_MISMATCH')
+        scope=self.authority.assert_account(request.account,self.adapter)
+        if scope.account_scope_hash!=canonical_account_scope_hash('mock',request.receipt.account_suffix):
+            raise SubmissionDenied('PROOF_ACCOUNT_MISMATCH')
+        profile=next(p for p in MOCK_TR_PROFILE_CANDIDATES if p.version==request.receipt.profile_version)
+        now=self.authority.clock(); day=now.astimezone(ZoneInfo('Asia/Seoul')).date()
+        cutoff=self.authority.policy.completed_bar_cutoff(day)
+        if not cutoff.available:
+            raise SubmissionDenied('PROOF_CALENDAR_UNKNOWN')
+        conn=sqlite_audit.connect(paths[0]); lease=None
+        try:
+            migrate_portfolio(conn)
+            lease=acquire_mutation_lease(conn,account_scope_hash=scope.account_scope_hash,
+                lock_dir=paths[0].parent/'.mutation-locks',command='proof',cycle_id=ids[1],observed_at=now)
+            lease.assert_active_owner(observed_at=now)  # Recovery is never auto-promoted.
+            snapshot=collect_portfolio_snapshot(adapter=self.adapter,account=request.account,profile=profile,
+                trading_date=day,previous_trading_date=cutoff.cutoff_date,account_scope_hash=scope.account_scope_hash,
+                observed_at=self.authority.clock())
+            append_portfolio_snapshot(conn,snapshot,cycle_id=ids[1],observation_id=snapshot.snapshot_id)
+            quote=self.quote_reader(order.ticker.value)
+            from .kis_broker import KISBroker
+            refreshed=KISBroker._regate_order(order,snapshot)
+            if refreshed.quantity!=order.quantity:
+                raise SubmissionDenied('EXACT_PROOF_QUANTITY_CHANGED')
+            from .kis_order import KisOrderAdapter, snap_to_tick
+            price=snap_to_tick(order.limit_price.amount,side=order.side)
+            prepared=(self.adapter.prepare_order_cash(account=request.account,order=order,snapped_price=price)
+                if isinstance(self.adapter,KisOrderAdapter) else None)
+            with self.authority.admit(order,scope,ids[2],ids[3],lease,(snapshot,quote)) as admission:
+                self._active=(admission,order,ids[1],lease,snapshot,quote)
+                self.post_kwargs=(dict(prepared_order=prepared,submission_entry=FinalPostEntry(
+                    self.authority,admission,self.adapter,request.account,order,price,prepared,ids[1]))
+                    if prepared is not None else {})
+                try: yield admission
+                finally: self._active=None;self.post_kwargs={}
+        finally:
+            if lease is not None: lease.release()
+            conn.close()
+
+    def verify_attempt(self):
+        if self._active is None:
+            raise SubmissionDenied('ACTIVE_PROOF_ADMISSION_REQUIRED')
+        admission,order,origin,lease,snapshot,quote=self._active
+        self.authority.verify_attempt(admission,order,origin,lease=lease,fresh_evidence=(snapshot,quote))

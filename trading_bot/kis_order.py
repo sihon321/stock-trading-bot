@@ -303,6 +303,17 @@ def _derive_tr_ids(tr_id_profile: str) -> KisOrderTrIds:
     raise ValueError(f"unsupported KIS tr_id_profile: {tr_id_profile!r}")
 
 
+@dataclass(frozen=True, repr=False)
+class PreparedOrderCash:
+    """Immutable one-order network preparation; never durable/loggable."""
+    adapter: Any
+    account: KisOrderAccount
+    order: Order
+    snapped_price: int
+    body: Any
+    headers: Any
+
+
 class KisOrderAdapter:
     """Synchronous KIS account-query adapter using the shared token manager."""
 
@@ -319,6 +330,7 @@ class KisOrderAdapter:
         timeout_seconds: float = 5.0,
         query_timeout_seconds: float | None = None,
         request_limiter: KisRequestLimiter | None = None,
+        _test_only_allow_unguarded_mutation: bool = False,
     ) -> None:
         if client is None:
             import httpx
@@ -340,6 +352,20 @@ class KisOrderAdapter:
             raise ValueError("query_timeout_seconds must be positive")
         self._last_request_at: Optional[float] = None
         self._request_limiter = request_limiter
+        self._test_only_allow_unguarded_mutation=False
+        if _test_only_allow_unguarded_mutation:
+            import httpx
+            if (token_manager is None or client is None or isinstance(token_manager,KisTokenManager)
+                or isinstance(client,httpx.Client) or not callable(getattr(client,'post',None))
+                or not type(client).__module__.startswith(('test_', 'tests.'))
+                or not type(token_manager).__module__.startswith(('test_', 'tests.'))):
+                raise ValueError('explicit no-credential offline test collaborators required')
+            self._test_only_allow_unguarded_mutation=True
+
+    @classmethod
+    def for_test_legacy_mutation(cls, **kwargs):
+        kwargs['_test_only_allow_unguarded_mutation']=True
+        return cls(**kwargs)
 
     def __repr__(self) -> str:  # pragma: no cover - trivial redaction
         return f"KisOrderAdapter(domain={self._domain!r}, tr_ids={self._tr_ids!r})"
@@ -623,8 +649,19 @@ class KisOrderAdapter:
             completeness=PageCompleteness.INCOMPLETE, reason_code=reason,
         )
 
+    def prepare_order_cash(self, *, account: KisOrderAccount, order: Order, snapped_price: int):
+        """Finish token/hashkey IO before taking the global admission lock."""
+        from types import MappingProxyType
+        body=self.build_order_body(account=account,order=order,snapped_price=snapped_price)
+        token=self._token_manager.get_token()
+        hashkey=self._request_hashkey(body=body)
+        tr_id=self._tr_ids.buy if order.side is OrderSide.BUY else self._tr_ids.sell
+        return PreparedOrderCash(self,account,order,snapped_price,MappingProxyType(dict(body)),
+            MappingProxyType(dict(self._headers(token=token,tr_id=tr_id,hashkey=hashkey))))
+
     def place_order_cash(
-        self, *, account: KisOrderAccount, order: Order, snapped_price: int
+        self, *, account: KisOrderAccount, order: Order, snapped_price: int,
+        prepared_order: PreparedOrderCash | None = None, submission_entry: Any = None,
     ) -> KisOrderPostResult:
         """Submit one limit order-cash POST and return the broker order ID.
 
@@ -633,15 +670,18 @@ class KisOrderAdapter:
         POST attempt so callers can re-query broker truth before any resend.
         """
 
-        body = self.build_order_body(
-            account=account, order=order, snapped_price=snapped_price
-        )
-        token = self._token_manager.get_token()
-        hashkey = self._request_hashkey(body=body)
-        tr_id = self._tr_ids.buy if order.side is OrderSide.BUY else self._tr_ids.sell
-        headers = self._headers(token=token, tr_id=tr_id, hashkey=hashkey)
+        from .submission_authority import FinalPostEntry, SubmissionDenied
+        if type(submission_entry) is not FinalPostEntry and not self._test_only_allow_unguarded_mutation:
+            raise SubmissionDenied('ACTUAL_POST_ENTRY_REQUIRED')
+        prepared = prepared_order or self.prepare_order_cash(account=account,order=order,snapped_price=snapped_price)
+        if (type(prepared) is not PreparedOrderCash or prepared.adapter is not self
+            or prepared.account!=account or prepared.order!=order or prepared.snapped_price!=snapped_price):
+            raise SubmissionDenied('PREPARED_ORDER_IDENTITY_MISMATCH')
+        body,headers=dict(prepared.body),dict(prepared.headers)
 
         url = self._domain.rstrip("/") + _ORDER_CASH_PATH
+        if submission_entry is not None:
+            submission_entry.enter(self,account,order,snapped_price,prepared)
         try:
             response = self._client.post(
                 url, json=body, headers=headers, timeout=self._timeout_seconds

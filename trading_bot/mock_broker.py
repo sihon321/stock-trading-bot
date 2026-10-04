@@ -42,6 +42,7 @@ class MockBroker:
         freshness_policy_version: str = "quote-freshness-v1",
         submission_authority: Any = None,
         submission_scope: Any = None,
+        require_submission_authority: bool = False,
     ) -> None:
         self._cash = cash
         self._positions: Dict[str, Position] = {
@@ -55,6 +56,7 @@ class MockBroker:
         self._freshness_policy_version = freshness_policy_version
         self._submission_authority = submission_authority
         self._submission_scope = submission_scope
+        self._require_submission_authority = require_submission_authority
 
     def set_evidence_sink(self, sink: Callable[[OrderEvent], object]) -> None:
         self._evidence_sink = sink
@@ -82,6 +84,9 @@ class MockBroker:
                 such rejection no state is mutated.
         """
 
+        if self._require_submission_authority and self._submission_authority is None:
+            from .kis_broker import MarketClosedError
+            raise MarketClosedError('FINAL_SUBMISSION_AUTHORITY_REQUIRED')
         quote = None
         if self._pre_submit_quote_reader is not None:
             from trading_bot.kis_broker import MarketClosedError

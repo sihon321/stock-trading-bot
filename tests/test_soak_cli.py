@@ -18,6 +18,39 @@ from trading_bot.soak_compat import CompatibilityResult
 from trading_bot.soak_models import ReconciliationStage
 
 
+@pytest.fixture(autouse=True)
+def _explicit_no_credentials_control_fixture(monkeypatch,tmp_path):
+    """These legacy orchestration fixtures have no order capability.
+
+    Actual final-authority roots are exercised in test_service_authority.
+    """
+    import trading_bot.cli as cli
+    def offline_authority(*args,**kwargs):
+        from tests.service_fixtures import TempServiceTopology,FakeServiceClock,session_evidence
+        from trading_bot.control_store import ControlStore
+        from trading_bot.service_models import ServiceScope
+        from trading_bot.portfolio import canonical_account_scope_hash
+        from trading_bot.service_activation import OfflineActivationAuthority
+        from trading_bot.submission_authority import SubmissionAuthority
+        from trading_bot.market_cycle import MarketCyclePolicy
+        from datetime import timedelta
+        root=tmp_path.parent/(tmp_path.name+'-offline-control');root.mkdir(exist_ok=True)
+        settings=TempServiceTopology(root).registration().model_copy(update={
+            'registered_scopes':(ServiceScope(account_scope_hash=canonical_account_scope_hash('mock','5678'),execution_target='mock'),),
+            'trading_journal_paths':(tmp_path/'audit.db',tmp_path/'soak.db',tmp_path/'controller.db')})
+        clock=FakeServiceClock()
+        store=ControlStore(settings,clock=clock);store.initialize(actor='offline-owner')
+        class Calendar:
+            def is_trading_day(self,day):return True
+            def previous_trading_day(self,day):return day-timedelta(days=1)
+        class Sessions:
+            def for_date(self,day):return session_evidence(day=day)
+        return SubmissionAuthority(store,policy=MarketCyclePolicy(Calendar(),session_evidence_provider=Sessions()),
+            clock=clock,offline_authority=OfflineActivationAuthority(tmp_path.parent))
+    monkeypatch.setattr(cli,'_build_submission_authority',offline_authority)
+    monkeypatch.setattr(cli,'PykrxOhlcvAdapter',lambda **kwargs:object())
+
+
 def _settings(tmp_path: Path, *, domain: str = "https://openapivts.koreainvestment.com:29443") -> SoakSettings:
     return SoakSettings(
         kis_mock=KisCredentialGroup(
@@ -194,8 +227,9 @@ def test_proof_order_uses_dedicated_service_after_exact_confirmation(tmp_path: P
     calls: list[object] = []
 
     class Service:
-        def __init__(self, *, adapter):
+        def __init__(self, *, adapter, submission_context):
             calls.append(adapter)
+            assert submission_context == 'explicit-offline-context'
 
         def run(self, request):
             calls.append(request)
@@ -204,6 +238,7 @@ def test_proof_order_uses_dedicated_service_after_exact_confirmation(tmp_path: P
     monkeypatch.setattr(cli, "_soak_settings_factory", lambda: settings)
     monkeypatch.setattr(cli, "_build_soak_adapter", lambda value: "mock-adapter")
     monkeypatch.setattr(cli, "_proof_service_factory", Service)
+    monkeypatch.setattr(cli, "_proof_submission_context", lambda *args:'explicit-offline-context')
     monkeypatch.setattr(cli, "build_runtime", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("general runtime called")))
     result = CliRunner().invoke(cli.app, [
         "soak", "start", "--campaign-id", "proof-1", "--proof-order",

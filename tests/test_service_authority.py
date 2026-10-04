@@ -74,6 +74,164 @@ def test_composition_binding_requires_concrete_final_authority():
     assert 'submission_authority' in BrokerGuardBindings.__dataclass_fields__
 
 
+@pytest.mark.parametrize('path', ['manual_daily','saved_daily','intraday','direct_kis','designated_mock'])
+@pytest.mark.parametrize('action,side,allowed', [('PAUSE','BUY',False),('PAUSE','SELL',True),('KILL','BUY',False),('KILL','SELL',False)])
+def test_all_final_money_paths_share_effective_restrictions(tmp_path,path,action,side,allowed):
+    from tests.test_service_controls import submission_fixture,request
+    from trading_bot.domain import Order,OrderSide,Money,Ticker,Position
+    from trading_bot import cli,sqlite_audit
+    j,primary,lease,guard,broker,adapter,args=submission_fixture(tmp_path)
+    order=Order(Ticker('005930'),OrderSide(side),1,Money(70000))
+    try:
+        j.request_writer(actor='owner').append_request(request(j,action))
+        if path=='designated_mock':
+            from trading_bot.mock_broker import MockBroker
+            quote=broker._pre_submit_quote_reader
+            broker=MockBroker(Money(1000000),positions=(Position(Ticker('005930'),1,Money(70000)),),
+                pre_submit_quote_reader=quote,clock=j.clock,submission_authority=guard,
+                submission_scope=j.settings.registered_scopes[0],require_submission_authority=True,
+                evidence_sink=lambda event:sqlite_audit.append_order_event(primary,event))
+        if path in ('manual_daily','saved_daily'):
+            refresh=args['portfolio_refresh']
+            broker=cli._LeaseGuardedBroker(broker,lease,portfolio_refresh=lambda:refresh('005930'),
+                execution_intent_id=args['order_intent_id'])
+        if path=='intraday' and side=='SELL':
+            from trading_bot.exit_manager import submit_exit,evaluate_exit_candidate,ExitTrigger,ExitTriggerKind
+            candidate=evaluate_exit_candidate(ExitTrigger(ExitTriggerKind.DAILY_LLM_SELL,'005930','submission-run','LLM'),args['portfolio_refresh']('005930'))
+            invoke=lambda:submit_exit(candidate,broker=broker,limit_price=Money(70000),
+                portfolio_refresh=args['portfolio_refresh'],lease_guard=lease,cycle_snapshot_id='current',origin_run_id='submission-run',
+                submission_authority=guard)
+        else: invoke=lambda:broker.place_order(order,**args)
+        if allowed: invoke()
+        else:
+            with pytest.raises(Exception): invoke()
+        calls=len(broker.order_history) if path=='designated_mock' else adapter.post_attempts
+        assert calls==int(allowed)
+        assert len(j.reader().list_admissions())==int(allowed)
+    finally:lease.release();primary.close()
+
+
+@pytest.mark.parametrize('action,side,allowed', [('PAUSE','BUY',False),('PAUSE','SELL',True),('KILL','BUY',False),('KILL','SELL',False)])
+def test_actual_proof_context_preserves_ids_and_requires_no_service_receipt(tmp_path,action,side,allowed):
+    from tests.test_service_controls import submission_fixture,request
+    from tests.test_soak_proof import _request,_reconcile
+    from dataclasses import replace
+    from trading_bot.soak_models import BrokerPageEnvelope,PageCompleteness
+    from trading_bot.submission_authority import ProofSubmissionContext
+    from trading_bot.soak_proof import ProofOrderService
+    j,primary,lease,guard,broker,adapter,args=submission_fixture(tmp_path,suffix_scope=True)
+    lease.release()
+    adapter.query_daily_ccld_pages=lambda **kw:BrokerPageEnvelope(page_count=1,completeness=PageCompleteness.COMPLETE,reason_code='COMPLETE')
+    adapter.query_balance_pages=lambda **kw:BrokerPageEnvelope(rows=({'pdno':'005930','hldg_qty':'1','ord_psbl_qty':'1','pchs_avg_pric':'70000'},),
+        summary={'dnca_tot_amt':'1000000','tot_evlu_amt':'1000000'},page_count=1,completeness=PageCompleteness.COMPLETE,reason_code='COMPLETE')
+    proof=replace(_request(tmp_path),side=side,primary_audit_db_path=j.settings.trading_journal_paths[0],
+        soak_db_path=j.settings.trading_journal_paths[1],controller_db_path=j.settings.trading_journal_paths[2])
+    context=ProofSubmissionContext(guard,adapter=adapter,quote_reader=broker._pre_submit_quote_reader)
+    service=ProofOrderService(adapter=adapter,submission_context=context,reconciliation_runner=_reconcile)
+    try:
+        j.request_writer(actor='owner').append_request(request(j,action))
+        if allowed:
+            result=service.run(proof)
+            assert result.cross_ids_validated and result.order_intent_id==service._ids(proof)[2]
+        else:
+            with pytest.raises(Exception):service.run(proof)
+        assert adapter.post_attempts==int(allowed)
+    finally:primary.close()
+
+
+@pytest.mark.parametrize('late', [False,True])
+def test_actual_http_entry_after_preparation_is_guarded(tmp_path,late):
+    from tests.test_service_controls import submission_fixture,request
+    from tests.test_kis_order import _adapter,_post_response,HASHKEY_PATH,ORDER_CASH_PATH
+    from tests.test_kis_broker import _query_result
+    from trading_bot.kis_order import FillStatus
+    from trading_bot.domain import Order,OrderSide,Money,Ticker
+    j,primary,lease,guard,broker,fake,args=submission_fixture(tmp_path)
+    adapter=_adapter([_post_response(HASHKEY_PATH,payload={'HASH':'fixture-hash'}),_post_response(ORDER_CASH_PATH)])
+    adapter._domain='https://openapivts.koreainvestment.com:29443'
+    adapter.inquire_daily_ccld=lambda **kw:_query_result([])
+    adapter.inquire_balance=lambda **kw:_query_result({})
+    adapter.read_fill_status=lambda **kw:FillStatus('KIS-1','005930',1,1,0)
+    broker._order_adapter=adapter
+    original=adapter.place_order_cash
+    def call(**kw):
+        if late:j.clock.advance(11)
+        return original(**kw)
+    adapter.place_order_cash=call
+    post=adapter._client.post
+    def transport(url,**kw):
+        if url.endswith(HASHKEY_PATH):
+            assert j.request_writer(actor='owner').append_request(request(j,'PAUSE')).status=='REQUESTED'
+        else:
+            assert not primary.in_transaction
+            assert j.request_writer(actor='owner').append_request(request(j,'KILL',1,'kill')).status=='UNAVAILABLE'
+        return post(url,**kw)
+    adapter._client.post=transport
+    try:
+        order=Order(Ticker('005930'),OrderSide.SELL,1,Money(70000))
+        if late:
+            with pytest.raises(Exception):broker.place_order(order,**args)
+        else:broker.place_order(order,**args)
+        actual=[c for c in adapter._client.calls if c['url'].endswith(ORDER_CASH_PATH)]
+        assert len(actual)==int(not late)
+    finally:lease.release();primary.close()
+
+
+def test_historical_proof_freeze_without_identity_is_scoped_and_retained(tmp_path):
+    from tests.test_service_controls import submission_fixture
+    from trading_bot import soak_store
+    from trading_bot.soak_models import CampaignKind
+    from trading_bot.submission_authority import SubmissionDenied
+    from trading_bot.domain import Order,OrderSide,Money,Ticker
+    j,primary,lease,guard,broker,adapter,args=submission_fixture(tmp_path)
+    try:
+        with sqlite3.connect(j.settings.trading_journal_paths[1]) as soak:
+            soak_store.create_campaign(soak,campaign_id='historical-proof',
+                accepted_profile_fingerprint='fixture-profile',accepted_profile_version='TEST',
+                field_contract_version='TEST',ambiguity_policy_version='TEST',
+                ambiguity_window_seconds=30,ambiguity_poll_cadence_seconds=5,ambiguity_max_observations=6,
+                campaign_kind=CampaignKind.PROOF_ORDER,credit_eligible=False)
+            soak_store.freeze_ticker(soak,freeze_id='original-freeze',campaign_id='historical-proof',
+                ticker='000660',freeze_kind='AMBIGUITY',order_intent_id='original-ambiguous-intent')
+        scope=guard.assert_account(broker._account,adapter)
+        with pytest.raises(SubmissionDenied,match='TICKER_FROZEN'):
+            guard._saved_safety(scope,'another-intent','000660')
+        broker.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)),**args)
+        assert adapter.post_attempts==1
+        with sqlite3.connect(j.settings.trading_journal_paths[1]) as soak:
+            assert soak.execute("SELECT state FROM soak_ticker_freezes WHERE freeze_id='original-freeze'").fetchall()==[('FROZEN',)]
+    finally:lease.release();primary.close()
+
+
+def test_raw_credential_capable_adapter_denies_opaque_authority_before_preparation():
+    from tests.test_kis_order import _FakeClient,_FakeTokenManager,DOMAIN
+    from trading_bot.kis_order import KisOrderAdapter,KisOrderAccount
+    from trading_bot.submission_authority import SubmissionDenied
+    from trading_bot.domain import Order,OrderSide,Money,Ticker
+    client=_FakeClient([])
+    adapter=KisOrderAdapter(token_manager=_FakeTokenManager(),client=client,domain=DOMAIN,tr_id_profile='mock')
+    with pytest.raises(SubmissionDenied,match='ACTUAL_POST_ENTRY_REQUIRED'):
+        adapter.place_order_cash(account=KisOrderAccount('12345678','01'),
+            order=Order(Ticker('005930'),OrderSide.BUY,1,Money(70000)),snapped_price=70000,
+            submission_entry=object())
+    assert client.calls==[]
+
+
+@pytest.mark.parametrize('invalid', ['real_token','opaque_token','none_token','opaque_client'])
+def test_legacy_transport_capability_rejects_nonfixture_collaborators(invalid):
+    from tests.test_kis_order import _FakeClient,_FakeTokenManager,DOMAIN
+    from trading_bot.kis_order import KisOrderAdapter
+    from trading_bot.kis_auth import KisTokenManager
+    token=_FakeTokenManager()
+    client=_FakeClient([])
+    if invalid=='real_token':token=object.__new__(KisTokenManager)
+    elif invalid=='opaque_token':token=object()
+    elif invalid=='none_token':token=None
+    else:client=object()
+    with pytest.raises(ValueError,match='no-credential offline test'):
+        KisOrderAdapter.for_test_legacy_mutation(token_manager=token,client=client,domain=DOMAIN,tr_id_profile='mock')
+
+
 def test_spawn_live_owner_cannot_be_displaced_by_stale_heartbeat(tmp_path):
     module, settings, journal, _ = setup(tmp_path)
     ctx=multiprocessing.get_context('spawn')

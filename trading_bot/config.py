@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     )
 
     trading_mode: TradingMode = TradingMode.MOCK
+    service_control_config_path: Path = Path.home() / '.config/stock-trading-bot/service.json'
     confirm_real_trading: bool = False
     llm_provider: LLMProviderName = LLMProviderName.CLAUDE
     anthropic_api_key: Optional[SecretStr] = None

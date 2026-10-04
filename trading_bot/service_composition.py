@@ -66,6 +66,7 @@ class BrokerGuardBindings:
     order_adapter_guard: OrderAdapterGuardBuilder | None
     evidence_sink: OrderEvidenceSink | None
     data_fresh: Callable[[], bool]
+    submission_authority: Any = None
 
 
 @dataclass(frozen=True)
@@ -326,14 +327,27 @@ def build_service_composition(settings: ServiceSettings, *, receipt: AcceptanceR
             raise ServiceCompositionBlocked('FINAL_ORDER_GUARD_REQUIRED')
         if not callable(bindings.evidence_sink) or not callable(bindings.data_fresh):
             raise ServiceCompositionBlocked('AUDIT_SINK_REQUIRED')
+        from .submission_authority import SubmissionAuthority, OwnedActivationCheck
+        final_authority=bindings.submission_authority
+        if final_authority is not None:
+            if type(final_authority) is not SubmissionAuthority or final_authority.store.settings!=settings:
+                raise ServiceCompositionBlocked('FINAL_ORDER_GUARD_REQUIRED')
+            if clients is None:
+                final_authority=SubmissionAuthority(final_authority.store,policy=policy,clock=clock,
+                    unattended=True,activation_check=OwnedActivationCheck(settings,saved_evidence_reader,current_safety,clock))
+        elif clients is None:
+            raise ServiceCompositionBlocked('FINAL_ORDER_GUARD_REQUIRED')
         context = BrokerGuardContext(scope=receipt.scope,validate_activation=validate_current,
             read_freezes=read_freezes,policy=policy,session_provider=policy.session_evidence_provider,clock=clock)
         guarded = bindings.order_adapter_guard(adapter,context)
         if guarded is adapter or guarded is None:
             raise ServiceCompositionBlocked('FINAL_ORDER_GUARD_REQUIRED')
-        return KISBroker(order_adapter=guarded,account=account,
+        # Arbitrary adapter wrappers cannot acquire permission. With a concrete
+        # authority use the actual bounded adapter at the broker boundary.
+        return KISBroker(order_adapter=adapter if final_authority is not None else guarded,account=account,
             market_clock=lambda:bool(policy.classify(clock()).executable),data_fresh=bindings.data_fresh,
-            evidence_sink=bindings.evidence_sink,pre_submit_quote_reader=read_quote,clock=clock)
+            evidence_sink=bindings.evidence_sink,pre_submit_quote_reader=read_quote,clock=clock,
+            submission_authority=final_authority)
 
     def close():
         # No capability is invoked; only already constructed HTTP resources close.

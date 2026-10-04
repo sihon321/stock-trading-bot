@@ -169,7 +169,7 @@ def test_request_strict_fields(tmp_path):
         with pytest.raises(ValueError): request(j, **updates)
 
 
-def submission_fixture(tmp_path):
+def submission_fixture(tmp_path, *, suffix_scope=False):
     """Actual temporary journals/lease, with an explicitly offline market source."""
     from trading_bot import sqlite_audit, soak_store
     from trading_bot.soak_controller import connect_controller
@@ -182,7 +182,7 @@ def submission_fixture(tmp_path):
     from dataclasses import replace
     from tests.service_fixtures import session_evidence
     settings = TempServiceTopology(tmp_path).registration()
-    scope = ServiceScope(account_scope_hash=canonical_account_scope_hash('mock', '5678:01'), execution_target='mock')
+    scope = ServiceScope(account_scope_hash=canonical_account_scope_hash('mock', '5678' if suffix_scope else '5678:01'), execution_target='mock')
     settings = settings.model_copy(update={'registered_scopes': (scope,)})
     from trading_bot.control_store import ControlStore
     j = ControlStore(settings, clock=FakeServiceClock())

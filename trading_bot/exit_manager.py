@@ -192,11 +192,17 @@ def submit_exit(
     cycle_snapshot_id: str,
     origin_run_id: str,
     trigger_revalidator: Callable[[PortfolioSnapshot, Money], bool] | None = None,
+    submission_authority: object = None,
 ) -> str | None:
     """Submit only a current ``SUBMIT`` result through the KIS boundary."""
 
     if result.disposition is not ExitDisposition.SUBMIT or result.quantity <= 0:
         return None
+    if submission_authority is not None:
+        from .submission_authority import SubmissionAuthority
+        if (type(submission_authority) is not SubmissionAuthority
+            or getattr(broker,'_submission_authority',None) is not submission_authority):
+            raise ValueError('exit final authority binding mismatch')
     order = Order(
         Ticker(result.ticker),
         OrderSide.SELL,

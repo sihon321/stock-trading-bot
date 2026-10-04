@@ -114,7 +114,8 @@ class KISBroker:
         self._freshness_policy_version = freshness_policy_version
         self._submission_authority = submission_authority
         # The compatibility constructor cannot bypass an actual credential adapter.
-        if _test_only_allow_unguarded_mutation and isinstance(order_adapter, KisOrderAdapter):
+        if _test_only_allow_unguarded_mutation and (isinstance(order_adapter, KisOrderAdapter)
+            or not type(order_adapter).__module__.startswith(('test_', 'tests.'))):
             _test_only_allow_unguarded_mutation = False
         self._test_only_allow_unguarded_mutation = bool(
             _test_only_allow_unguarded_mutation
@@ -159,7 +160,8 @@ class KISBroker:
         scope = None
         if authority is not None:
             try:
-                scope = authority.assert_account(self._account, self._order_adapter)
+                scope = authority.assert_account(self._account, self._order_adapter,
+                    expected_scope=getattr(lease_guard,'account_scope_hash',None))
             except SubmissionDenied as exc:
                 raise MarketClosedError(str(exc)) from None
 
@@ -307,6 +309,10 @@ class KISBroker:
             if owner_token
             else None
         )
+        prepared=None
+        if authority is not None and isinstance(self._order_adapter,KisOrderAdapter):
+            prepared=self._order_adapter.prepare_order_cash(account=self._account,
+                order=order,snapped_price=snapped_price)
         boundary = (authority.admit(order, scope, intent_id, submission_id,
             lease_guard, (refresh_snapshot, quote)) if authority is not None else nullcontext(None))
         try:
@@ -328,9 +334,15 @@ class KISBroker:
                 if authority is not None:
                     authority.verify_attempt(admission, order, origin,
                         lease=lease_guard, fresh_evidence=(refresh_snapshot, quote))
+                post_kwargs={}
+                if prepared is not None:
+                    from .submission_authority import FinalPostEntry
+                    post_kwargs=dict(prepared_order=prepared,submission_entry=FinalPostEntry(
+                        authority,admission,self._order_adapter,self._account,order,snapped_price,prepared,origin))
                 try:
                     result = self._order_adapter.place_order_cash(
                         account=self._account, order=order, snapped_price=snapped_price,
+                        **post_kwargs,
                     )
                 except Exception as exc:
                     detail = {"error_type": type(exc).__name__}
@@ -562,6 +574,7 @@ def build_kis_broker(
     account: Optional[KisOrderAccount] = None,
     client: Any = None,
     pre_submit_quote_reader: Optional[Callable[[str], Any]] = None,
+    submission_authority: Any = None,
 ) -> KISBroker:
     """Build a KISBroker from Settings using the caller-owned token manager."""
 
@@ -588,4 +601,5 @@ def build_kis_broker(
         order_adapter=adapter,
         account=account,
         pre_submit_quote_reader=pre_submit_quote_reader,
+        submission_authority=submission_authority,
     )

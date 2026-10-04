@@ -670,7 +670,7 @@ def test_real_broker_uses_shared_token_manager(monkeypatch) -> None:
     account = KisOrderAccount(cano="12345678", account_product_code="01")
     calls = []
 
-    def fake_build_kis_broker(settings, *, token_manager, account, client=None):
+    def fake_build_kis_broker(settings, *, token_manager, account, client=None, submission_authority=None):
         calls.append(
             {
                 "settings": settings,

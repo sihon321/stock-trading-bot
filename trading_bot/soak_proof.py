@@ -5,6 +5,7 @@ and reconciliation behavior query-only.  It never imports the general runtime.
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
 
 import json
 import os
@@ -138,10 +139,12 @@ class ProofOrderService:
         adapter: Any,
         reconciliation_runner: ReconciliationRunner | None = None,
         sleeper: Callable[[float], None] | None = None,
+        submission_context: Any = None,
     ) -> None:
         self._adapter = adapter
         self._reconciliation_runner = reconciliation_runner
         self._sleeper = sleeper or (lambda _: None)
+        self._submission_context = submission_context
 
     @staticmethod
     def _ids(request: ProofOrderRequest) -> tuple[str, str, str, str]:
@@ -155,6 +158,10 @@ class ProofOrderService:
         )
 
     def run(self, request: ProofOrderRequest) -> ProofOrderResult:
+        from .kis_order import KisOrderAdapter
+        from .submission_authority import ProofSubmissionContext
+        if isinstance(self._adapter,KisOrderAdapter) and type(self._submission_context) is not ProofSubmissionContext:
+            raise ValueError('PROOF_FINAL_SUBMISSION_AUTHORITY_REQUIRED')
         validate_store_topology(
             request.primary_audit_db_path,
             request.soak_db_path,
@@ -211,84 +218,91 @@ class ProofOrderService:
                 broker_status="CLEAR",
                 detail={"campaign_id": request.campaign_id, "proof_id": proof_id},
             ))
-            sqlite_audit.append_order_event(primary, OrderEvent(
-                **common,
-                event_type=OrderEventType.SUBMISSION_ATTEMPTED,
-                submission_id=submission_id,
-                detail={"campaign_id": request.campaign_id, "proof_id": proof_id},
-            ))
-            append_campaign_event(
-                soak,
-                observation_id=proof_id,
-                campaign_id=request.campaign_id,
-                run_id=run_id,
-                ticker=request.ticker,
-                order_intent_id=intent_id,
-                event_code="PROOF_SUBMISSION_ATTEMPTED",
-                evidence_class=SoakEvidenceClass.KIS_OBSERVED,
-                detail={"submission_id": submission_id, "profile_version": request.receipt.profile_version},
-            )
-            self._verify_primary_attempt(request.primary_audit_db_path, run_id, intent_id, submission_id)
-
-            guard = _SingleUseSubmissionGuard(self._adapter)
             order = Order(
                 ticker=Ticker(request.ticker),
                 side=OrderSide(request.side),
                 quantity=request.quantity,
                 limit_price=Money(float(request.price)),
             )
-            broker_order_id: str | None = None
-            try:
-                response = guard.place_order_cash(
-                    account=request.account,
-                    order=order,
-                    snapped_price=snap_to_tick(request.price, side=order.side),
-                )
-                broker_order_id = str(getattr(response, "order_id", "") or "") or None
-                acknowledgement = "ACCEPTED" if broker_order_id else "REJECTED"
-                event_type = (
-                    OrderEventType.SUBMISSION_ACCEPTED
-                    if acknowledgement == "ACCEPTED"
-                    else OrderEventType.RECONCILED
-                )
-                broker_status = acknowledgement
-            except Exception as exc:
-                acknowledgement = "AMBIGUOUS"
-                event_type = OrderEventType.SUBMISSION_AMBIGUOUS
-                broker_status = "ACK_UNKNOWN"
-                error_type = type(exc).__name__
-            detail: dict[str, Any] = {"campaign_id": request.campaign_id, "proof_id": proof_id}
-            if acknowledgement == "AMBIGUOUS":
-                detail["error_type"] = error_type
-            sqlite_audit.append_order_event(primary, OrderEvent(
-                **common,
-                event_type=event_type,
-                submission_id=submission_id,
-                broker_order_id=broker_order_id,
-                broker_status=broker_status,
-                detail=detail,
-            ))
-            freeze_active = acknowledgement == "AMBIGUOUS"
-            if freeze_active:
-                freeze_ticker(
+            boundary=(self._submission_context(request,order,(proof_id,run_id,intent_id,submission_id))
+                if self._submission_context is not None else nullcontext(None))
+            with boundary as admission:
+                sqlite_audit.append_order_event(primary, OrderEvent(
+                    **common,
+                    event_type=OrderEventType.SUBMISSION_ATTEMPTED,
+                    submission_id=submission_id,
+                    detail={"campaign_id": request.campaign_id, "proof_id": proof_id,
+                        **(admission.detail() if admission is not None else {})},
+                ))
+                append_campaign_event(
                     soak,
-                    freeze_id=str(uuid.uuid5(uuid.NAMESPACE_URL, "freeze:" + proof_id)),
+                    observation_id=proof_id,
                     campaign_id=request.campaign_id,
+                    run_id=run_id,
                     ticker=request.ticker,
                     order_intent_id=intent_id,
-                    freeze_kind="AMBIGUITY",
-                    detail={"reason_code": "AMBIGUOUS_SUBMISSION", "submission_id": submission_id},
+                    event_code="PROOF_SUBMISSION_ATTEMPTED",
+                    evidence_class=SoakEvidenceClass.KIS_OBSERVED,
+                    detail={"submission_id": submission_id, "profile_version": request.receipt.profile_version},
                 )
-            append_campaign_event(
-                soak,
-                campaign_id=request.campaign_id,
-                run_id=run_id,
-                ticker=request.ticker,
-                order_intent_id=intent_id,
-                event_code=f"PROOF_{acknowledgement}",
-                evidence_class=SoakEvidenceClass.KIS_OBSERVED,
-                detail={"proof_id": proof_id, "submission_id": submission_id, "broker_order_id": broker_order_id or ""},
-            )
+                self._verify_primary_attempt(request.primary_audit_db_path, run_id, intent_id, submission_id)
+
+                if admission is not None:
+                    self._submission_context.verify_attempt()
+                guard = _SingleUseSubmissionGuard(self._adapter)
+                broker_order_id: str | None = None
+                try:
+                    response = guard.place_order_cash(
+                        account=request.account,
+                        order=order,
+                        snapped_price=snap_to_tick(request.price, side=order.side),
+                        **(self._submission_context.post_kwargs if admission is not None else {}),
+                    )
+                    broker_order_id = str(getattr(response, "order_id", "") or "") or None
+                    acknowledgement = "ACCEPTED" if broker_order_id else "REJECTED"
+                    event_type = (
+                        OrderEventType.SUBMISSION_ACCEPTED
+                        if acknowledgement == "ACCEPTED"
+                        else OrderEventType.RECONCILED
+                    )
+                    broker_status = acknowledgement
+                except Exception as exc:
+                    acknowledgement = "AMBIGUOUS"
+                    event_type = OrderEventType.SUBMISSION_AMBIGUOUS
+                    broker_status = "ACK_UNKNOWN"
+                    error_type = type(exc).__name__
+                detail: dict[str, Any] = {"campaign_id": request.campaign_id, "proof_id": proof_id}
+                if acknowledgement == "AMBIGUOUS":
+                    detail["error_type"] = error_type
+                sqlite_audit.append_order_event(primary, OrderEvent(
+                    **common,
+                    event_type=event_type,
+                    submission_id=submission_id,
+                    broker_order_id=broker_order_id,
+                    broker_status=broker_status,
+                    detail=detail,
+                ))
+                freeze_active = acknowledgement == "AMBIGUOUS"
+                if freeze_active:
+                    freeze_ticker(
+                        soak,
+                        freeze_id=str(uuid.uuid5(uuid.NAMESPACE_URL, "freeze:" + proof_id)),
+                        campaign_id=request.campaign_id,
+                        ticker=request.ticker,
+                        order_intent_id=intent_id,
+                        freeze_kind="AMBIGUITY",
+                        detail={"reason_code": "AMBIGUOUS_SUBMISSION", "submission_id": submission_id},
+                    )
+                append_campaign_event(
+                    soak,
+                    campaign_id=request.campaign_id,
+                    run_id=run_id,
+                    ticker=request.ticker,
+                    order_intent_id=intent_id,
+                    event_code=f"PROOF_{acknowledgement}",
+                    evidence_class=SoakEvidenceClass.KIS_OBSERVED,
+                    detail={"proof_id": proof_id, "submission_id": submission_id, "broker_order_id": broker_order_id or ""},
+                )
             draft = ProofOrderResult(
                 proof_id=proof_id,
                 campaign_id=request.campaign_id,
