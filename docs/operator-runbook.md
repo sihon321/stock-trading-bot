@@ -421,7 +421,14 @@ python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json
 
 OWNER와 scope는 설명용 값이다. 실제 account hash는 기존 mock identity의 hash를 사용한다. setup-disabled는 새 분리 경로에만 허용된다. 서비스 journal·control·lock·거래 증거·관찰자 운영 DB·artifact 경로를 분리하고 디렉터리 0700·파일 0600으로 만든다. 초기 상태는 **DISABLED / PAUSED**, acceptance receipt는 없다. 거래용 파일·session proof·기존 primary/soak/controller evidence를 만들어낸 것으로 간주하지 않는다. 생성된 observer.json은 secret-free이며 Discord가 필요하면 해당 observer 파일에만 명시적으로 설정한다.
 
-status·제어 요청·setup·render는 KIS/LLM 객체와 OS 서비스 실행을 구성하지 않는다. dry-run은 명시적 `--fixture`의 기존 replay bundle과 별도 **소유자 임시 output root**만 사용한다. 출력은 `replay-result.json`, 의미는 OFFLINE_ONLY이며 실제 approval/campaign/day credit가 아니다. production config/journal 경로와 겹치는 출력은 거부된다.
+status·제어 요청·setup·render는 KIS/LLM 객체와 OS 서비스 실행을 구성하지 않는다. dry-run은 명시적 `--fixture`의 기존 replay bundle과 별도 **소유자 임시 output root**만 사용한다. `replay-result.json`과 `service-result.json`을 저장하며, `service-proof/` 아래의 소유자 임시 journal/control/account 저장소에서 실제 ServiceSchedule·ServiceRuntime·BoundedAccountWork의 스케줄·복구 reducer를 실행한다. 고정 scenario의 첫 입력을 저장하고 DISPATCH_COMMITTED 직후 중단한 뒤 successor가 DISPATCHED_UNKNOWN으로 복구하는 오프라인 장애 증거다. 08:50/09:00/09:10/09:20/15:20/15:30 경계를 지나 stable job/evaluation ID와 lease 해제를 검사한다. provider 자격 증명·클라이언트·subprocess·broker를 만들지 않고 provider/broker 호출 수는 0이다. 임시 source 문서는 SYNTHETIC 표식만 가지며 유효한 acceptance receipt를 생성하지 않는다. 출력 의미는 **OFFLINE_ONLY / SYNTHETIC**, 실제 approval/campaign/day credit가 아니다. production config/journal 경로와 겹치는 출력과 이전 service-proof의 재사용은 거부된다.
+
+```bash
+python3 -m trading_bot.service_cli --config /Users/OWNER/bot-config/service.json dry-run \
+  --fixture /Users/OWNER/frozen-fixtures/focused.json --output-root /OWNED_SYSTEM_TEMP/fresh-offline-output
+```
+
+OWNED_SYSTEM_TEMP는 운영체제 temporary 디렉터리 아래의 실제 소유자 경로다. fixture와 service.json은 읽기 전용이며 기존 receipt, primary/soak/controller 원천의 내용을 복사하거나 실행 권한으로 사용하지 않는다. mock transport가 있는 통합 테스트는 실제 admission·response·POST 단일 호출을 따로 검증한다. dry-run의 0 호출은 broker-observed 증거가 아니다.
 
 ### 요청과 승인 전송
 
@@ -482,3 +489,28 @@ reset-attention은 `--request-id`와 `--expected-revision`을 받는 요청 전�
 독립 alerts agent는 bot-alerts의 보호된 observer.json과 명시적인 `--expectation-service-config service.json`으로 watch한다. 서비스와 다른 process/label/lifetime이며 거래 restart budget을 공유하지 않는다. observer는 일반 ServiceJournal·ServiceRuntime·trading credentials/broker/provider/account authority 없이 read-only controls와 exact-date session, **expectation/expectation-health 두 테이블만 쓰는 SQL allowlist facade**를 갖는다. 거래의 첫 tick 이전·restart exhaustion 이후·자정에도 source/expectation 증거를 만든다. installed watch의 1초 제한 `launchctl print gui/<uid>` probe는 명시적 owner UID와 session identity를 확인한다. print 출력은 안정된 API가 아니므로 누락·실패·변경·모순은 UNKNOWN이고 로그인 성공을 추측하지 않는다. status/disabled setup/render/dry-run은 probe를 호출하지 않는다.
 
 실제 disabled 설치 후 로그인/로그아웃·절전/깨우기·SIGTERM·제거, 한국어 PC/휴대폰 제어, 사설 HTTPS/로그인 및 actor 매칭을 소유자가 확인해야 한다. 이 수용 검사는 자동 테스트의 plist·fake process·임시 DB 증명과 별도이며 아직 수행하지 않았다.
+
+### 최종 오프라인 검증과 활성화 체크리스트
+
+서비스 구현·오프라인 테스트 완료와 실제 설치·계좌·기기 수용은 서로 다른 증거다. 테스트 fixture, 파일 존재, CLI 승인 flags, 자동화된 plist 검사는 아래 PENDING 항목을 완료하지 않는다. 아래 항목은 현재 수동 확인 전 상태이며 실제 unattended KIS_MOCK 활성화를 차단한다.
+
+| 확인 ID | 현재 상태 | 필요한 실제 증거 |
+|---|---|---|
+| PHASE9-TASK1 | PENDING | 09-08 task 1의 20 eligible KIS_OBSERVED days 및 controlled drill을 소유자가 확인한 actor/time/evidence IDs |
+| PHASE9-TASK2 | PENDING | 09-08 task 2의 한국어 보고서·안전 판독에 대한 독립 소유자 승인과 immutable campaign/profile/source hash 연결 |
+| RECEIPT-AND-SAFETY | PENDING | 두 승인 검증 후 record-acceptance/read-back, current receipt/source/revision, fresh COMPLETE owned account recovery/reconciliation, UNKNOWN·래치·적용 동결 없음 |
+| FREEZE-000660 | FROZEN | original ambiguous intent와 같은 subject의 확정 terminal broker evidence; 다른 티커 성공·날짜 변경·resume·재설치는 해제 증거가 아님 |
+| PROVIDER-SINGLE-SHOT | PENDING | 선택 provider의 검증된 단일 transport 계약; actual Codex CLI 0.144.6은 현재 unsupported/closed |
+| OBSERVER-INDEPENDENT | PENDING | 별도 alerts agent의 고정 보호 등록과 owner GUI/expectation 관찰, 실제 독립 lifetime 및 건강한 own-store |
+| MAC-GUI-LIFECYCLE | PENDING | 소유자 설치 후 실제 로그인/로그아웃, 절전/깨우기, SIGTERM, stop/remove, durable gaps/history 보존 확인 |
+| KOREAN-CONTROLS | PENDING | 실제 인증된 임시 증거에서 desktop와 320px phone의 REQUESTED/APPLIED, blocked resume, 원천 UNKNOWN 한국어 판독 |
+| PRIVATE-DEVICE | PENDING | 실제 Tailscale·private HTTPS에서 휴대폰 mobile data 도달/인증서/로그인, VPN 밖 차단, PC·phone session/logout/expiry/actor 확인 |
+| PHASE16-REAL | BLOCKED | 이 단계에는 실계좌 허가가 없음; Phase 16의 별도 수동 evidence-linked 승인 필요 |
+
+검증 대상 계약은 [service_cli.py](../trading_bot/service_cli.py), [service_runtime.py](../trading_bot/service_runtime.py), [service_schedule.py](../trading_bot/service_schedule.py), [submission_authority.py](../trading_bot/submission_authority.py), [service_activation.py](../trading_bot/service_activation.py), [service_launchd.py](../trading_bot/service_launchd.py)에 있다. fresh interpreter capability 검사는 대상 import 전에 Settings/dotenv·KIS·LLM 생성, network, provider Popen/launchctl/install, production SQL·policy 쓰기 tripwire를 설치한다. 상태/health/setup/render/dry-run은 기존 원천의 byte hash를 보존하고 제어 요청은 등록된 control request/audit만 기록한다. 요청 수락은 control application/admission을 만들지 않는다.
+
+일일 catch-up은 **09:20 전에**, saved NEVER_DISPATCHED 입력만 허용한다. DISPATCHED/IN_FLIGHT/UNKNOWN 입력은 재호출하지 않는다. 오전 수집 일부가 누락돼도 첫 committed universe에서 000660 등의 target을 제거하지 않고 PARTIAL/UNKNOWN으로 남긴다. 지연 개장·holiday·UNKNOWN session이나 절전 gap은 backlog/provider 재생 권한이 아니다. 15:20에는 모든 신규 POST가 닫히고 15:30에는 risk session이 terminal이 된다. 다음 날 supervisor는 새 날짜의 positive session·activation·controls·fresh recovery를 다시 요구한다.
+
+PAUSE/KILL의 **수락 완료가 후속 transport 진입보다 앞서면** 현재 제한이 이긴다. 이미 admission lock 안에 진입한 오래된 POST에는 뒤늦은 요청 수락을 소급 적용하거나 취소됐다고 표시하지 않는다. 신규 요청이 lock busy이면 UNAVAILABLE이고 수락 성공을 주장하지 않는다. provider transport에 먼저 진입한 IN_FLIGHT는 응답을 기다리는 동안 account/control lock을 점유하지 않으며 risk/reconciliation과 제어 요청은 진행한다. 이후 kill보다 오래된 resume은 REVISION_CONFLICT이며 kill을 지우지 않는다. 불확실한 POST/response는 UNKNOWN으로 남고 같은 evaluation intent를 다시 제출하지 않는다.
+
+service/control 원천이 반복 실패해도 독립 observer의 건강한 own-store·ownership이 남아 있으면 기존 CRITICAL outbox와 30분 reminder를 계속 처리한다. 실패한 source partition은 cursor·incident를 유지하며 false recovery를 만들지 않는다. 관찰자 own-store/ownership 실패는 전송을 중단한다. 같은 Mac 전체 전원·절전·로그아웃 장애 동안 이 관찰자가 외부 감시를 대신할 수 없다는 한계는 유지된다. 3회/600초 restart budget과 reset-attention은 별도이며 pause/kill·동결·역사 증거를 지우지 않는다.

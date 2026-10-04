@@ -68,6 +68,48 @@ def _table(section: str) -> tuple[list[str], list[dict[str, str]]]:
     return header, rows
 
 
+def test_phase15_callable_command_inventory_and_disabled_default_are_documented():
+    from typer.main import get_command
+    from trading_bot.service_cli import app
+    from trading_bot.service_config import ServiceSettings
+    text=_section(_text(),'Phase 15 소유자 로그인 서비스와 독립 관찰자')
+    commands=get_command(app).commands
+    required={'setup-disabled','status','acceptance-status','record-acceptance','dry-run',
+        'pause','resume','kill','run','launch','reset-attention','render-launchagents',
+        'install-launchagents','start','stop','remove-launchagents'}
+    assert required<=commands.keys()
+    for command in required:assert command in text
+    assert ServiceSettings.model_fields['service_enabled'].default is False
+    assert ServiceSettings.model_fields['mode'].default=='DISABLED'
+    for contract in ('DISABLED / PAUSED','OFFLINE_ONLY / SYNTHETIC','service-result.json',
+        'ServiceSchedule·ServiceRuntime·BoundedAccountWork','DISPATCHED_UNKNOWN',
+        'provider/broker 호출 수는 0','production config/journal','09:20 전에','15:20','15:30',
+        'IN_FLIGHT','REVISION_CONFLICT','UNAVAILABLE','3회/600초','reset-attention'):
+        assert contract in text
+
+
+def test_phase15_external_acceptance_checklist_is_pending_and_never_forged():
+    text=_section(_text(),'Phase 15 소유자 로그인 서비스와 독립 관찰자')
+    checklist=text.split('### 최종 오프라인 검증과 활성화 체크리스트\n',1)[1]
+    header,rows=_table(checklist)
+    assert header==['확인 ID','현재 상태','필요한 실제 증거']
+    states={r['확인 ID']:r['현재 상태'] for r in rows}
+    assert states=={**{key:'PENDING' for key in ('PHASE9-TASK1','PHASE9-TASK2',
+        'RECEIPT-AND-SAFETY','PROVIDER-SINGLE-SHOT','OBSERVER-INDEPENDENT',
+        'MAC-GUI-LIFECYCLE','KOREAN-CONTROLS','PRIVATE-DEVICE')},
+        'FREEZE-000660':'FROZEN','PHASE16-REAL':'BLOCKED'}
+    for phrase in ('20 eligible KIS_OBSERVED days','same','같은 subject','320px phone',
+        'Tailscale','mobile data','own-store/ownership 실패','30분 reminder','false recovery',
+        '기존 원천의 byte hash','control request/audit만','수동 확인 전','활성화를 차단'):
+        if phrase=='same':continue
+        assert phrase in checklist
+    assert '완료하지 않는다' in checklist
+    for path in ('service_cli.py','service_runtime.py','service_schedule.py','submission_authority.py',
+        'service_activation.py','service_launchd.py'):
+        assert Path(__file__).resolve().parents[1].joinpath('trading_bot',path).is_file()
+        assert f'../trading_bot/{path}' in checklist
+
+
 def test_manual_schedule_contract() -> None:
     header, rows = _table(_section(_text(), "일일 수동 운영 절차"))
 
