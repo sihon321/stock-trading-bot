@@ -156,3 +156,105 @@ def test_older_admitted_submission_stays_visible(control_web):
     assert response.status_code == 200 and 'IN_FLIGHT' in response.text
     assert '이전 승인 주문' in response.text
     assert owner.reader().list_admissions()[0]['state'] == 'IN_FLIGHT'
+
+
+def test_native_controls_reachable_and_exact_consequences(control_web):
+    from bs4 import BeautifulSoup
+    app, client, owner, _ = control_web
+    assert BeautifulSoup(client.get('/').text, 'html.parser').select_one('a[href="/controls"]')
+    page = BeautifulSoup(client.get('/controls').text, 'html.parser')
+    assert page.html['lang'] == 'ko' and page.select_one('meta[name="viewport"]')
+    for text in ('일시정지', '재개 요청', '전체 주문 중지', '최신 수락 revision',
+            '실제 적용 상태', 'INSTALLATION_GLOBAL', '보호 SELL', 'reconciliation',
+            '이미 승인된 주문', '취소를 보장하지 않습니다', '실계좌', '승인 증거'):
+        assert text in page.get_text()
+    forms = page.select('#control-actions form')
+    assert len(forms) == 3
+    for form in forms:
+        assert form['method'] == 'post'
+        names = {item['name'] for item in form.select('[name]')}
+        assert names == {'csrf_token','request_id','expected_revision','note'}
+        assert form.select_one('textarea[maxlength="500"]')
+        assert form.select_one('button[aria-describedby]')
+    assert page.select_one('form[action$="/resume"] button').has_attr('disabled')
+    assert not page.select_one('form[action$="/pause"] button').has_attr('disabled')
+    assert page.select_one('details.control-kill summary')
+    assert page.select_one('a[href="/controls"][aria-current="page"]')
+    assert owner.reader().effective_state().applied.revision == 0
+
+
+def test_notes_escaped_bounded_and_unknown_blocks_remain_visible(control_web):
+    _, client, owner, _ = control_web
+    note = '<script>alert(1)</script> sk-secret-test-credential'
+    response = submit(client, note=note)
+    assert response.status_code == 200
+    assert '<script>alert(1)' not in response.text and 'sk-secret-test-credential' not in response.text
+    assert '&lt;script&gt;' in response.text
+    for text in ('EXPECTATION_UNKNOWN','승인 증거','적용 대기','PAUSED'):
+        assert text in response.text
+    assert owner.reader().effective_state().applied.revision == 0
+
+
+def test_resume_unknown_and_stale_disabled_without_disabling_stop(control_web, monkeypatch):
+    from bs4 import BeautifulSoup
+    from datetime import timedelta
+    from trading_bot.web_models import ServiceHealthDTO, SourceEnvelope
+    app, client, owner, clock = control_web
+    reader = app.extensions['evidence_service']
+    def health(age):
+        return (ServiceHealthDTO(SourceEnvelope('saved-service','service',1,SCOPE.account_scope_hash,
+            'mock',clock(),clock()-timedelta(seconds=age),'COMPLETE','OK','FRESH'),
+            'risk','RISK','RUNNING',True,control_revision=0),)
+    monkeypatch.setattr(reader, 'service_health', lambda scope=None: health(181))
+    page = BeautifulSoup(client.get('/controls').text, 'html.parser')
+    assert page.select_one('form[action$="/resume"] button').has_attr('disabled')
+    assert submit(client, 'resume').status_code == 409
+    assert not owner.reader().list_requests()
+    monkeypatch.setattr(reader, 'service_health', lambda scope=None: health(0))
+    page = BeautifulSoup(client.get('/controls').text, 'html.parser')
+    assert not page.select_one('form[action$="/resume"] button').has_attr('disabled')
+    assert submit(client, 'resume').status_code == 200
+    assert owner.reader().effective_state().applied.mode == 'PAUSED'
+    assert owner.reader().effective_state().mode == 'PAUSED'
+    assert submit(client, 'kill', revision=1).status_code == 200
+
+
+def test_request_store_unavailable_disables_forms_but_keeps_saved_sources(control_web, monkeypatch):
+    from bs4 import BeautifulSoup
+    app, client, owner, _ = control_web
+    def unavailable(**kwargs): raise OSError('sensitive-path-and-error')
+    monkeypatch.setattr(app.extensions['control_request_service'], 'snapshot', unavailable)
+    page = BeautifulSoup(client.get('/controls').text, 'html.parser')
+    assert 'UNKNOWN' in page.get_text() and '승인 증거' in page.get_text()
+    assert 'sensitive-path-and-error' not in str(page)
+    assert all(button.has_attr('disabled') for button in page.select('#control-actions button'))
+
+
+def test_saved_rejected_resume_and_source_times(control_web):
+    from tests.test_service_controls import request, application
+    _, client, owner, clock = control_web
+    resume = request(owner, 'RESUME', rid=str(uuid4()))
+    owner.request_writer(actor='owner').append_request(resume)
+    runtime, leader, capability = application(owner)
+    try:
+        applier = runtime.ControlApplier(capability, clock=clock)
+        applier.apply_pending()
+    finally:
+        leader.close()
+    page = client.get('/controls').text
+    assert '재개 거절' in page and 'REJECTED' in page
+    assert resume.request_id in page and 'KST' in page
+    assert owner.reader().effective_state().applied.mode == 'PAUSED'
+
+
+def test_proxy_and_session_expiry_never_replay_post(control_web):
+    app, client, owner, clock = control_web
+    token = csrf(client, '/controls')
+    fields = {'csrf_token':token, 'request_id':str(uuid4()),'expected_revision':'0'}
+    assert client.post('/controls/controls/pause', data=fields, headers={
+        'X-Forwarded-Host':'evil.test','X-Forwarded-Proto':'https'}).status_code == 200
+    # Arbitrary forwarding headers have no authority: source guard uses the direct host.
+    clock.advance(wall_seconds=12*3600)
+    response = client.post('/controls/controls/kill', data={**fields,'request_id':str(uuid4()),'expected_revision':'1'})
+    assert response.status_code == 302 and response.headers['Location'] == '/login?return_to=%2F'
+    assert len(owner.reader().list_requests()) == 1
