@@ -106,7 +106,7 @@ def test_daily_identity_is_unique_and_canonical_input_is_immutable(tmp_path):
     assert second_conn.execute("SELECT COUNT(*) FROM daily_evaluations").fetchone()[0] == 1
 
 
-def test_recovery_finalizes_started_evaluation_once_without_provider_call(tmp_path):
+def test_recovery_refuses_mutation_without_active_scoped_owner(tmp_path):
     conn = connect_portfolio_store(tmp_path / "audit.db")
     evaluation = start_daily_evaluation(
         conn,
@@ -115,15 +115,12 @@ def test_recovery_finalizes_started_evaluation_once_without_provider_call(tmp_pa
         account_scope_hash="scope", observed_at=NOW,
     )
 
-    assert recover_started_evaluations(conn, observed_at=NOW) == 1
-    assert recover_started_evaluations(conn, observed_at=NOW) == 0
+    with pytest.raises(RuntimeError, match="owner"):
+        recover_started_evaluations(conn, observed_at=NOW)
 
     loaded = load_daily_evaluation(conn, evaluation.evaluation_id)
-    assert loaded.status is DailyEvaluationStatus.FINALIZED
-    terminal = [event for event in loaded.events if event.event_type is DailyEvaluationEventType.LLM_UNAVAILABLE]
-    assert len(terminal) == 1
-    assert terminal[0].action == "HOLD"
-    assert terminal[0].reason_code == "LLM_UNAVAILABLE"
+    assert loaded.status is DailyEvaluationStatus.STARTED
+    assert len(loaded.events) == 1
 
 
 def test_terminal_event_is_once_only_and_invalid_detail_rolls_back(tmp_path):
@@ -181,3 +178,203 @@ def test_portfolio_migration_failure_rolls_back_and_retry_succeeds(tmp_path):
         )
     }
     assert expected <= actual
+
+
+# Synthetic evidence and temporary journals only; these do not activate trading.
+def _dispatch_api():
+    from trading_bot import portfolio_store as store
+    from trading_bot.audit_models import DailyDispatchState
+    assert store.SCHEMA_VERSION == 4
+    return store, DailyDispatchState
+
+
+def _envelope(prompt=b"frozen-first-input"):
+    import hashlib
+    from trading_bot.service_models import DailyDispatchEnvelope
+    return DailyDispatchEnvelope(prompt_bytes=prompt,
+        prompt_hash=hashlib.sha256(prompt).hexdigest(), system_prompt="synthetic system",
+        schema_hash="b" * 64, provider="openai", model="synthetic-model",
+        temperature=0, prompt_version="synthetic-v1")
+
+
+def _owner(conn, tmp_path, scope="a" * 64):
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    return acquire_mutation_lease(conn, account_scope_hash=scope,
+        lock_dir=tmp_path / "locks", command="synthetic-test", cycle_id="synthetic-cycle",
+        observed_at=NOW)
+
+
+def _start(conn, owner, *, ticker="005930", envelope=None, **overrides):
+    envelope = envelope or _envelope()
+    values = dict(trading_date_kst=NOW.date(), ticker=ticker, provenance=("HELD",),
+        canonical_input=envelope.prompt_bytes, account_scope_hash=owner.account_scope_hash,
+        observed_at=NOW, execution_target="mock", envelope=envelope, lease=owner)
+    return start_daily_evaluation(conn, **(values | overrides))
+
+
+def _early():
+    return NOW.replace(hour=0, minute=19, second=59)
+
+
+def _deadline():
+    return NOW.replace(hour=0, minute=20)
+
+
+def test_first_envelope_and_scope_target_are_immutable_and_claim_consumes(tmp_path):
+    store, state = _dispatch_api()
+    path = tmp_path / "audit.db"
+    conn = connect_portfolio_store(path)
+    with _owner(conn, tmp_path) as owner:
+        first = _start(conn, owner)
+        again = _start(conn, owner, envelope=_envelope(b"replacement"))
+        assert again.evaluation_id == first.evaluation_id
+        saved = store.load_daily_dispatch(conn, first.evaluation_id)
+        assert saved["envelope_hash"] == _envelope().envelope_hash
+        assert again.canonical_input == _envelope().prompt_bytes
+        assert saved["dispatch_state"] == state.NEVER_DISPATCHED
+        consumed = store.claim_daily_dispatch(conn, first.evaluation_id, owner, _early(), _deadline())
+        assert consumed["dispatch_state"] == state.DISPATCHED
+        assert consumed["dispatch_id"] and consumed["dispatched_at"] == _early().isoformat()
+        observer = sqlite3.connect(path)
+        assert store.load_daily_dispatch(observer, first.evaluation_id) == consumed
+        observer.close()
+        with pytest.raises(RuntimeError, match="dispatch"):
+            store.claim_daily_dispatch(conn, first.evaluation_id, owner, _early(), _deadline())
+        with pytest.raises(RuntimeError, match="scope|target"):
+            _start(conn, owner, execution_target="real")
+        with pytest.raises(RuntimeError, match="scope|target"):
+            _start(conn, owner, account_scope_hash="c" * 64)
+        owner.release(observed_at=NOW)
+
+
+@pytest.mark.parametrize("stamp", [_deadline(), NOW, NOW.replace(day=5, hour=0, minute=0)])
+def test_exact_cutoff_and_date_do_not_dispatch(tmp_path, stamp):
+    store, state = _dispatch_api()
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    with _owner(conn, tmp_path) as owner:
+        evaluation = _start(conn, owner, observed_at=_early())
+        with pytest.raises(RuntimeError, match="deadline|date|expired"):
+            store.claim_daily_dispatch(conn, evaluation.evaluation_id, owner, stamp, _deadline())
+        saved = store.load_daily_dispatch(conn, evaluation.evaluation_id)
+        assert saved["dispatch_state"] == state.NEVER_DISPATCHED
+        assert saved["dispatch_id"] is None
+
+
+def test_recovery_retains_never_dispatched_then_expires_and_unknown_never_replays(tmp_path):
+    store, state = _dispatch_api()
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    with _owner(conn, tmp_path) as owner:
+        first = _start(conn, owner, observed_at=_early())
+        second = _start(conn, owner, ticker="000001", observed_at=_early())
+        consumed = store.claim_daily_dispatch(conn, second.evaluation_id, owner, _early(), _deadline())
+        rows = store.recover_daily_dispatches(conn, lease=owner,
+            account_scope_hash=owner.account_scope_hash, execution_target="mock",
+            trading_date_kst=NOW.date(), now=_early(), deadline=_deadline())
+        assert {r["evaluation_id"]: r["dispatch_state"] for r in rows} == {
+            first.evaluation_id: state.NEVER_DISPATCHED, second.evaluation_id: state.DISPATCHED_UNKNOWN}
+        unknown = store.load_daily_dispatch(conn, second.evaluation_id)
+        assert unknown["dispatch_id"] == consumed["dispatch_id"]
+        terminal = load_daily_evaluation(conn, second.evaluation_id)
+        assert terminal.status == DailyEvaluationStatus.FINALIZED
+        assert terminal.events[-1].action == "HOLD"
+        assert terminal.events[-1].reason_code == "LLM_UNAVAILABLE"
+        store.recover_daily_dispatches(conn, lease=owner,
+            account_scope_hash=owner.account_scope_hash, execution_target="mock",
+            trading_date_kst=NOW.date(), now=_deadline(), deadline=_deadline())
+        assert store.load_daily_dispatch(conn, first.evaluation_id)["dispatch_state"] == state.EXPIRED_NEVER_DISPATCHED
+        with pytest.raises(RuntimeError, match="dispatch"):
+            store.claim_daily_dispatch(conn, second.evaluation_id, owner, _early(), _deadline())
+
+
+def test_all_dispatch_mutations_require_real_active_same_store_owner(tmp_path):
+    store, _ = _dispatch_api()
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    with _owner(conn, tmp_path) as owner:
+        evaluation = _start(conn, owner, observed_at=_early())
+        for bad in (None, object()):
+            with pytest.raises(RuntimeError, match="owner"):
+                store.claim_daily_dispatch(conn, evaluation.evaluation_id, bad, _early(), _deadline())
+        with pytest.raises(RuntimeError, match="scope"):
+            store.recover_daily_dispatches(conn, lease=owner, account_scope_hash="c" * 64,
+                execution_target="mock", trading_date_kst=NOW.date(), now=_early(), deadline=_deadline())
+        other = connect_portfolio_store(tmp_path / "other.db")
+        with pytest.raises(RuntimeError, match="owner"):
+            store.claim_daily_dispatch(other, evaluation.evaluation_id, owner, _early(), _deadline())
+        owner.release(observed_at=NOW)
+        with pytest.raises(RuntimeError, match="owner"):
+            store.finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=owner,
+                now=_early(), action="HOLD", confidence=0, reason_code="LLM_UNAVAILABLE", unknown=True)
+
+
+def _legacy_db(conn, version=3):
+    from trading_bot import portfolio_store as store
+    for statement in store._SCHEMA:
+        conn.execute(statement)
+    if version == 3:
+        for statement in store._LEASE_SCHEMA:
+            conn.execute(statement)
+    conn.execute("INSERT INTO portfolio_schema_metadata VALUES('phase11',?)", (version,))
+    conn.execute("PRAGMA user_version=3")
+    conn.execute("INSERT INTO daily_evaluations VALUES('legacy','2026-09-04','005930','[\"HELD\"]',?,?,'a' || ?, 'STARTED',?,NULL)",
+        (b"legacy-exact-bytes", "d" * 64, "a" * 63, NOW.isoformat()))
+    conn.execute("INSERT INTO daily_evaluation_events(evaluation_id,event_type,detail_json,observed_at) VALUES('legacy','PROVIDER_ATTEMPT','{}',?)", (NOW.isoformat(),))
+    conn.commit()
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_legacy_attempts_never_replay_and_migration_preserves_old_facts(tmp_path, version):
+    store, state = _dispatch_api()
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    _legacy_db(conn, version)
+    before = tuple(conn.execute("SELECT * FROM daily_evaluations")), tuple(conn.execute("SELECT * FROM daily_evaluation_events"))
+    migrate_portfolio(conn)
+    migrate_portfolio(conn)
+    assert (tuple(conn.execute("SELECT * FROM daily_evaluations")), tuple(conn.execute("SELECT * FROM daily_evaluation_events"))) == before
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert store.load_daily_dispatch(conn, "legacy")["dispatch_state"] == state.DISPATCHED_UNKNOWN
+    with _owner(conn, tmp_path) as owner:
+        with pytest.raises(RuntimeError, match="dispatch"):
+            store.claim_daily_dispatch(conn, "legacy", owner, _early(), _deadline())
+
+
+def test_v4_migration_rolls_back_all_additions_and_foreign_owner_fails(tmp_path):
+    store, _ = _dispatch_api()
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    _legacy_db(conn)
+    before = tuple(conn.execute("SELECT type,name,sql FROM sqlite_master ORDER BY name"))
+    with pytest.raises(RuntimeError, match="injected"):
+        migrate_portfolio(conn, fail_after_step="dispatches")
+    assert tuple(conn.execute("SELECT type,name,sql FROM sqlite_master ORDER BY name")) == before
+    assert conn.execute("SELECT version FROM portfolio_schema_metadata").fetchone()[0] == 3
+    conn.execute("UPDATE portfolio_schema_metadata SET owner='foreign'")
+    conn.commit()
+    with pytest.raises(RuntimeError, match="owner"):
+        migrate_portfolio(conn)
+
+
+def test_missing_legacy_authority_and_scope_collisions_fail_closed(tmp_path):
+    store, state = _dispatch_api()
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    legacy = start_daily_evaluation(conn, trading_date_kst=NOW.date(), ticker="005930",
+        provenance=("HELD",), canonical_input=b"old", account_scope_hash="a" * 64, observed_at=NOW)
+    assert store.load_daily_dispatch(conn, legacy.evaluation_id)["dispatch_state"] == state.BLOCKED_LEGACY
+    with _owner(conn, tmp_path) as owner:
+        with pytest.raises(RuntimeError, match="legacy|target"):
+            _start(conn, owner, observed_at=_early())
+        with pytest.raises(RuntimeError, match="dispatch"):
+            store.claim_daily_dispatch(conn, legacy.evaluation_id, owner, _early(), _deadline())
+
+
+def test_frozen_envelope_tampering_and_wrong_deadline_refuse_recovery(tmp_path):
+    store, _ = _dispatch_api()
+    conn = connect_portfolio_store(tmp_path / "audit.db")
+    with _owner(conn, tmp_path) as owner:
+        evaluation = _start(conn, owner, observed_at=_early())
+        with pytest.raises(RuntimeError, match="deadline"):
+            store.claim_daily_dispatch(conn, evaluation.evaluation_id, owner, _early(), NOW)
+        # A corrupt durable source cannot authorize a call even when the owner is current.
+        conn.execute("DROP TRIGGER immutable_daily_dispatch_envelope")
+        conn.execute("UPDATE daily_evaluation_dispatches SET envelope_hash=?", ("c" * 64,))
+        conn.commit()
+        with pytest.raises(RuntimeError, match="envelope"):
+            store.claim_daily_dispatch(conn, evaluation.evaluation_id, owner, _early(), _deadline())
