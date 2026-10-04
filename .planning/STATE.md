@@ -6,8 +6,8 @@ current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
 current_plan: 2
 status: executing
-stopped_at: Phase 15 planning complete; 14 plans in 9 waves; independent verification passed
-last_updated: "2026-10-04T03:20:35.325Z"
+stopped_at: Completed 15-01-PLAN.md
+last_updated: "2026-10-04T03:21:20.096Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -137,6 +137,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 13]: Validate snapshots by replaying embedded frozen sources and retain original baseline/code facts; all variants share canonical pre-decision state.
 - [Phase 13]: Single-shot dedicated API calls reserve full documented bounds; uncertain attempts retain reservations and require explicit linked retry.
 - [Phase 13]: Reports remain advisory, with exact denominators and UNKNOWN/ESTIMATED facts; shadow has no trade/configuration/promotion authority.
+- [Phase 15]: Controls use one installation-global registered scope domain, without trading-date or process-generation reset.
+- [Phase 15]: Approval/source evidence uses immutable typed tuples; synthetic shape completeness is never activation authority.
+- [Phase 15]: Protected service journal, control and lock roots are separate from existing trading journals and artifacts.
+- [Phase 15]: FUT-04/AUTO-01/AUTO-02 remain pending until subsequent behavior and final phase verification prove them.
 
 ### Pending Todos
 
@@ -167,6 +171,7 @@ None yet.
 | Phase 11 P03 | 14 min | 2 tasks | 6 files |
 | Phase 11 P04 | 12 min | 2 tasks | 4 files |
 | Phase 11 P09 | 12 min | 2 tasks | 5 files |
+| Phase 15 P01 | 15min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -200,9 +205,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T03:20:35.318Z
-Stopped at: Phase 15 planning complete; 14 plans in 9 waves; independent verification passed
-Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-01-PLAN.md
+Last session: 2026-10-04T03:21:20.089Z
+Stopped at: Completed 15-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

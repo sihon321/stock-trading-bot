@@ -134,6 +134,7 @@ status: complete
 
 - Per orchestrator instruction, FUT-04/AUTO-01/AUTO-02 completion is deferred to later implementation and final phase verification. `requirements-completed` remains empty; coverage records only this plan's verified foundation contribution. REQUIREMENTS.md is not marked complete from contract-only proofs.
 - RED test failures arose from intentionally absent new modules before implementation; no collection/syntax failures. The behavioral rejection cases were then exercised in GREEN. Both tasks retain separate RED/GREEN commits.
+- [Rule 3 - Blocking] Installed GSD state handlers require named flags instead of the supplied positional examples. After inspecting registered CLI handlers, metrics/decisions/session were successfully recorded with --phase/--plan/--duration, --summary and --stopped-at/--resume-file. No raw state overwrite was used. SDK aggregate progress retains a legacy 31-plan denominator (97%); actual Phase 15 ROADMAP progress is 1/14 In Progress.
 
 ## Known Stubs
 
