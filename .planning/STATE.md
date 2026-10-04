@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 13
+current_plan: 14
 status: executing
-stopped_at: Completed 15-12-PLAN.md
-last_updated: "2026-10-04T12:09:53.705Z"
+stopped_at: Completed 15-13-PLAN.md
+last_updated: "2026-10-04T16:40:10.759Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 13
+Current Plan: 14
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 13 of 14
+Plan: 14 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -168,6 +168,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Saved service obligations and runtime progress retain separate provenance; failed source partitions keep the shared cursor and existing incidents while healthy owned delivery and CRITICAL reminders continue.
 - [Phase 15]: Web controls use fixed descriptor read/request ports and immutable server actor/time; request acceptance never applies resume.
 - [Phase 15]: Durable control acceptance precedes idempotent web audit; missing correlation remains visible and manual retry retains request ID and revision.
+- [Phase 15]: 15-13: concrete mock runtime follows durable pre-worker leadership; unexpected exits consume restart budget and reset requires 600s plus owned activation and bounded recovery, preserving controls/history.
+- [Phase 15]: 15-13: separate GUI observer composes only protected secret-free registration, narrow expectation writer and read-only controls/exact-session evidence; actual approval, GUI and phone acceptance remain pending.
 
 ### Pending Todos
 
@@ -210,6 +212,7 @@ None yet.
 | Phase 15 P10 | 30min | 2 tasks | 5 files |
 | Phase 15 P11 | 27min | 2 tasks | 9 files |
 | Phase 15 P12 | 12min | 2 tasks | 10 files |
+| Phase 15 P13 | 264min | 2 tasks | 10 files |
 
 ## Deferred Items
 
@@ -243,8 +246,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T12:09:53.698Z
-Stopped at: Completed 15-12-PLAN.md
+Last session: 2026-10-04T16:40:10.346Z
+Stopped at: Completed 15-13-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
