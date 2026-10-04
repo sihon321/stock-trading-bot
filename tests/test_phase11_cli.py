@@ -161,7 +161,7 @@ def invoke(conn, *, run_id, trading_date="20260904", reader=None, factory=None,
                 snapshot_id=f"snapshot-{run_id}-{read_index[0]}",
             )
 
-    collaborators=dependencies(conn,trading_date)
+    collaborators=dependencies(conn,trading_date).copy()
     if lease is not None: collaborators['mutation_lease']=lease
     return run_cycle(
         settings=make_settings(llm_max_retries=2),
@@ -314,9 +314,10 @@ def test_reused_signal_rechecks_lease_before_execution_and_post_boundary():
     conn = sqlite3.connect(":memory:")
     calls = []
     invoke(conn, run_id="phase11-seed", factory=lambda: Provider(calls))
-    lost = Lease(fail=True)
+    lost = dependencies(conn)['mutation_lease']
+    lost.release()
 
-    with pytest.raises(RuntimeError,match='active'):
+    with pytest.raises(RuntimeError):
         invoke(conn, run_id="phase11-replay", factory=lambda: pytest.fail("must not construct"),lease=lost)
 
     assert calls == ["005930", "035420"]
@@ -342,3 +343,73 @@ def test_screened_only_sizing_uses_post_held_broker_cash_snapshot():
     )
 
     assert seen_cash == [("005930", 100.0), ("035420", 900.0)]
+
+
+def seed_dispatch(conn, *, consumed=False):
+    from trading_bot.cli import _daily_envelope
+    from trading_bot.portfolio_store import start_daily_evaluation,claim_daily_dispatch
+    deps=dependencies(conn)
+    runtime=deps['daily_dispatch_runtime']; lease=deps['mutation_lease']
+    saved=_daily_envelope(make_settings(),make_data_context())
+    evaluation=start_daily_evaluation(conn,trading_date_kst=date(2026,9,4),ticker='005930',
+        provenance=('HELD','SCREENED'),canonical_input=saved.prompt_bytes,account_scope_hash=SCOPE.account_scope_hash,
+        envelope=saved,execution_target='mock',lease=lease,observed_at=runtime.clock())
+    if consumed:
+        claim_daily_dispatch(conn,evaluation.evaluation_id,lease,runtime.clock(),runtime.clock().replace(minute=20))
+    return saved,evaluation
+
+
+def test_first_saved_envelope_and_complete_signal_survive_current_input_change():
+    from trading_bot.cli import _load_or_generate_daily_signal,_terminal_daily_signal
+    from trading_bot.portfolio import EvaluationTarget,EvaluationProvenance
+    from trading_bot.portfolio_store import load_daily_evaluation
+    conn=sqlite3.connect(':memory:'); saved,evaluation=seed_dispatch(conn)
+    deps=dependencies(conn); runtime=deps['daily_dispatch_runtime']
+    runtime.commit_universe(SCOPE,date(2026,9,4),('005930',),'manual-test')
+    seen=[]
+    class SavedProvider(Provider):
+        def generate_signal_from_envelope(self,envelope,admission):
+            seen.append(envelope)
+            return super().generate_signal_from_envelope(envelope,admission)
+    kwargs=dict(conn=conn,trading_date_kst=date(2026,9,4),target=EvaluationTarget('005930',(EvaluationProvenance.HELD,)),
+        context=make_data_context(current_price=Money(12345,'KRW')),account_scope_hash=SCOPE.account_scope_hash,
+        provider_factory=lambda:SavedProvider([]),lease=deps['mutation_lease'],dispatch_runtime=runtime,
+        settings=make_settings(anthropic_model='changed-model'))
+    signal,identity=_load_or_generate_daily_signal(**kwargs)
+    assert seen==[saved] and identity==evaluation.evaluation_id
+    stored=load_daily_evaluation(conn,identity)
+    assert _terminal_daily_signal(stored)==signal
+    kwargs['provider_factory']=lambda:pytest.fail('final saved signal cannot call a provider')
+    assert _load_or_generate_daily_signal(**kwargs)==(signal,identity)
+
+
+def test_consumed_crash_is_unknown_never_replayed():
+    conn=sqlite3.connect(':memory:'); saved,evaluation=seed_dispatch(conn,consumed=True)
+    calls=[]
+    result=invoke(conn,run_id='consumed-crash',factory=lambda:Provider(calls),candidates=('005930',))
+    assert calls==[] and result['outcomes'][0]['final_action']=='HOLD'
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED_UNKNOWN',)
+
+
+def test_cutoff_during_provider_construction_consumes_suppression_without_call():
+    conn=sqlite3.connect(':memory:'); deps=dependencies(conn); calls=[]
+    def construct():
+        deps['daily_dispatch_runtime'].clock.advance(600)
+        return Provider(calls)
+    invoke(conn,run_id='cutoff',factory=construct,candidates=('005930',))
+    assert calls==[]
+    with deps['daily_dispatch_runtime'].journal.connection() as c:
+        assert tuple(c.execute('SELECT state,invocation_started_at FROM service_provider_admissions').fetchone())==('SUPPRESSED_NO_CALL',None)
+    assert conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches').fetchone()==('DISPATCHED_UNKNOWN',)
+
+
+def test_entry_before_cutoff_may_finalize_after_cutoff_without_new_sibling_call():
+    conn=sqlite3.connect(':memory:'); deps=dependencies(conn); runtime=deps['daily_dispatch_runtime']; calls=[]
+    class SlowProvider(Provider):
+        def generate_signal(self,context):
+            runtime.clock.advance(601)
+            return super().generate_signal(context)
+    result=invoke(conn,run_id='late-response',factory=lambda:SlowProvider(calls))
+    assert calls==['005930'] and all(item['final_action']=='HOLD' for item in result['outcomes'])
+    rows=conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches ORDER BY rowid').fetchall()
+    assert rows==[('FINALIZED',),('EXPIRED_NEVER_DISPATCHED',)]

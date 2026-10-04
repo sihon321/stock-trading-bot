@@ -913,7 +913,7 @@ def claim_daily_dispatch(conn, evaluation_id, lease, now, deadline):
 
 
 def _finalize_dispatch(conn, dispatch, stamp, *, action, confidence, reason_code, unknown,
-                       execution_intent_id=None, final_state=None):
+                       execution_intent_id=None, final_state=None, signal_reason=None):
     if dispatch['status'] != 'STARTED':
         raise RuntimeError('daily dispatch already finalized')
     if dispatch['dispatched_at'] and stamp < _aware(datetime.fromisoformat(dispatch['dispatched_at'])):
@@ -931,18 +931,26 @@ def _finalize_dispatch(conn, dispatch, stamp, *, action, confidence, reason_code
         (state.value, stamp.isoformat(), execution_intent_id, dispatch['evaluation_id']))
     _dispatch_event(conn, dispatch['evaluation_id'],
         DailyEvaluationEventType.DISPATCH_UNKNOWN if unknown else DailyEvaluationEventType.DISPATCH_FINALIZED, stamp)
+    detail = {'reason': signal_reason} if not unknown and signal_reason is not None else {}
     conn.execute('''INSERT INTO daily_evaluation_events(evaluation_id,event_type,action,
-        confidence,reason_code,detail_json,observed_at) VALUES(?,?,?,?,?,'{}',?)''',
-        (event.evaluation_id,event.event_type.value,event.action,event.confidence,event.reason_code,stamp.isoformat()))
+        confidence,reason_code,detail_json,observed_at) VALUES(?,?,?,?,?,?,?)''',
+        (event.evaluation_id,event.event_type.value,event.action,event.confidence,event.reason_code,
+         json.dumps(sanitize_detail(detail),ensure_ascii=False),stamp.isoformat()))
 
 
 def finalize_daily_dispatch(conn, evaluation_id, *, lease, now, action='HOLD', confidence=0.0,
-                            reason_code='LLM_UNAVAILABLE', unknown=False, execution_intent_id=None):
+                            reason_code='LLM_UNAVAILABLE', unknown=False, execution_intent_id=None, signal_reason=None):
     stamp = _aware(now)
     scope = getattr(lease, 'account_scope_hash', None)
     _assert_dispatch_owner(conn, lease, scope, stamp)
     if execution_intent_id is not None:
         execution_intent_id = _stable_code(execution_intent_id, 'execution_intent_id')
+    if signal_reason is not None:
+        if not isinstance(signal_reason, str) or not signal_reason.strip() or len(signal_reason)>4096:
+            raise ValueError('bounded validated signal reason required')
+        from trading_bot.signal_parser import parse_signal
+        parsed = parse_signal(json.dumps({'decision':action,'confidence':confidence,'reason':signal_reason})).signal
+        signal_reason = parsed.reason
     try:
         conn.execute('BEGIN IMMEDIATE')
         _assert_dispatch_owner(conn, lease, scope, stamp, in_transaction=True)
@@ -953,7 +961,7 @@ def finalize_daily_dispatch(conn, evaluation_id, *, lease, now, action='HOLD', c
             raise RuntimeError('only a consumed dispatch can finalize')
         _intact_envelope(conn, dispatch)
         _finalize_dispatch(conn, dispatch, stamp, action=action, confidence=confidence,
-            reason_code=reason_code, unknown=unknown, execution_intent_id=execution_intent_id)
+            reason_code=reason_code, unknown=unknown, execution_intent_id=execution_intent_id, signal_reason=signal_reason)
         conn.commit()
     except Exception:
         conn.rollback()

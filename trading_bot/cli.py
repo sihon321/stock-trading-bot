@@ -6,6 +6,7 @@ import dotenv
 
 import os
 import json
+import hashlib
 import signal
 import sqlite3
 import time
@@ -32,7 +33,8 @@ from trading_bot.kis_auth import KisAuthConfig
 from trading_bot.kis_quote import KisQuoteAdapter
 from trading_bot.market_cycle import MarketCycleEvidence, MarketCyclePolicy
 from trading_bot.pykrx_adapter import PykrxOhlcvAdapter
-from trading_bot.llm_provider import build_llm_provider, run_llm_cycle as _run_llm_cycle
+from trading_bot.llm_provider import (build_llm_provider, build_single_shot_llm_provider,
+    ProviderDispatchAdmission, signal_schema_hash, run_llm_cycle as _run_llm_cycle)
 from trading_bot.mock_broker import MockBroker
 from trading_bot.notifier import NoopNotifier, build_notifier, format_run_summary
 from trading_bot.preflight import (
@@ -114,9 +116,12 @@ from trading_bot.portfolio_store import (
     migrate_portfolio,
     recover_started_evaluations,
     start_daily_evaluation,
+    load_daily_dispatch, load_daily_evaluation, claim_daily_dispatch, finalize_daily_dispatch,
 )
 from trading_bot.audit_models import DailyEvaluationEventType, DailyEvaluationStatus
-from trading_bot.prompts import render_prompt
+from trading_bot.prompts import render_prompt, SYSTEM_PROMPT, PROMPT_VERSION
+from trading_bot.service_models import (DailyDispatchEnvelope, ServiceScope, LogicalJobKey,
+    ProviderCallAdmission, KST)
 from trading_bot.mutation_lease import (
     LeaseBusyError,
     LeaseRecoveryBlocked,
@@ -191,16 +196,20 @@ class _LeaseGuardedBroker:
         lease: Any,
         portfolio_refresh: Optional[Callable[[str], PortfolioSnapshot]] = None,
         cycle_snapshot_id: Optional[str] = None,
+        execution_intent_id: Optional[str] = None,
     ) -> None:
         self._broker = broker
         self._lease = lease
         self._portfolio_refresh = portfolio_refresh
         self._cycle_snapshot_id = cycle_snapshot_id
+        self._execution_intent_id = execution_intent_id
 
     def get_position(self, ticker: Ticker) -> Any:
         return self._broker.get_position(ticker)
 
     def place_order(self, order: Any, **kwargs: Any) -> Any:
+        if self._execution_intent_id is not None:
+            kwargs['order_intent_id'] = self._execution_intent_id
         if isinstance(self._broker, KISBroker):
             refresh = self._portfolio_refresh
             kwargs.update(
@@ -258,11 +267,80 @@ def _terminal_daily_signal(evaluation: Any) -> LLMSignal:
         raise RuntimeError("finalized daily evaluation has no terminal event")
     if terminal.event_type is DailyEvaluationEventType.LLM_UNAVAILABLE:
         return LLMSignal(Decision.HOLD, 0.0, terminal.reason_code or "LLM_UNAVAILABLE")
+    if not isinstance(terminal.detail.get('reason'), str) or not terminal.detail['reason'].strip():
+        return LLMSignal(Decision.HOLD, 0, 'BLOCKED_SAVED_REASON')
     return LLMSignal(
         Decision(str(terminal.action)),
         float(terminal.confidence),
         str(terminal.detail.get("reason") or terminal.reason_code or "daily signal"),
     )
+
+
+@dataclass(frozen=True)
+class DailyDispatchRuntime:
+    """Protected manual/scheduler composition; child receives only a narrow facade."""
+    settings: Any
+    journal: Any
+    controls: Any
+    session_reader: Callable
+    clock: Callable
+
+    @classmethod
+    def from_config(cls, path):
+        from trading_bot.service_config import load_service_settings
+        from trading_bot.service_store import ServiceJournal
+        from trading_bot.control_store import ControlStore
+        from trading_bot.session_evidence import SessionEvidenceProvider
+        settings = load_service_settings(path)
+        clock = lambda: datetime.now(timezone.utc)
+        journal = ServiceJournal(settings, clock=clock)
+        journal.initialize()
+        controls = ControlStore(settings, clock=clock)
+        controls.reader().effective_state()  # existing owner setup required; never synthesize RUNNING
+        return cls(settings, journal, controls, SessionEvidenceProvider(settings.session_evidence_path, clock), clock)
+
+    def commit_universe(self, scope, day, tickers, generation):
+        if scope not in self.settings.registered_scopes: raise RuntimeError('registered daily scope required')
+        key = LogicalJobKey(scope=scope, trading_date_kst=day, kind='DAILY')
+        due = datetime.combine(day, datetime.min.time(), KST).replace(hour=9, minute=10)
+        deadline = due.replace(minute=20)
+        self.journal.claim_job(key, due_at=due, dispatch_deadline_at=deadline, owner_generation=generation)
+        existing = self.journal.load_job(key.logical_id)
+        # Resume preserves the originally committed held-first universe.
+        if existing['universe_json'] is not None:
+            return tuple(json.loads(existing['universe_json']))
+        self.journal.commit_universe(key.logical_id, tuple(tickers))
+        return tuple(tickers)
+
+    def prepare(self, dispatch, *, session=None):
+        scope = ServiceScope(account_scope_hash=dispatch['account_scope_hash'], execution_target=dispatch['execution_target'])
+        day = date.fromisoformat(dispatch['trading_date_kst'])
+        session = session or self.session_reader(day)
+        control = self.controls.reader().effective_state(scope)
+        writer = self.journal.prepare_provider_admission(ProviderCallAdmission(
+            dispatch_id=dispatch['dispatch_id'], evaluation_id=dispatch['evaluation_id'], scope=scope,
+            trading_date_kst=day, envelope_hash=dispatch['envelope_hash'], state='PREPARED',
+            reason_code='READY', control_revision=control.acceptance_revision,
+            session_source_id=session.source_id, observed_at=self.clock(), invocation_started_at=None),
+            consumed_dispatch=dispatch)
+        return ProviderDispatchAdmission(dispatch_id=dispatch['dispatch_id'], scope=scope,
+            trading_date_kst=day, envelope_hash=dispatch['envelope_hash'], session_source_id=session.source_id,
+            control_reader=self.controls.reader(), session_reader=self.session_reader, clock=self.clock,
+            writer=writer, lock_factory=self.controls.admission_lock,
+            session_fingerprint=hashlib.sha256(session.model_dump_json().encode()).hexdigest())
+
+
+def _daily_envelope(settings, context):
+    prompt = render_prompt(context).encode('utf-8')
+    provider, model, temperature = (
+        ('anthropic', settings.anthropic_model, settings.anthropic_temperature)
+        if settings.llm_provider is LLMProviderName.CLAUDE else
+        ('codex', settings.codex_cli_model or f'{settings.codex_cli_binary}:default', settings.codex_cli_temperature)
+        if settings.llm_provider is LLMProviderName.CODEX_CLI else
+        ('openai', settings.openai_model, settings.openai_temperature))
+    return DailyDispatchEnvelope(prompt_bytes=prompt, prompt_hash=hashlib.sha256(prompt).hexdigest(),
+        system_prompt=SYSTEM_PROMPT, schema_hash=signal_schema_hash(), provider=provider,
+        model=model, temperature=temperature, prompt_version=PROMPT_VERSION)
 
 
 def _load_or_generate_daily_signal(
@@ -273,58 +351,82 @@ def _load_or_generate_daily_signal(
     context: Any,
     account_scope_hash: str,
     provider_factory: Callable[[], Any],
-    provider_cache: list[Any],
-    max_attempts: int,
+    lease: Any,
+    dispatch_runtime: DailyDispatchRuntime,
+    settings: Settings,
 ) -> tuple[LLMSignal, str]:
-    """Commit immutable input before bounded attempts, then reuse its terminal signal."""
-
-    canonical_input = render_prompt(context).encode("utf-8")
+    """The first stored envelope is consumed once; uncertain calls become durable HOLD."""
+    now = dispatch_runtime.clock()
+    deadline = datetime.combine(trading_date_kst, datetime.min.time(), KST).replace(hour=9, minute=20)
+    prior = conn.execute('SELECT evaluation_id FROM daily_evaluations WHERE trading_date_kst=? AND ticker=?',
+        (trading_date_kst.isoformat(), target.ticker)).fetchone()
+    if prior is not None:
+        saved = load_daily_dispatch(conn, prior[0])
+        if (saved['account_scope_hash'] != account_scope_hash or saved['execution_target'] != 'mock'
+                or saved['envelope_json'] is None):
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_IDENTITY'), prior[0]
+        try:
+            envelope = DailyDispatchEnvelope.model_validate_json(saved['envelope_json'])
+        except ValueError:
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0]
+        stored_input = conn.execute('SELECT canonical_input FROM daily_evaluations WHERE evaluation_id=?', (prior[0],)).fetchone()[0]
+        identity = conn.execute('SELECT account_scope_hash,execution_target,trading_date_kst,ticker '
+            'FROM daily_dispatch_identities WHERE evaluation_id=?',(prior[0],)).fetchone()
+        if (envelope.envelope_hash != saved['envelope_hash'] or envelope.schema_hash != signal_schema_hash()
+                or envelope.prompt_hash != saved['canonical_input_hash'] or envelope.prompt_bytes != bytes(stored_input)
+                or identity is None or tuple(identity) != (account_scope_hash,'mock',trading_date_kst.isoformat(),target.ticker)):
+            return LLMSignal(Decision.HOLD, 0, 'BLOCKED_STORED_ENVELOPE'), prior[0]
+        evaluation = load_daily_evaluation(conn, prior[0])
+        if evaluation.status is DailyEvaluationStatus.FINALIZED:
+            return _terminal_daily_signal(evaluation), evaluation.evaluation_id
+    else:
+        envelope = _daily_envelope(settings, context)
     evaluation = start_daily_evaluation(
         conn,
         trading_date_kst=trading_date_kst,
         ticker=target.ticker,
         provenance=tuple(item.value for item in target.provenance),
-        canonical_input=canonical_input,
+        canonical_input=envelope.prompt_bytes,
         account_scope_hash=account_scope_hash,
+        execution_target='mock', envelope=envelope, lease=lease, observed_at=now,
     )
     if evaluation.status is DailyEvaluationStatus.FINALIZED:
         return _terminal_daily_signal(evaluation), evaluation.evaluation_id
 
-    if not provider_cache:
-        provider_cache.append(provider_factory())
-    provider = provider_cache[0]
-    for attempt in range(1, max(1, int(max_attempts)) + 1):
-        append_daily_evaluation_event(
-            conn,
-            evaluation.evaluation_id,
-            event_type=DailyEvaluationEventType.PROVIDER_ATTEMPT,
-            detail={"attempt": attempt},
-        )
-        try:
-            signal = provider.generate_signal(context)
-        except Exception:
-            if attempt < max(1, int(max_attempts)):
-                continue
-            append_daily_evaluation_event(
-                conn,
-                evaluation.evaluation_id,
-                event_type=DailyEvaluationEventType.LLM_UNAVAILABLE,
-                action="HOLD",
-                reason_code="LLM_UNAVAILABLE",
-                detail={"attempts": attempt},
-            )
-            return LLMSignal(Decision.HOLD, 0.0, "LLM_UNAVAILABLE"), evaluation.evaluation_id
-        append_daily_evaluation_event(
-            conn,
-            evaluation.evaluation_id,
-            event_type=DailyEvaluationEventType.SIGNAL_FINALIZED,
-            action=signal.decision.value,
-            confidence=signal.confidence,
-            reason_code="FINAL_SIGNAL",
-            detail={"reason": signal.reason},
-        )
+    scope = ServiceScope(account_scope_hash=account_scope_hash, execution_target='mock')
+    session = dispatch_runtime.session_reader(trading_date_kst)
+    if (scope not in dispatch_runtime.settings.registered_scopes
+            or dispatch_runtime.controls.reader().effective_state(scope).mode != 'RUNNING'
+            or now.astimezone(KST).date() != trading_date_kst
+            or not deadline.replace(minute=10) <= now < deadline
+            or session.eligibility != 'ELIGIBLE' or session.continuous_open is None
+            or session.continuous_close is None or not session.continuous_open <= now < session.continuous_close):
+        recover_started_evaluations(conn, lease=lease, account_scope_hash=account_scope_hash,
+            execution_target='mock', trading_date_kst=trading_date_kst, observed_at=now, deadline=deadline)
+        return LLMSignal(Decision.HOLD, 0, 'DISPATCH_BLOCKED'), evaluation.evaluation_id
+    consumed = claim_daily_dispatch(conn, evaluation.evaluation_id, lease, dispatch_runtime.clock(), deadline)
+    admission = None
+    intent = str(uuid.uuid5(uuid.NAMESPACE_URL, f'daily-evaluation:{evaluation.evaluation_id}'))
+    try:
+        admission = dispatch_runtime.prepare(consumed, session=session)
+        provider = provider_factory()  # construction only after irreversible consumed claim
+        signal = provider.generate_signal_from_envelope(envelope, admission)
+        if not admission.used: raise RuntimeError('provider did not enter admitted transport')
+        admission.writer.transition_prepared('FINISHED', reason_code='RESPONSE_PARSED', observed_at=dispatch_runtime.clock())
+        lease.assert_active_owner(observed_at=dispatch_runtime.clock())
+        finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=lease, now=dispatch_runtime.clock(),
+            action=signal.decision.value, confidence=signal.confidence, reason_code='FINAL_SIGNAL',
+            execution_intent_id=intent, signal_reason=signal.reason)
         return signal, evaluation.evaluation_id
-    raise AssertionError("bounded provider loop must return")
+    except Exception:
+        if admission is not None:
+            try:
+                admission.writer.transition_prepared('UNKNOWN', reason_code='PROVIDER_UNKNOWN',observed_at=dispatch_runtime.clock())
+            except Exception: pass  # terminal suppression/failed evidence never restores authority
+        lease.assert_active_owner(observed_at=dispatch_runtime.clock())
+        finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=lease, now=dispatch_runtime.clock(), unknown=True,
+            execution_intent_id=intent)
+        return LLMSignal(Decision.HOLD, 0, 'LLM_UNAVAILABLE'), evaluation.evaluation_id
 
 
 @dataclass(frozen=True)
@@ -1586,6 +1688,8 @@ def run_cycle(
     order_event_hook: Optional[Callable[[Any], None]] = None,
     portfolio_snapshot_reader: Optional[Callable[[], PortfolioSnapshot]] = None,
     mutation_lease: Any = None,
+    daily_dispatch_runtime: DailyDispatchRuntime | None = None,
+    service_config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run the screened universe with injected or production collaborators."""
 
@@ -1653,11 +1757,17 @@ def run_cycle(
     phase11_universe = None
     phase11_snapshot = None
     phase11_targets: dict[str, EvaluationTarget] = {}
-    provider_cache: list[Any] = []
     lease_owned = False
     if phase11_enabled:
+        if resolved_settings.trading_mode is not TradingMode.MOCK:
+            raise SystemExit('daily durable dispatch requires mock target')
+        if daily_dispatch_runtime is None:
+            registered = service_config_path or os.environ.get('BOT_SERVICE_CONFIG')
+            if not registered: raise SystemExit('daily dispatch requires protected --service-config registration')
+            daily_dispatch_runtime = DailyDispatchRuntime.from_config(Path(registered))
+        if llm_provider_factory is None and llm_provider is None:
+            provider_factory = lambda: build_single_shot_llm_provider(resolved_settings)
         migrate_portfolio(resolved_audit_conn)
-        recover_started_evaluations(resolved_audit_conn)
         if mutation_lease is None:
             if runtime is None or runtime.account_scope_hash is None:
                 raise ValueError("Phase 11 portfolio orchestration requires a mutation lease")
@@ -1681,6 +1791,7 @@ def run_cycle(
                 },
             )
         else:
+            mutation_lease.assert_active_owner()
             phase11_snapshot = portfolio_snapshot_reader()
             append_portfolio_snapshot(
                 resolved_audit_conn,
@@ -1688,6 +1799,11 @@ def run_cycle(
                 cycle_id=resolved_run_id,
                 observation_id=f"{resolved_run_id}:cycle-start",
             )
+        day = datetime.strptime(resolved_trading_date, '%Y%m%d').date()
+        recover_started_evaluations(resolved_audit_conn, lease=mutation_lease,
+            account_scope_hash=mutation_lease.account_scope_hash, execution_target='mock',
+            trading_date_kst=day, observed_at=daily_dispatch_runtime.clock(),
+            deadline=datetime.combine(day, datetime.min.time(), KST).replace(hour=9, minute=20))
     sqlite_audit.recover_abandoned_runs(resolved_audit_conn)
     sqlite_audit.start_run(
         resolved_audit_conn,
@@ -1802,6 +1918,10 @@ def run_cycle(
                 tickers = [target.ticker for target in phase11_universe.targets]
             else:
                 tickers = _candidate_tickers(screened)
+        if phase11_enabled:
+            day = datetime.strptime(resolved_trading_date, '%Y%m%d').date()
+            scope = ServiceScope(account_scope_hash=mutation_lease.account_scope_hash, execution_target='mock')
+            tickers = list(daily_dispatch_runtime.commit_universe(scope, day, tickers, resolved_run_id))
         screened_refresh_done = False
         for symbol in tickers:
             correlation_id = f"{resolved_run_id}:{symbol}"
@@ -1956,9 +2076,12 @@ def run_cycle(
                         context=context,
                         account_scope_hash=phase11_snapshot.account_scope_hash,
                         provider_factory=provider_factory,
-                        provider_cache=provider_cache,
-                        max_attempts=resolved_settings.llm_max_retries,
+                        lease=mutation_lease,
+                        dispatch_runtime=daily_dispatch_runtime,
+                        settings=resolved_settings,
                     )
+                    active_broker._execution_intent_id = load_daily_dispatch(
+                        resolved_audit_conn, _evaluation_id)['execution_intent_id']
                     provider_for_cycle = _FinalSignalProvider(signal)
                 result = cycle_fn(
                     provider_for_cycle,
@@ -2609,6 +2732,8 @@ def run_command(
         help="Required in real mode when --execute is passed.",
     ),
     parent_run_id: Optional[str] = typer.Option(None, "--parent-run-id", help="UUID of an explicit retry parent."),
+    service_config: Optional[Path] = typer.Option(None, '--service-config', dir_okay=False,
+        help='Protected registered operational topology for daily dispatch.'),
 ) -> None:
     """Run one manual evaluation cycle over the screened universe."""
 
@@ -2618,6 +2743,7 @@ def run_command(
             execute=execute,
             live_confirm=live_confirm,
             parent_run_id=parent_run_id,
+            service_config_path=service_config,
         )
     except SystemExit as exc:
         typer.echo(str(exc), err=True)

@@ -413,10 +413,15 @@ def test_scoped_concurrent_claim_has_one_winner_and_terminal_cannot_reset(tmp_pa
         finally:
             owner._conn = conn
             shared.close()
+        with pytest.raises(ValueError, match='reason'):
+            store.finalize_daily_dispatch(conn,evaluation.evaluation_id,lease=owner,
+                now=_early(),signal_reason='')
         final = store.finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=owner,
-            now=_early(), action="HOLD", confidence=0.5, reason_code="MODEL_HOLD")
+            now=_early(), action="HOLD", confidence=0.5, reason_code="MODEL_HOLD",signal_reason='saved technical reasoning')
         assert final["dispatch_state"] == state.FINALIZED
         assert final["execution_intent_id"] is None
+        event=store.load_daily_evaluation(conn,evaluation.evaluation_id).events[-1]
+        assert (event.action,event.confidence,event.detail.get('reason'))==('HOLD',0.5,'saved technical reasoning')
         with pytest.raises(RuntimeError, match="consumed"):
             store.finalize_daily_dispatch(conn, evaluation.evaluation_id, lease=owner, now=_early())
         with pytest.raises(sqlite3.IntegrityError, match="reset"):

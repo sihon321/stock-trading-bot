@@ -61,7 +61,8 @@ def admitted(tmp_path, *, clock=None, session_reader=None, env=None):
         trading_date_kst=NOW.date(), envelope_hash=env.envelope_hash,
         session_source_id=session_evidence().source_id, control_reader=controls.reader(),
         session_reader=session_reader or (lambda day: session_evidence(day=day)), clock=clock,
-        writer=writer, lock_factory=controls.admission_lock)
+        writer=writer, lock_factory=controls.admission_lock,
+        session_fingerprint=hashlib.sha256(session_evidence().model_dump_json().encode()).hexdigest())
     return admission, journal, controls, clock
 
 
@@ -80,13 +81,15 @@ def test_admission_is_single_use_and_releases_lock_at_actual_entry(tmp_path):
     assert calls == ['entered']
 
 
-@pytest.mark.parametrize('boundary', ['cutoff', 'date', 'session', 'pause', 'kill'])
+@pytest.mark.parametrize('boundary', ['cutoff', 'date', 'session', 'session_hash', 'pause', 'kill'])
 def test_changed_current_facts_suppress_consumed_dispatch_without_call(tmp_path, boundary):
     from trading_bot.llm_provider import LLMProviderError
     admission, journal, controls, clock = admitted(tmp_path)
     if boundary == 'cutoff': clock.advance(600)
     if boundary == 'date': clock.advance(86400)
     if boundary == 'session': admission.session_reader = lambda day: session_evidence('unknown', day)
+    if boundary == 'session_hash':
+        admission.session_reader=lambda day:session_evidence(day=day).model_copy(update={'source_hash':'d'*64})
     if boundary in ('pause', 'kill'):
         from trading_bot.service_models import ControlRequest
         controls.request_writer(actor='tester').append_request(ControlRequest(request_id='stop', actor='tester',
@@ -193,6 +196,7 @@ def test_codex_one_creation_with_response_wait_outside_lock(tmp_path,failure):
             return ('invalid' if failure=='parse' else '{"decision":"HOLD","confidence":0.8,"reason":"saved"}','')
         def poll(self): return self.returncode
     def popen(argv,**kw): calls.append((argv,kw)); return Child()
+    popen.single_shot_capability='codex-request-stream-retries-zero-v1'
     provider=build_single_shot_llm_provider(make_settings(llm_provider=LLMProviderName.CODEX_CLI),popen=popen)
     if failure=='success': assert provider.generate_signal_from_envelope(env,admission).reason=='saved'
     else:
@@ -209,3 +213,15 @@ def test_unknown_injected_sdk_has_no_envelope_transport_authority(tmp_path):
     provider=OpenAILLMProvider(client=client,model='current',temperature=0)
     with pytest.raises(LLMProviderError): provider.generate_signal_from_envelope(envelope(),admission)
     assert journal.load_provider_admission('dispatch1').state=='SUPPRESSED_NO_CALL'
+
+
+def test_unverified_codex_config_is_not_transport_capability(tmp_path):
+    from conftest import make_settings
+    from trading_bot.config import LLMProviderName
+    from trading_bot.llm_provider import build_single_shot_llm_provider,LLMProviderError
+    env=envelope('codex'); admission,journal,controls,clock=admitted(tmp_path,env=env)
+    calls=[]
+    provider=build_single_shot_llm_provider(make_settings(llm_provider=LLMProviderName.CODEX_CLI),
+        popen=lambda *args,**kwargs:calls.append('BAD'))
+    with pytest.raises(LLMProviderError): provider.generate_signal_from_envelope(env,admission)
+    assert calls==[] and journal.load_provider_admission('dispatch1').state=='SUPPRESSED_NO_CALL'

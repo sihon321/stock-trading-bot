@@ -6,6 +6,7 @@ import json
 import subprocess
 import hashlib
 import time
+import threading
 from datetime import datetime, time as wall_time
 from typing import Any, Callable
 
@@ -47,9 +48,10 @@ class TransportEntryAck:
         self.admission, self.lock, self.deadline = admission, lock, deadline
         self.entered = False
         self.open = True
+        self.thread_id = threading.get_ident()
 
     def __call__(self, create=None):
-        if not self.open or self.entered:
+        if not self.open or self.entered or threading.get_ident() != self.thread_id:
             raise LLMProviderError('ENTRY_ACK_INVALID')
         self.lock.assert_owned()
         def check():
@@ -66,10 +68,12 @@ class TransportEntryAck:
 class ProviderDispatchAdmission:
     """Consumed operational identity only; no trading or account capability."""
     def __init__(self, *, dispatch_id, scope, trading_date_kst, envelope_hash,
-                 session_source_id, control_reader, session_reader, clock, writer, lock_factory):
+                 session_source_id, control_reader, session_reader, clock, writer, lock_factory,
+                 session_fingerprint):
         self.dispatch_id, self.scope = dispatch_id, scope
         self.trading_date_kst, self.envelope_hash = trading_date_kst, envelope_hash
         self.session_source_id = session_source_id
+        self.session_fingerprint = session_fingerprint
         self.control_reader, self.session_reader, self.clock = control_reader, session_reader, clock
         self.writer, self.lock_factory = writer, lock_factory
         self.used = False
@@ -84,6 +88,7 @@ class ProviderDispatchAdmission:
         session = self.session_reader(self.trading_date_kst)
         if (session.trading_date_kst != self.trading_date_kst or session.eligibility != 'ELIGIBLE'
                 or session.source_id != self.session_source_id
+                or hashlib.sha256(session.model_dump_json().encode()).hexdigest() != self.session_fingerprint
                 or session.continuous_open is None or session.continuous_close is None
                 or not session.continuous_open <= now < session.continuous_close
                 or session.observed_at > now or session.reviewed_at > now or session.effective_at > now):
@@ -134,13 +139,34 @@ class _SingleShotTransport(httpx.BaseTransport):
         if self.used or self.admission is None: raise LLMProviderError('TRANSPORT_UNARMED')
         self.used = True
         def entry(ack):
-            # This is the synchronous HTTP transport invocation entry, not an
-            # SDK pre-request callback. Response/network waiting follows ACK.
-            ack()
+            if not isinstance(self.inner, (_AcknowledgedHTTPTransport, _AcknowledgedMockTransport)):
+                raise LLMProviderError('UNSUPPORTED_TRANSPORT_HOOK')
+            self.inner.entry_ack = ack
+            # Call the concrete HTTP transport while admission.lock is owned.
+            # Its handle_request entry executes ACK before network response wait.
             return self.inner.handle_request(request)
         return self.admission.admit_at_transport_entry(entry)
 
     def close(self): self.inner.close()
+
+
+class _AcknowledgedHTTPTransport(httpx.HTTPTransport):
+    entry_ack = None
+    def handle_request(self, request):
+        ack, self.entry_ack = self.entry_ack, None
+        if ack is None: raise LLMProviderError('TRANSPORT_UNARMED')
+        ack()
+        return super().handle_request(request)
+
+
+class _AcknowledgedMockTransport(httpx.MockTransport):
+    """Verified offline equivalent of the concrete synchronous transport hook."""
+    entry_ack = None
+    def handle_request(self, request):
+        ack, self.entry_ack = self.entry_ack, None
+        if ack is None: raise LLMProviderError('TRANSPORT_UNARMED')
+        ack()
+        return super().handle_request(request)
 
 
 def _validate_envelope(provider, envelope, admission):
@@ -154,6 +180,7 @@ def _validate_envelope(provider, envelope, admission):
         envelope.prompt_bytes.decode('utf-8')
         return envelope
     except Exception:
+        if isinstance(admission, ProviderDispatchAdmission): admission.suppress('ENVELOPE_INVALID')
         raise LLMProviderError('ENVELOPE_INVALID') from None
 
 
@@ -656,10 +683,17 @@ def build_single_shot_llm_provider(settings: Settings, *, transport=None, popen=
         provider = CodexCLIProvider(binary=settings.codex_cli_binary, model=settings.codex_cli_model,
             temperature=settings.codex_cli_temperature, timeout_seconds=90, max_retries=1,
             extra_args=settings.codex_cli_extra_args)
-        provider._single_shot = True
+        # Configuration text alone cannot prove an arbitrary CLI's internal
+        # retry behavior. Only an explicitly verified transport adapter may run.
+        provider._single_shot = (popen is not None and
+            getattr(popen, 'single_shot_capability', None) == 'codex-request-stream-retries-zero-v1')
         provider._popen = popen or subprocess.Popen
         return provider
-    boundary = _SingleShotTransport(transport or httpx.HTTPTransport(retries=0))
+    if transport is None:
+        transport = _AcknowledgedHTTPTransport(retries=0)
+    elif type(transport) is httpx.MockTransport:
+        transport = _AcknowledgedMockTransport(transport.handler)
+    boundary = _SingleShotTransport(transport)
     http_client = httpx.Client(transport=boundary, timeout=90, follow_redirects=False)
     kwargs = dict(max_retries=0, timeout=90, http_client=http_client)
     if settings.llm_provider is LLMProviderName.CLAUDE:
