@@ -20,6 +20,50 @@ class Sessions:
     def for_date(self,day):return session_evidence(self.kind,day)
 
 
+def test_failed_actual_risk_ticks_preserve_stall_until_successful_attributed_progress(tmp_path):
+    from tests.test_service_health import health_fixture
+    from tests.test_alert_observer import Transport
+    from trading_bot.alert_observer import AlertObserver
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.web_config import ResourceDescriptor
+    from trading_bot.web_models import AlertSourceBatch
+    runtime,conn,clock,sequence=runtime_fixture(tmp_path,clock=FakeServiceClock(at(8,0)))
+    (tmp_path/'obligations').mkdir()
+    reader,unused,unusedclock,unusedtopology=health_fixture(tmp_path/'obligations')
+    # Publish real independent obligations into this runtime's owner store.
+    with unused.connection() as source:
+        for row in source.execute('SELECT evidence_json FROM service_expectations'):
+            from trading_bot.service_models import ServiceExpectation
+            runtime.journal.expectation_writer().record_derived(ServiceExpectation.model_validate_json(row[0]).model_copy(update={'control_revision':1}))
+    bot=AlertObserver(ObserverSettings(operational_db_path=tmp_path/'observer'/'alerts.db',
+        registered_resources=tuple(ResourceDescriptor(id=owner,owner=owner,path=path,
+            account_hash=SCOPE.account_scope_hash,target='mock') for owner,path in
+            [('service',runtime.journal.path),('control',runtime.controls.path)])),clock=clock,notifier=Transport())
+    def observe():
+        for fact in bot.detector.detect(AlertSourceBatch(clock(),(),service_health=bot.evidence.service_health())):
+            bot.store.observe(fact)
+    try:
+        bot.start()
+        runtime.start()
+        clock.wall=at(9,5);observe()
+        incident=next(e for e in bot.store.list_incidents(active=True) if e.subject.problem_family=='WORKER_STALLED')
+        original=runtime.work.run
+        runtime.work.run=lambda op:(_ for _ in ()).throw(RuntimeError('account unavailable'))
+        for _ in range(2):
+            runtime.tick();observe()
+            health=next(h for h in bot.evidence.service_health() if h.kind=='RISK')
+            assert health.state=='BLOCKED' and health.reason_code=='RISK_UNAVAILABLE'
+            assert health.mutation_ready is False and health.last_progress_at is None
+            assert bot.store.get_incident(incident.episode_id).active
+            clock.advance(60)
+        runtime.work.run=original
+        runtime.tick();observe()
+        health=next(h for h in bot.evidence.service_health() if h.kind=='RISK')
+        assert health.state=='RUNNING' and health.last_progress_at is not None
+        assert not bot.store.get_incident(incident.episode_id).active
+    finally:runtime.stop();conn.close();bot.stop()
+
+
 @pytest.mark.parametrize('kind',['normal','holiday','unknown','delayed'])
 def test_actual_runtime_fixed_boundary_matrix_coalesces_without_provider(kind,tmp_path):
     def interrupted(name):

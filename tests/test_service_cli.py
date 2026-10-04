@@ -1,5 +1,8 @@
 import json
 import os
+from contextlib import contextmanager
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -172,6 +175,74 @@ def production_fixture(tmp_path):
         def refresh(self,day):return True
         def previous_trading_day(self,day):return day-timedelta(days=3)
     return settings,protected_reader,composition,Calendar,NOW
+
+
+@contextmanager
+def production_root(tmp_path, *, advance=False, orders=()):
+    from trading_bot.service_cli import build_production_runtime
+    settings,reader,composition,calendar,now=production_fixture(tmp_path)
+    class Clock:
+        value=now
+        def __call__(self):
+            if advance:self.value+=timedelta(microseconds=1)
+            return self.value
+    clock=Clock()
+    def build(settings,**kwargs):
+        result=composition(settings,**kwargs)
+        original=result.read_portfolio
+        return replace(result,read_portfolio=lambda request:replace(original(request),
+            observed_at=clock(),orders=orders))
+    with NoExternalCapabilities(), patch('trading_bot.service_cli.acceptance_reader',return_value=reader), \
+            patch('trading_bot.service_cli.clock',side_effect=clock), \
+            patch('trading_bot.service_composition.build_service_composition',side_effect=build), \
+            patch('trading_bot.data_source.ObservedKRXCalendar',calendar), \
+            patch('trading_bot.pykrx_adapter.PykrxOhlcvAdapter',return_value=object()):
+        runtime=build_production_runtime(settings)
+        try:yield runtime,reader,clock
+        finally:runtime.stop();runtime.close_resources()
+
+
+def test_production_safety_uses_observation_start_and_evaluation_end(tmp_path):
+    with production_root(tmp_path,advance=True) as (runtime,reader,clock):
+        verdict=runtime.activation_check()
+        assert verdict.allowed, verdict.reason_codes
+        assert runtime.start()=='RUNNING'
+        original=reader.read
+        reader.read=lambda receipt:original(receipt).model_copy(update={'reconciliation_unknown':1})
+        assert not runtime.activation_check().allowed
+        reader.read=original
+        # Slow read retains its real observation age instead of backdating it.
+        def stale(receipt):
+            clock.value+=timedelta(seconds=11)
+            return original(receipt)
+        reader.read=stale
+        assert not runtime.activation_check().allowed
+
+
+import pytest
+
+
+@pytest.mark.parametrize('status,filled', [('OPEN',0),('PARTIAL',1),('NO_FILL',0)])
+def test_production_account_work_accepts_exact_nonterminal_truth_without_clearing(tmp_path,status,filled):
+    from trading_bot.portfolio import PortfolioOrder
+    from trading_bot.audit_models import OrderEvent,OrderEventType,RunKind,RunStatus
+    from trading_bot import sqlite_audit
+    order=PortfolioOrder('known-open',None,'000660','BUY',2,filled,2-filled,0,0,100,status,'20261005','090000')
+    with production_root(tmp_path,orders=(order,)) as (runtime,reader,clock):
+        conn=runtime.work.conn
+        sqlite_audit.start_run(conn,run_id='origin',trading_mode='mock',run_kind=RunKind.RUN,dry_run=False,
+            trading_date_kst='2026-10-05')
+        sqlite_audit.append_order_event(conn,OrderEvent('original-intent','origin','origin','000660',
+            OrderEventType.SUBMISSION_ACCEPTED,broker_order_id='known-open',side='BUY',requested_qty=2,
+            filled_qty=0,unfilled_qty=2,observed_at=clock().isoformat()))
+        before=tuple(reader.read_freezes())
+        assert runtime.start()=='RUNNING'
+        seen=runtime.work.run(lambda lease,current,budget:(lease.state,tuple(h.ticker for h in current.holdings)))
+        assert '005930' in seen[1]
+        rows=conn.execute("SELECT broker_status FROM order_events WHERE event_type='RECONCILED'").fetchall()
+        assert rows and {r[0] for r in rows}=={status}
+        assert tuple(reader.read_freezes())==before
+        assert not conn.execute("SELECT 1 FROM mutation_leases WHERE state!='RELEASED'").fetchone()
 
 
 def test_real_composition_root_binds_concrete_account_and_audit(tmp_path):

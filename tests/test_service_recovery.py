@@ -91,6 +91,34 @@ def test_every_start_recovers_before_collect_or_tick(tmp_path):
     finally:runtime.stop();conn.close()
 
 
+def test_first_daily_collect_captures_fresh_membership_outside_account_ownership(tmp_path):
+    from trading_bot.portfolio import PortfolioHolding
+    from tests.test_daily_dispatch import envelope
+    from trading_bot.service_runtime import DailyInput
+    runtime,conn,clock,sequence=runtime_fixture(tmp_path)
+    original=runtime.work.snapshot_reader
+    readings=[]
+    def snapshot():
+        current=original()
+        readings.append(current.snapshot_id)
+        return replace(current,holdings=(PortfolioHolding('035420',7,7,100),))
+    class Source:
+        def collect(self,day,held):
+            assert held==('035420',)
+            assert not conn.in_transaction
+            assert not conn.execute("SELECT 1 FROM mutation_leases WHERE state!='RELEASED'").fetchone()
+            return (DailyInput('035420',('HELD',),envelope()),)
+    try:
+        runtime.start()
+        runtime.work.snapshot_reader=snapshot
+        runtime.daily_inputs=Source()
+        runtime.barrier=lambda name:(_ for _ in ()).throw(RuntimeError('stop before provider')) if name=='DISPATCH_COMMITTED' else None
+        runtime.tick()
+        assert runtime.job('DAILY')['universe_json']=='["035420"]'
+        assert readings
+    finally:runtime.stop();conn.close()
+
+
 def test_daily_failure_keeps_risk_alive_and_controls_persist(tmp_path):
     runtime,conn,clock,sequence=runtime_fixture(tmp_path,inputs_failure=True)
     try:
