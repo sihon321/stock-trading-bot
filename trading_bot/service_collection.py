@@ -86,16 +86,16 @@ class ProductionInputSource:
 
     def collect(self, snapshot, cutoff: date):
         """Runs only in the child; every held fact uses this exact frozen snapshot."""
-        from .data_source import build_data_source
-        from .portfolio import held_first_targets,build_held_position_context
-        from .domain import Ticker
-        from .data_models import TickerRole
-        from .prompts import render_prompt
         policy=SimpleNamespace(**dict(self.policy))
         if self.offline_factory is not None:
             source=self.offline_factory(policy,cutoff)
         else:
+            from .data_source import build_data_source
             source=build_data_source(policy,expected_date=cutoff.strftime('%Y%m%d'),quote_adapter=self.quote.build())
+        from .portfolio import held_first_targets,build_held_position_context
+        from .domain import Ticker
+        from .data_models import TickerRole
+        from .prompts import render_prompt
         screened=source.screen_daily_candidates(cutoff.strftime('%Y%m%d'))
         held=tuple(h.ticker for h in snapshot.holdings)
         targets=held_first_targets(held,(c.ticker for c in screened.candidates))

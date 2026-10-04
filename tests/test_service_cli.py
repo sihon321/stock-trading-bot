@@ -233,22 +233,45 @@ class GatedCollectionDataSource:
     release: object
     stages: Path
     stage: str = 'screen'
+    forbidden_inodes: tuple = ()
 
     def __call__(self,policy,cutoff):
+        from contextlib import ExitStack
+        from tests.service_fixtures import NoExternalCapabilities
+        # Tripwires apply before target adapters are imported in this interpreter.
+        stack=ExitStack();stack.enter_context(NoExternalCapabilities())
+        for target in ('trading_bot.config.Settings.__init__','trading_bot.soak_config.SoakSettings.__init__',
+                'trading_bot.kis_order.KisOrderAccount.__init__','trading_bot.kis_order.KisOrderAdapter.__init__',
+                'trading_bot.kis_broker.KISBroker.__init__','trading_bot.kis_auth.KisTokenManager.__init__',
+                'trading_bot.kis_quote.KisQuoteAdapter.__init__','trading_bot.pykrx_adapter.PykrxOhlcvAdapter.__init__',
+                'trading_bot.llm_provider.build_single_shot_llm_provider','sqlite3.connect',
+                'dotenv.load_dotenv','dotenv.dotenv_values'):
+            stack.enter_context(patch(target,side_effect=AssertionError('forbidden child constructor/store')))
+        for fd in range(1024):
+            try:info=os.fstat(fd)
+            except OSError:continue
+            assert (info.st_dev,info.st_ino) not in self.forbidden_inodes
         from types import SimpleNamespace
         from trading_bot.data_source import build_data_source
         from tests.test_data_source import (_available_ohlcv,_available_indicators,
             _available_quote,_available_news)
         from tests.test_screener import _row
-        from tests.service_fixtures import NoExternalCapabilities
-        # Tripwires apply inside the spawned interpreter before construction.
-        external=NoExternalCapabilities();external.__enter__()
         outer=self
         def record(stage):
             with outer.stages.open('a') as output:output.write(stage+'\n')
             if outer.stage==stage:
                 outer.ready.set()
                 if not outer.release.wait(10):raise RuntimeError('offline collection wait')
+        # Prove constructor/store/network tripwires are live, rather than merely
+        # observing that a fixture happened not to use them.
+        from trading_bot.config import Settings
+        import sqlite3,socket
+        for prohibited in (lambda:Settings(),lambda:sqlite3.connect(':memory:'),
+                lambda:socket.create_connection(('203.0.113.1',443))):
+            try:prohibited()
+            except (AssertionError,RuntimeError):pass
+            else:raise AssertionError('missing child tripwire')
+        record('GUARDS_AND_FDS_VERIFIED')
         class Bars:
             def fetch_market_rows(self,day):
                 record('screen')
@@ -281,11 +304,18 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
         context=multiprocessing.get_context('spawn');ready=context.Event();release=context.Event()
         source=runtime.daily_inputs
         assert set(vars(source))=={'policy','quote','prompt','offline_factory','offline_authority'}
+        encoded=pickle.dumps(source)
+        assert b'00001234' not in encoded and b'OFFLINE_NO_TRANSPORT' not in encoded
+        assert str(runtime.settings.trading_journal_paths[0]).encode() not in encoded
         source=replace(source,offline_factory=GatedCollectionDataSource(ready,release,tmp_path/'stages',stage),
             offline_authority=OfflineActivationAuthority(tmp_path))
         runtime.daily_inputs=source
         runtime.barrier=lambda name:(_ for _ in ()).throw(RuntimeError('before provider')) if name=='DISPATCH_COMMITTED' else None
         assert runtime.start()=='RUNNING'
+        inodes=tuple((p.stat().st_dev,p.stat().st_ino) for p in
+            (runtime.leader.lock_path,runtime.settings.trading_journal_paths[0]))
+        runtime.daily_inputs=replace(runtime.daily_inputs,offline_factory=replace(runtime.daily_inputs.offline_factory,
+            forbidden_inodes=inodes))
         original=runtime.work.snapshot_reader
         quantity=[7]
         runtime.work.snapshot_reader=lambda:replace(original(),holdings=(PortfolioHolding('035420',quantity[0],quantity[0],100),))
@@ -322,6 +352,73 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
         with runtime.journal.connection() as saved_journal:
             assert not saved_journal.execute('SELECT 1 FROM service_provider_admissions').fetchone()
         assert 'news' in (tmp_path/'stages').read_text()
+        assert 'GUARDS_AND_FDS_VERIFIED' in (tmp_path/'stages').read_text()
+        identity=tuple(tuple(row) for row in runtime.work.conn.execute(
+            'SELECT evaluation_id,canonical_input_hash,provenance_json FROM daily_evaluations ORDER BY rowid'))
+        stages=(tmp_path/'stages').read_text()
+        runtime.stop()
+        successor=runtime.successor()
+        try:
+            assert successor.start()=='RUNNING'
+            successor.tick()
+            assert successor.collection is None and successor.child is None
+            assert successor.inputs[0].provenance==('HELD',)
+            assert tuple(tuple(row) for row in successor.work.conn.execute(
+                'SELECT evaluation_id,canonical_input_hash,provenance_json FROM daily_evaluations ORDER BY rowid'))==identity
+            assert (tmp_path/'stages').read_text()==stages
+        finally:successor.stop()
+
+
+@pytest.mark.parametrize('failure',['cutoff','monotonic','stop','child_crash','before_spawn'])
+def test_production_collection_expiry_and_recovery_never_recollect_first_inputs(tmp_path,failure):
+    import multiprocessing
+    from types import SimpleNamespace
+    from trading_bot.domain import Money
+    from trading_bot.service_models import ControlRequest
+    from trading_bot.service_activation import OfflineActivationAuthority
+    from trading_bot.service_cli import owner_actor
+    with production_root(tmp_path) as (runtime,reader,clock):
+        context=multiprocessing.get_context('spawn');ready=context.Event();release=context.Event()
+        runtime.daily_inputs=replace(runtime.daily_inputs,
+            offline_factory=GatedCollectionDataSource(ready,release,tmp_path/'stages'),
+            offline_authority=OfflineActivationAuthority(tmp_path))
+        runtime.trading=replace(runtime.trading,quote_reader=lambda ticker:SimpleNamespace(price=Money(68000),observed_at=clock()))
+        assert runtime.start()=='RUNNING'
+        clock.value+=timedelta(minutes=10)
+        runtime.controls.request_writer(actor=owner_actor()).append_request(ControlRequest(request_id='resume',
+            actor=owner_actor(),requested_at=clock(),scope=runtime.controls.scope,action='RESUME',expected_revision=0))
+        if failure=='before_spawn':
+            runtime.barrier=lambda name:(_ for _ in ()).throw(RuntimeError('crash after durable capture')) if name=='COLLECTION_COMMITTED' else None
+        runtime.tick()
+        marker=next(e for e in runtime.journal.list_events(runtime.job('DAILY')['job_id']) if e['reason_code']=='INPUT_COLLECTION_STARTED')
+        snapshot_id=json.loads(marker['source_ids_json'])[0].split(':',1)[1]
+        assert runtime.work.conn.execute('SELECT 1 FROM portfolio_snapshots WHERE snapshot_id=?',(snapshot_id,)).fetchone()
+        if failure!='before_spawn':
+            assert ready.wait(5)
+            child=runtime.collection
+            if failure=='cutoff':clock.value+=timedelta(minutes=10)
+            elif failure=='monotonic':runtime.monotonic=lambda:child.deadline+1
+            elif failure=='child_crash':child.process.kill();child.process.join(1)
+            if failure=='stop':runtime.stop()
+            else:runtime.tick()
+            assert runtime.collection is None and not child.process.is_alive()
+            assert not Path(child.directory.name).exists()
+        runtime.barrier=lambda name:None
+        runtime.stop()
+        stages=(tmp_path/'stages').read_text() if (tmp_path/'stages').exists() else ''
+        successor=runtime.successor()
+        try:
+            assert successor.start()=='RUNNING'
+            successor.tick()
+            assert successor.collection is None and successor.child is None
+            assert successor.job('DAILY')['state']=='UNKNOWN'
+            assert not successor.work.conn.execute('SELECT 1 FROM daily_evaluations').fetchone()
+            assert (tmp_path/'stages').read_text()==stages if (tmp_path/'stages').exists() else stages==''
+            markers=[e for e in successor.journal.list_events(successor.job('DAILY')['job_id']) if e['reason_code']=='INPUT_COLLECTION_STARTED']
+            assert len(markers)==1 and markers[0]['source_ids_json']==marker['source_ids_json']
+            recovered=next(e for e in successor.journal.list_events(successor.job('DAILY')['job_id']) if e['reason_code']=='INPUT_COLLECTION_PREDECESSOR_EXIT')
+            assert recovered['source_ids_json']==marker['source_ids_json']
+        finally:successor.stop()
 
 
 @pytest.mark.parametrize('status,filled', [('OPEN',0),('PARTIAL',1),('NO_FILL',0)])

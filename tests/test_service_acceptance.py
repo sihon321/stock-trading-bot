@@ -61,6 +61,19 @@ def test_failed_actual_risk_ticks_preserve_stall_until_successful_attributed_pro
         health=next(h for h in bot.evidence.service_health() if h.kind=='RISK')
         assert health.state=='RUNNING' and health.last_progress_at is not None
         assert not bot.store.get_incident(incident.episode_id).active
+        prior_progress=health.last_progress_at
+        clock.advance(60)
+        runtime.work.run=lambda op:(_ for _ in ()).throw(RuntimeError('account unavailable'))
+        runtime.tick();observe()
+        renewed=next(e for e in bot.store.list_incidents(active=True) if e.subject.problem_family=='WORKER_STALLED')
+        from trading_bot.mutation_lease import LeaseBusyError
+        runtime.work.run=lambda op:(_ for _ in ()).throw(LeaseBusyError({'pid':1}))
+        runtime.tick();observe()
+        blocked=next(h for h in bot.evidence.service_health() if h.kind=='RISK')
+        assert blocked.state=='BLOCKED' and blocked.reason_code=='ACCOUNT_BUSY'
+        assert blocked.last_progress_at==prior_progress and blocked.mutation_ready is False
+        assert bot.store.get_incident(renewed.episode_id).active
+        runtime.work.run=original
     finally:runtime.stop();conn.close();bot.stop()
 
 

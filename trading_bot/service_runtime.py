@@ -330,10 +330,11 @@ class ServiceRuntime:
         day=local(self.clock()).date(); row=self.job('DAILY')
         if row is None or row['universe_json'] is None:
             self.inputs=()
-            if row and any(e['reason_code']=='INPUT_COLLECTION_STARTED' for e in self.journal.list_events(row['job_id'])):
+            started=next((e for e in self.journal.list_events(row['job_id']) if e['reason_code']=='INPUT_COLLECTION_STARTED'),None) if row else None
+            if started:
                 # A predecessor consumed first collection; its uncertain inputs
                 # cannot be silently replaced by a different market observation.
-                self._event('DAILY','UNKNOWN','INPUT_COLLECTION_PREDECESSOR_EXIT')
+                self._event('DAILY','UNKNOWN','INPUT_COLLECTION_PREDECESSOR_EXIT',tuple(json.loads(started['source_ids_json'])))
             return
         result=[]
         for ticker in json.loads(row['universe_json']):
@@ -474,6 +475,8 @@ class ServiceRuntime:
                 raise RuntimeBlocked('DAILY_CAPTURE_SCOPE_MISMATCH')
             from .service_collection import ProductionInputSource,collection_child
             if type(self.daily_inputs) is ProductionInputSource:
+                if self.daily_inputs.offline_factory is not None:
+                    self.daily_inputs.offline_authority.assert_settings(self.settings)
                 if any(e['reason_code']=='INPUT_COLLECTION_STARTED' for e in self.journal.list_events(row['job_id'])):
                     raise RuntimeBlocked('FIRST_COLLECTION_ALREADY_CONSUMED')
                 self._event('DAILY','RUNNING','INPUT_COLLECTION_STARTED',(f'snapshot:{captured.snapshot_id}',))

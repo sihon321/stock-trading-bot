@@ -675,6 +675,7 @@ class OperatorEvidenceService:
                             elif kind=='RISK' and due and now>=due:
                                 hb=_operational_stamp(heartbeat['observed_at']) if heartbeat else None
                                 if event and event['state'] in {'BLOCKED','UNKNOWN','FAILED'}: state=event['state']
+                                elif event and event['reason_code'] not in {'RISK_PROTECTED','RISK_RECONCILED','RECONCILIATION_ONLY','RISK_SESSION_TERMINAL'}: state='BLOCKED'
                                 elif (hb is None and (now-due).total_seconds()>=120) or (hb and (now-hb).total_seconds()>120): state='WORKER_STALLED'
                                 elif (progress and (now-progress).total_seconds()>105) or (progress is None and (now-due).total_seconds()>=120): state='WORKER_STALLED'
                                 elif hb: state='RECOVERY_BLOCKED' if heartbeat['phase']=='RECOVERY_BLOCKED' else 'RUNNING'

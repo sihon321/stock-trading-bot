@@ -261,9 +261,9 @@ def test_stall_recovery_requires_actual_new_progress_and_same_subject(tmp_path):
     assert store.get(episode.episode_id).active # heartbeat without risk progress is not proof
     key=LogicalJobKey(scope=SCOPE,trading_date_kst=clock().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Seoul')).date(),kind='RISK')
     job=journal.claim_job(key,due_at=NOW,dispatch_deadline_at=NOW+timedelta(hours=6,minutes=30),owner_generation='generation')
-    journal.append_job_event(job,'RUNNING',reason_code='RISK_OBSERVATION')
+    journal.append_job_event(job,'RUNNING',reason_code='RISK_RECONCILED')
     clock.advance(1)
-    journal.append_job_event(job,'COMPLETED',reason_code='RISK_OBSERVED')
+    journal.append_job_event(job,'RUNNING',reason_code='RISK_PROTECTED')
     for fact in detector.detect(reader.observe_alert_sources()): store.observe(fact)
     recovered=store.get(episode.episode_id)
     assert not recovered.active and recovered.recovery_proof_id
