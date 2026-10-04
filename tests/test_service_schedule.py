@@ -90,7 +90,7 @@ def test_pause_kill_and_present_samples_never_invent_due_history():
     assert delayed['RISK'].due_at==at(10) and delayed['DAILY'].due_at==at(9,10)
 
 
-def test_observer_running_crash_before_any_daily_job_is_detected(tmp_path):
+def test_trading_crash_before_expectation_still_detects_absent_schedule(tmp_path):
     from trading_bot.service_leader import ServiceLeader
     from trading_bot.service_models import ControlRequest
     from trading_bot.control_runtime import ControlApplier
@@ -105,6 +105,24 @@ def test_observer_running_crash_before_any_daily_job_is_detected(tmp_path):
     producer.publish()
     clock.advance(40*60);producer.publish()
     assert [r.kind for r in reader.absent_obligations(clock(),())]==['PREP','DAILY','RISK']
+    with journal.connection() as conn:assert conn.execute('SELECT count(*) FROM service_jobs').fetchone()[0]==0
+
+
+def test_observer_only_midnight_publishes_current_date_absence(tmp_path):
+    producer,reader,clock,journal,controls,probe=producer_fixture(tmp_path)
+    producer.publish()
+    clock.advance((at(0,1,day=6)-clock()).total_seconds())
+    evidence=session_evidence(day=at(0,day=6).date()).model_copy(update={
+        'source_id':'krx-reviewed-midnight','notice_id':'notice-day6','reviewer':'owner',
+        'observed_at':at(0,day=6),'reviewed_at':at(0,day=6),'effective_at':at(0,day=6)})
+    producer.settings.session_evidence_path.write_text(evidence.model_dump_json())
+    records=producer.publish()
+    assert records[0].trading_date_kst==at(0,day=6).date()
+    assert records[0].state=='EXPECTED' and records[0].producer_kind=='OBSERVER_DERIVED'
+    clock.advance((at(9,20,day=6)-clock()).total_seconds())
+    producer.publish()
+    missing=[r for r in reader.absent_obligations(clock(),()) if r.trading_date_kst==at(0,day=6).date()]
+    assert [r.kind for r in missing]==['PREP','RISK']
     with journal.connection() as conn:assert conn.execute('SELECT count(*) FROM service_jobs').fetchone()[0]==0
 
 
