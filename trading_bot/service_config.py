@@ -58,6 +58,9 @@ class ServiceSettings(BaseSettings):
                                   dotenv_settings, file_secret_settings):
         return init_settings, env_settings
 
+    def model_copy(self, *, update=None, deep=False):
+        return type(self)(**(self.model_dump() | (update or {})))
+
     @model_validator(mode='after')
     def registration_contract(self):
         if self.service_enabled != (self.mode != ServiceMode.DISABLED):

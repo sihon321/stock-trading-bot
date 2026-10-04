@@ -182,6 +182,10 @@ def test_defaults_and_every_fixed_timeout():
         with pytest.raises(ValidationError) as exc:
             cls(**changes)
         assert 'credential-never-show' not in str(exc.value)
+    with pytest.raises(ValidationError):
+        defaults.model_copy(update={'execution_target': 'real'})
+    with pytest.raises(ValidationError):
+        defaults.model_copy(update={'risk_interval_seconds': 1})
 
 
 def test_settings_ignore_dotenv_and_file_secrets(tmp_path, monkeypatch):
