@@ -169,6 +169,130 @@ def test_request_strict_fields(tmp_path):
         with pytest.raises(ValueError): request(j, **updates)
 
 
+def submission_fixture(tmp_path):
+    """Actual temporary journals/lease, with an explicitly offline market source."""
+    from trading_bot import sqlite_audit, soak_store
+    from trading_bot.soak_controller import connect_controller
+    from trading_bot.portfolio import canonical_account_scope_hash
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from trading_bot.service_activation import OfflineActivationAuthority
+    from trading_bot.submission_authority import SubmissionAuthority
+    from trading_bot.market_cycle import MarketCyclePolicy
+    from tests.test_exit_manager import _snapshot
+    from dataclasses import replace
+    from tests.service_fixtures import session_evidence
+    settings = TempServiceTopology(tmp_path).registration()
+    scope = ServiceScope(account_scope_hash=canonical_account_scope_hash('mock', '5678:01'), execution_target='mock')
+    settings = settings.model_copy(update={'registered_scopes': (scope,)})
+    from trading_bot.control_store import ControlStore
+    j = ControlStore(settings, clock=FakeServiceClock())
+    j.initialize(actor='owner')
+    primary = sqlite_audit.connect(settings.trading_journal_paths[0])
+    soak_store.connect_soak_store(settings.trading_journal_paths[1]).close()
+    connect_controller(settings.trading_journal_paths[2], *settings.trading_journal_paths[:2]).close()
+    sqlite_audit.start_run(primary, run_id='submission-run', trading_mode='mock', dry_run=False, target='kis_mock')
+    lease = acquire_mutation_lease(primary, account_scope_hash=scope.account_scope_hash,
+        lock_dir=tmp_path/'account-locks', command='test', cycle_id='submission-run', observed_at=NOW)
+    class Calendar:
+        def is_trading_day(self, day): return True
+        def previous_trading_day(self, day): return day-timedelta(days=1)
+    class Sessions:
+        def for_date(self, day): return session_evidence(day=day)
+    policy = MarketCyclePolicy(Calendar(), session_evidence_provider=Sessions())
+    guard = SubmissionAuthority(j, policy=policy, clock=j.clock,
+        offline_authority=OfflineActivationAuthority(tmp_path))
+    snap = replace(_snapshot(), account_scope_hash=scope.account_scope_hash,
+        trading_date=NOW.date(), observed_at=NOW)
+    from tests.test_kis_broker import _FakeOrderAdapter
+    from trading_bot.kis_broker import KISBroker
+    from trading_bot.kis_order import KisOrderAccount
+    from trading_bot.data_models import SourceHealth, SourceStatus
+    from trading_bot.domain import Money
+    from types import SimpleNamespace
+    adapter = _FakeOrderAdapter()
+    quote = SimpleNamespace(observed_at=NOW, price=Money(70000), health=SourceHealth(
+        source='fixture', status=SourceStatus.AVAILABLE, reason='offline'))
+    broker = KISBroker(order_adapter=adapter, account=KisOrderAccount('12345678','01'),
+        submission_authority=guard, market_clock=lambda:True, clock=j.clock,
+        evidence_sink=lambda event:sqlite_audit.append_order_event(primary,event),
+        pre_submit_quote_reader=lambda ticker:quote)
+    args = dict(order_intent_id='intent-final', origin_run_id='submission-run',
+        portfolio_refresh=lambda ticker:snap, lease_guard=lease,
+        trigger_revalidator=lambda snapshot, price:True)
+    return j, primary, lease, guard, broker, adapter, args
+
+
+@pytest.mark.parametrize('action,side,allowed', [('PAUSE','BUY',False),('PAUSE','SELL',True),('KILL','BUY',False),('KILL','SELL',False)])
+def test_final_authority_pending_restrictions(tmp_path, action, side, allowed):
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    from trading_bot.kis_broker import MarketClosedError
+    j, primary, lease, guard, broker, adapter, args = submission_fixture(tmp_path)
+    try:
+        j.request_writer(actor='owner').append_request(request(j, action))
+        order = Order(Ticker('005930'),OrderSide(side),1,Money(70000))
+        if allowed: broker.place_order(order, **args)
+        else:
+            with pytest.raises(MarketClosedError): broker.place_order(order, **args)
+        assert adapter.post_attempts == int(allowed)
+        if allowed: assert j.reader().list_admissions()[0]['state']=='FINISHED'
+    finally: lease.close(); primary.close()
+
+
+def test_final_authority_callback_kill_zero_post(tmp_path):
+    from tests.test_kis_broker import _order
+    from trading_bot.kis_broker import MarketClosedError
+    j, primary, lease, guard, broker, adapter, args = submission_fixture(tmp_path)
+    def callback(snapshot, price):
+        j.request_writer(actor='owner').append_request(request(j,'KILL'))
+        return True
+    args['trigger_revalidator']=callback
+    try:
+        with pytest.raises(MarketClosedError): broker.place_order(_order(),**args)
+        assert adapter.post_attempts==0
+    finally: lease.close(); primary.close()
+
+
+@pytest.mark.parametrize('failure', ['primary','post','terminal','crash'])
+def test_final_authority_consumes_partial_unknown_intent(tmp_path, failure, monkeypatch):
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    j, primary, lease, guard, broker, adapter, args = submission_fixture(tmp_path)
+    order=Order(Ticker('005930'),OrderSide.SELL,1,Money(70000))
+    original=broker._evidence_sink
+    def sink(event):
+        if event.event_type.value=='SUBMISSION_ATTEMPTED':
+            if failure=='primary': raise RuntimeError('fixture store failure')
+            if failure=='crash': raise SystemExit('fixture crash')
+        original(event)
+    broker.set_evidence_sink(sink)
+    if failure=='post': adapter.post_exception=TimeoutError()
+    if failure=='terminal':
+        monkeypatch.setattr(j,'_finish_admission',lambda *a,**kw:(_ for _ in ()).throw(RuntimeError('fixture terminal')))
+    try:
+        with pytest.raises(BaseException): broker.place_order(order,**args)
+        assert len(j.reader().list_admissions())==1
+        broker.set_evidence_sink(original)
+        with pytest.raises(Exception): broker.place_order(order,**args)
+        assert adapter.post_attempts==int(failure in ('post','terminal'))
+    finally: lease.close(); primary.close()
+
+
+def test_final_authority_post_has_no_sql_transaction_and_lock_cannot_accept(tmp_path):
+    from trading_bot.domain import Order, OrderSide, Money, Ticker
+    j, primary, lease, guard, broker, adapter, args = submission_fixture(tmp_path)
+    post=adapter.place_order_cash
+    def transport(**kw):
+        assert not primary.in_transaction
+        with sqlite3.connect(j.path,timeout=.1) as connection:
+            connection.execute('BEGIN IMMEDIATE'); connection.rollback()
+        assert j.request_writer(actor='owner').append_request(request(j,'KILL')).status=='UNAVAILABLE'
+        return post(**kw)
+    adapter.place_order_cash=transport
+    try:
+        broker.place_order(Order(Ticker('005930'),OrderSide.SELL,1,Money(70000)),**args)
+        assert j.request_writer(actor='owner').append_request(request(j,'KILL')).status=='REQUESTED'
+    finally: lease.close(); primary.close()
+
+
 def application(j):
     runtime = importlib.import_module('trading_bot.control_runtime')
     from trading_bot.service_leader import ServiceLeader
