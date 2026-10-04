@@ -8,6 +8,87 @@ import re
 import os
 
 
+def exercise_service(registry):
+    """Fresh import after guards; only registered branch-specific temp writes."""
+    import hashlib
+    from typer.testing import CliRunner
+    from trading_bot.service_cli import app
+    import trading_bot.service_cli as cli_module
+    cli_module.guarded=lambda function:function()  # expose swallowed tripwire failures
+    before={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in registry['sources']}
+    surface=registry['service_surface']
+    argv=['--config',registry['config']]
+    if surface=='setup-disabled':
+        argv += [surface,'--root',registry['state_root'],'--account-scope-hash','a'*64]
+    elif surface=='control-request':
+        argv += ['kill','--request-id','fresh-probe','--expected-revision','0']
+    elif surface=='disabled':argv += ['run']
+    elif surface=='dry-run':
+        argv += [surface,'--fixture',registry['fixture'],'--output-root',registry['output']]
+    elif surface=='render':argv += ['render-launchagents']
+    elif surface=='health':
+        from trading_bot.web_config import WebSettings, ResourceDescriptor
+        from trading_bot.web_evidence import OperatorEvidenceService
+        service=OperatorEvidenceService(WebSettings(operational_db_path=Path(registry['output'])/'unused.db',
+            artifact_root=Path(registry['output'])/'artifacts',registered_resources=tuple(
+                ResourceDescriptor(id=kind,owner=kind,path=registry['paths'][kind],
+                    account_hash='a'*64,target='mock') for kind in ('service','control'))))
+        assert service.service_health()
+        argv += ['status']
+    else:argv += ['status']
+    result=CliRunner().invoke(app,argv)
+    if result.exception:
+        import traceback
+        traceback.print_exception(result.exception)
+    assert result.exit_code==0,(result.output,repr(result.exception))
+    assert before=={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in registry['sources']}
+    assert 'conftest' not in sys.modules
+    return {'checked':1,'source_hashes':before,'surface':surface}
+
+
+def test_fresh_service_read_request_setup_render_dry_run_capabilities(tmp_path):
+    from tests.test_service_cli import configured
+    from tests.test_replay import FIXTURES
+    from trading_bot.control_store import ControlStore
+    for surface in ('status','health','control-request','disabled','setup-disabled','render','dry-run'):
+        root=tmp_path/surface;root.mkdir(mode=0o700)
+        settings,config=configured(root)
+        output=root/'offline';output.mkdir(mode=0o700)
+        sources=[config,settings.service_db_path,settings.acceptance_receipt_path,settings.session_evidence_path,
+                 settings.trading_config_path,settings.observer_config_path,FIXTURES/'focused.json']
+        writable=[output]
+        if surface=='control-request':writable += [settings.control_db_path.parent,settings.lock_dir]
+        else:sources += [settings.control_db_path,settings.lock_dir/'admission.lock']
+        if surface=='setup-disabled':
+            config=root/'new-registration'/'service.json';writable += [config.parent,root/'new-state']
+        registry={'sources':list(map(str,sources)),'writable_roots':list(map(str,writable)),
+            'service_surface':surface,'config':str(config),'output':str(output),
+            'state_root':str(root/'new-state'),'fixture':str(FIXTURES/'focused.json'),
+            'paths':{'audit':str(settings.service_db_path),'service':str(settings.service_db_path),
+                     'control':str(settings.control_db_path)},
+            'descriptor_paths':[] if surface=='control-request' else list(map(str,
+                (settings.control_db_path,settings.lock_dir/'admission.lock')))}
+        before=_inventory(registry)
+        child=subprocess.run([sys.executable,'tests/capability_probe.py','--module','test_web_capabilities',
+            '--action','exercise_service','--registry',json.dumps(registry)],capture_output=True,text=True,timeout=30)
+        assert child.returncode==0,f'{surface}: {child.stdout}\n{child.stderr}'
+        proof=json.loads(child.stdout)
+        assert proof['ok'] and proof['result']['source_hashes'] and not proof['shared_conftest']
+        if surface!='control-request':assert _inventory(registry)==before
+        else:
+            current=ControlStore(settings).reader().effective_state()
+            assert current.mode=='KILLED' and current.applied.mode=='PAUSED'
+            assert len(ControlStore(settings).reader().list_applications())==1
+            assert ControlStore(settings).reader().list_admissions()==()
+        if surface=='dry-run':
+            for action in ('constructor','fd','process','sdk','dotenv'):
+                negative=subprocess.run([sys.executable,'tests/capability_probe.py','--module','json',
+                    '--action','selfcheck-'+action,'--registry',json.dumps(registry)],
+                    capture_output=True,text=True,timeout=10)
+                assert negative.returncode==23,(action,negative.stdout,negative.stderr)
+                assert json.loads(negative.stdout)['code'].startswith('FORBIDDEN_')
+
+
 def _inventory(registry):
     values = {}
     for name, raw in registry['paths'].items():

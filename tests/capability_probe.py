@@ -39,22 +39,70 @@ def forbidden(name):
 
 
 def install_tripwires(registry):
+    global FORBIDDEN
+    if registry.get('service_surface'):
+        import tempfile
+        # Fix the already observed system temporary root, avoiding tempfile's
+        # unrelated first-use write probe outside the registered output root.
+        tempfile.tempdir=str(Path(os.environ.get('TMPDIR','/tmp')).resolve())
+    if registry.get('service_surface') == 'dry-run':
+        # Reducer imports are necessary; constructors remain forbidden below.
+        allowed_imports = {'trading_bot.config','trading_bot.llm_provider','trading_bot.execution',
+            'trading_bot.market_cycle','trading_bot.data_source','trading_bot.portfolio_store',
+            'trading_bot.portfolio','trading_bot.mutation_lease','trading_bot.sqlite_audit',
+            'trading_bot.replay','trading_bot.mock_broker','trading_bot.intraday','openai','anthropic','trading_bot.kis_'}
+        FORBIDDEN = tuple(p for p in FORBIDDEN if p not in allowed_imports)
     sources = {Path(p).resolve() for p in registry["sources"]}
     roots = tuple(Path(p).resolve() for p in registry.get("writable_roots", []))
     for root in roots:
         if any(root == p or root in p.parents or p in root.parents for p in sources):
             raise CapabilityViolation("FORBIDDEN_WRITE")
     source_inodes = {(p.stat().st_dev, p.stat().st_ino) for p in sources}
+    descriptor_paths={Path(p).resolve() for p in registry.get('descriptor_paths',())}
+    if not descriptor_paths<=sources:raise CapabilityViolation('FORBIDDEN_WRITE')
+    # The control reader pins existing owner descriptors with O_RDWR. Permit
+    # that exact no-create open, but deny FD writes as well as source SQL writes.
+    for method in ('write','pwrite','ftruncate'):
+        if hasattr(os,method):
+            original=getattr(os,method)
+            def fd_guard(fd,*args,_original=original,**kwargs):
+                info=os.fstat(fd)
+                if (info.st_dev,info.st_ino) in source_inodes:
+                    raise CapabilityViolation('FORBIDDEN_WRITE')
+                return _original(fd,*args,**kwargs)
+            setattr(os,method,fd_guard)
     allowed = tuple(registry.get("allow_loopback", ()))
     if allowed and (len(allowed) != 2 or allowed[0] != "127.0.0.1" or not isinstance(allowed[1], int)):
         raise CapabilityViolation("FORBIDDEN_NETWORK")
     original_import = builtins.__import__
 
+    def deny_constructor(*args, **kwargs):
+        raise CapabilityViolation('FORBIDDEN_CONSTRUCTOR')
+
+    def guard_constructors():
+        for module_name, names in {'trading_bot.config':('Settings',),
+                'trading_bot.kis_order':('KisOrderAccount','KisOrderAdapter'),
+                'trading_bot.kis_auth':('KisTokenManager',),
+                'trading_bot.kis_broker':('KISBroker',),
+                'trading_bot.kis_quote':('KisQuoteAdapter',),
+                'openai':('OpenAI','AsyncOpenAI'), 'anthropic':('Anthropic','AsyncAnthropic')}.items():
+            module = sys.modules.get(module_name)
+            if module:
+                for name in names:
+                    cls = vars(module).get(name)
+                    if isinstance(cls, type): cls.__init__ = deny_constructor
+        module=sys.modules.get('dotenv')
+        if module:
+            for name in ('load_dotenv','dotenv_values'):
+                if name in vars(module):setattr(module,name,deny_constructor)
+
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         candidates = [name, *(f"{name}.{v}" for v in fromlist or () if v != "*")]
         if any(forbidden(n) for n in candidates):
             raise CapabilityViolation("FORBIDDEN_IMPORT")
-        return original_import(name, globals, locals, fromlist, level)
+        result = original_import(name, globals, locals, fromlist, level)
+        guard_constructors()
+        return result
 
     class ImportGuard:
         def find_spec(self, fullname, path=None, target=None):
@@ -96,6 +144,8 @@ def install_tripwires(registry):
                                        and not any(path.is_relative_to(r) for r in roots)):
                 raise CapabilityViolation("FORBIDDEN_READ")
             alias = path.exists() and (path.stat().st_dev, path.stat().st_ino) in source_inodes
+            if path in descriptor_paths and mode is None and not flags & (os.O_CREAT|os.O_TRUNC|os.O_APPEND):
+                writing=False
             if writing and (alias or not any(path.is_relative_to(r) for r in roots)):
                 raise CapabilityViolation("FORBIDDEN_WRITE")
         if event in {"os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.link", "os.symlink", "os.truncate"}:
@@ -124,11 +174,22 @@ def install_tripwires(registry):
                     one in {"table_info", "table_xinfo", "index_list", "foreign_key_list"}
                     or (one in {"user_version", "query_only"} and two is None)
                     or (one == "query_only" and two in {"ON", "1"}))
+                permitted |= action == sqlite3.SQLITE_PRAGMA and one == 'foreign_keys' and two in {'ON','1',None}
                 return sqlite3.SQLITE_OK if permitted else sqlite3.SQLITE_DENY
 
             conn.set_authorizer(authorizer)
             return conn
-        return original_connect(database, *args, **kwargs)
+        conn=original_connect(database, *args, **kwargs)
+        if registry.get('service_surface')=='control-request' and path==Path(registry['paths']['control']).resolve():
+            def request_authorizer(action,one,two,db,trigger):
+                permitted=action in {sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION,
+                    sqlite3.SQLITE_TRANSACTION,sqlite3.SQLITE_RECURSIVE}
+                permitted |= action==sqlite3.SQLITE_INSERT and one in {'control_requests','control_request_audit'}
+                permitted |= action==sqlite3.SQLITE_PRAGMA and (
+                    one in {'table_info','query_only'} or one=='foreign_keys' and two in {'ON','1',None})
+                return sqlite3.SQLITE_OK if permitted else sqlite3.SQLITE_DENY
+            conn.set_authorizer(request_authorizer)
+        return conn
 
     sqlite3.connect = guarded_connect
     sqlite3.dbapi2.connect = guarded_connect
@@ -154,6 +215,19 @@ def selfcheck(action, registry):
         Path(source).write_bytes(b"forbidden")
     elif action == "selfcheck-env":
         Path(".env").read_bytes()
+    elif action == 'selfcheck-fd':
+        fd=os.open(registry['descriptor_paths'][0],os.O_RDWR)
+        try:os.write(fd,b'forbidden')
+        finally:os.close(fd)
+    elif action == 'selfcheck-process':
+        import subprocess
+        subprocess.Popen(['launchctl','print','gui/0'])
+    elif action == 'selfcheck-sdk':
+        from openai import OpenAI
+        OpenAI(api_key='offline-tripwire')
+    elif action == 'selfcheck-dotenv':
+        from dotenv import load_dotenv
+        load_dotenv()
     elif action == "selfcheck-read":
         with sqlite3.connect(source) as conn:
             return {"count": conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]}

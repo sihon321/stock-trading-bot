@@ -227,11 +227,129 @@ def dry_run(ctx:typer.Context,fixture:Path=typer.Option(...,'--fixture'),output_
         if any(overlaps(output,checked_path(p).parent) for p in (*settings.trading_journal_paths,
                 settings.service_db_path,settings.control_db_path,ctx.obj)): raise ValueError('separate temporary output required')
         from .replay import load_replay_bundle, run_replay_scenarios
-        result=run_replay_scenarios(load_replay_bundle(fixture))
+        bundle=load_replay_bundle(fixture)
+        result=run_replay_scenarios(bundle)
         from .replay_evidence import canonical_json_bytes
         private_write(output/'replay-result.json',{'outcomes':[json.loads(canonical_json_bytes(r)) for r in result]})
-        typer.echo('OFFLINE_ONLY: frozen replay complete')
+        private_write(output/'service-result.json',offline_service_proof(output,bundle))
+        typer.echo('OFFLINE_ONLY: frozen replay and temporary service recovery complete')
     guarded(preview)
+
+
+def offline_service_proof(output, bundle):
+    """Actual service reducers with frozen inputs; stop before any provider admission.
+
+    Registration paths are rebuilt under the owned temporary root. No receipt,
+    credentials, source journal or policy from the installed registration is read.
+    The consumed-dispatch interruption is intentional offline fault evidence.
+    """
+    from datetime import timedelta
+    import time
+    from .account_work import BoundedAccountWork
+    from .control_runtime import ResumeSafetyEvidence
+    from .control_store import ControlStore
+    from .market_cycle import MarketCyclePolicy
+    from .mutation_lease import acquire_mutation_lease
+    from .portfolio import PortfolioSnapshot, PortfolioCompleteness, PortfolioAccountSummary
+    from .portfolio_store import connect_portfolio_store
+    from .service_activation import ActivationVerdict, OfflineActivationAuthority
+    from .service_composition import ServiceComposition
+    from .service_models import DailyDispatchEnvelope, KST, SourceHash, SessionEvidence
+    from .service_runtime import ServiceRuntime, DailyInput, ProviderChildFactory, ProviderSettings
+    from .service_store import ServiceJournal
+    from .trade_signal import TradeSignal
+
+    if not bundle or not bundle[0].steps:
+        raise ValueError('frozen nonempty service inputs required')
+    scope=ServiceScope(account_scope_hash=hashlib.sha256(b'OFFLINE_ONLY').hexdigest(),execution_target='mock')
+    day=datetime.strptime(bundle[0].trading_date,'%Y%m%d').date()
+    wall=[datetime(day.year,day.month,day.day,8,50,tzinfo=KST)]
+    now=lambda:wall[0]
+    root=output/'service-proof'
+    root.mkdir(mode=0o700)  # exclusive: never reuse previous temporary authority
+    for name in ('unused-trading','unused-session','unused-observer','absent-receipt'):
+        private_write(root/'config'/f'{name}.json',{'evidence_class':'SYNTHETIC','authority':'OFFLINE_ONLY'})
+    settings=ServiceSettings(service_enabled=True,mode='KIS_MOCK',registered_scopes=(scope,),
+        trading_config_path=root/'config'/'unused-trading.json',acceptance_receipt_path=root/'config'/'absent-receipt.json',
+        session_evidence_path=root/'config'/'unused-session.json',observer_config_path=root/'config'/'unused-observer.json',
+        service_db_path=root/'journal'/'service.db',control_db_path=root/'control'/'control.db',lock_dir=root/'locks',
+        trading_journal_paths=(root/'account'/'audit.db',root/'evidence'/'soak.db',root/'evidence'/'controller.db'),
+        artifact_roots=(root/'artifacts',))
+    authority=OfflineActivationAuthority(root)
+    journal=ServiceJournal(settings,clock=now);journal.initialize()
+    controls=ControlStore(settings,clock=now);controls.initialize(actor='offline-owner')
+    conn=connect_portfolio_store(settings.trading_journal_paths[0])
+    observations=[]
+    def snapshot():
+        observations.append(now())
+        return PortfolioSnapshot(snapshot_id=f'offline-{len(observations)}',account_scope_hash=scope.account_scope_hash,
+            trading_date=day,previous_trading_date=day-timedelta(days=1),observed_at=now(),
+            completeness=PortfolioCompleteness.COMPLETE,reason_code='SYNTHETIC',daily_page_count=1,balance_page_count=1,
+            holdings=(),orders=(),fills=(),account=PortfolioAccountSummary(bundle[0].initial_cash,bundle[0].initial_cash))
+    work=BoundedAccountWork(conn=conn,account_scope_hash=scope.account_scope_hash,clock=now,
+        lease_factory=lambda:acquire_mutation_lease(conn,account_scope_hash=scope.account_scope_hash,
+            lock_dir=root/'account-locks',command='offline-service',cycle_id='offline-pass',observed_at=now()),
+        snapshot_reader=snapshot,terminalize_prior=lambda:True,reconcile_snapshot=lambda current:{'determinate':True},
+        terminalize=lambda:None,persist_unresolved=lambda:None)
+    session=SessionEvidence(trading_date_kst=day,source_id='offline-frozen-session',source_hash='a'*64,
+        source_url='https://kind.krx.co.kr/offline',notice_id='offline',reviewer='offline',reviewed_at=now(),
+        observed_at=now(),effective_at=now(),eligibility='ELIGIBLE',
+        continuous_open=wall[0].replace(hour=9,minute=0),continuous_close=wall[0].replace(hour=15,minute=30))
+    class Sessions:
+        def for_date(self,date):
+            if date!=day: raise ValueError('no inferred future session')
+            return session
+    class Calendar:
+        def is_trading_day(self,date):return date==day
+        def previous_trading_day(self,date):return day-timedelta(days=1)
+    class Inputs:
+        def collect(self,date,held):
+            values=[]
+            for ticker in dict.fromkeys(s.ticker for s in bundle[0].steps):
+                payload=json.dumps({'evidence_class':'SYNTHETIC','scenario':bundle[0].scenario_id,'ticker':ticker,
+                    'raw_signals':[s.raw_signal for s in bundle[0].steps if s.ticker==ticker]},sort_keys=True).encode()
+                envelope=DailyDispatchEnvelope(prompt_bytes=payload,prompt_hash=hashlib.sha256(payload).hexdigest(),
+                    system_prompt='OFFLINE_ONLY frozen input',schema_hash=hashlib.sha256(json.dumps(
+                        TradeSignal.model_json_schema(),sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+                    provider='openai',model='offline-unused',temperature=0.,prompt_version='offline-v1')
+                values.append(DailyInput(ticker,('SCREENED',),envelope))
+            return tuple(values)
+    def safety(scope,stamp):
+        return ResumeSafetyEvidence(scope=scope,observed_at=stamp,expires_at=stamp+timedelta(seconds=10),
+            broker_complete=True,evidence_complete=True,calendar_confirmed=True,authority_current=True,
+            safety_latched=False,frozen_subjects=(),source_hashes=tuple(SourceHash(source_id=f'offline-{i}',
+                source_hash=str(i)*64) for i in range(4)))
+    def interrupt(name):
+        if name=='DISPATCH_COMMITTED':raise RuntimeError('OFFLINE_CONSUMED_DISPATCH_CRASH')
+    runtime=ServiceRuntime(settings=settings,journal=journal,controls=controls,account_work=work,
+        composition=ServiceComposition(mode='KIS_MOCK',activation=ActivationVerdict(allowed=True,
+            reason_codes=('SYNTHETIC',),authority='OFFLINE_ONLY'),authentication='SYNTHETIC',
+            runtime_wired=True,scope=scope,prep_read_only=lambda:None),
+        policy=MarketCyclePolicy(Calendar(),session_evidence_provider=Sessions()),daily_inputs=Inputs(),
+        provider_factory=ProviderChildFactory(ProviderSettings(llm_provider='openai'),offline_authority=authority),
+        clock=now,monotonic=time.monotonic,offline_authority=authority,barrier=interrupt,
+        validate_resume=safety,current_resume_safety=safety)
+    states=[]
+    try:
+        controls.request_writer(actor='offline-owner').append_request(ControlRequest(request_id='offline-resume',
+            actor='offline-owner',requested_at=now(),scope=controls.scope,action='RESUME',expected_revision=0))
+        runtime.start()
+        for hour,minute in ((8,50),(9,0),(9,10)):
+            wall[0]=wall[0].replace(hour=hour,minute=minute);runtime.tick();states.append(runtime.state)
+        jobs=[runtime.job(kind)['job_id'] for kind in ('PREP','DAILY','RISK')]
+        runtime.stop();wall[0]=wall[0].replace(hour=9,minute=20)
+        runtime=runtime.successor();runtime.barrier=lambda name:None;runtime.start();runtime.tick()
+        assert jobs==[runtime.job(kind)['job_id'] for kind in ('PREP','DAILY','RISK')]
+        dispatch=conn.execute('SELECT dispatch_state FROM daily_evaluation_dispatches WHERE dispatched_at IS NOT NULL').fetchone()
+        for hour,minute in ((15,20),(15,30)):
+            wall[0]=wall[0].replace(hour=hour,minute=minute);runtime.tick();states.append(runtime.state)
+        runtime.stop()
+        return {'evidence_class':'SYNTHETIC','authority':'OFFLINE_ONLY','provider_calls':0,'broker_calls':0,
+            'runtime_states':states,'stable_job_ids':jobs,'recovered_dispatch_state':dispatch[0],
+            'evaluation_ids':[r[0] for r in conn.execute('SELECT evaluation_id FROM daily_evaluations')],
+            'account_leases_released':not conn.execute("SELECT 1 FROM mutation_leases WHERE state!='RELEASED'").fetchone()}
+    finally:
+        runtime.stop();conn.close()
 
 
 def build_production_runtime(settings):
