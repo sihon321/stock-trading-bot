@@ -97,7 +97,7 @@ def test_request_busy_storage_and_failed_audit_never_claim_acceptance(tmp_path):
     assert j.reader().effective_state(SCOPE).acceptance_revision == 0
 
 
-@pytest.mark.parametrize('unsafe', ['permissions', 'symlink', 'hardlink', 'version', 'owner', 'lock_permissions', 'registration'])
+@pytest.mark.parametrize('unsafe', ['permissions', 'symlink', 'hardlink', 'version', 'owner', 'lock_permissions', 'lock_replacement', 'registration'])
 def test_request_unsafe_storage_denies(tmp_path, unsafe):
     j, _ = store(tmp_path)
     if unsafe == 'permissions': j.path.chmod(0o644)
@@ -108,6 +108,10 @@ def test_request_unsafe_storage_denies(tmp_path, unsafe):
         with sqlite3.connect(j.path) as c:
             c.execute('UPDATE control_metadata SET '+ ('version=99' if unsafe == 'version' else "owner='other'"))
     elif unsafe == 'lock_permissions': (j.settings.lock_dir / 'admission.lock').chmod(0o644)
+    elif unsafe == 'lock_replacement':
+        lock = j.settings.lock_dir / 'admission.lock'
+        lock.rename(lock.with_suffix('.old'))
+        fd = os.open(lock,os.O_CREAT|os.O_WRONLY,0o600); os.close(fd)
     else:
         j = type(j)(j.settings.model_copy(update={'registered_scopes': (ServiceScope(account_scope_hash='c'*64, execution_target='mock'),)}))
     assert j.request_writer(actor='owner').append_request(request(j)).status == 'UNAVAILABLE'
