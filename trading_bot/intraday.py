@@ -453,12 +453,12 @@ def run_intraday_watch(
     clock: Callable[[], datetime],
     sleeper: Callable[[float], object],
     stop_requested: Callable[[], bool],
-    snapshot_reader: Callable[[], PortfolioSnapshot],
-    quote_reader: Callable[[str], Money],
-    risk_config: RiskConfig,
-    lease: object,
-    exit_submitter: Callable[[ExitResult, Money], object],
-    audit_sink: Callable[[IntradayIterationResult], object],
+    snapshot_reader: Callable[[], PortfolioSnapshot] | None = None,
+    quote_reader: Callable[[str], Money] | None = None,
+    risk_config: RiskConfig | None = None,
+    lease: object = None,
+    exit_submitter: Callable[[ExitResult, Money], object] | None = None,
+    audit_sink: Callable[[IntradayIterationResult], object] | None = None,
     reconcile: Callable[[], object] = lambda: True,
     interval_seconds: float = 60,
     max_iterations: int | None = None,
@@ -466,11 +466,14 @@ def run_intraday_watch(
     terminalize: Callable[[], object] | None = None,
     persist_unresolved: Callable[[], object] | None = None,
     policy: MarketCyclePolicy | None = None,
+    one_pass: Callable[[], IntradayIterationResult] | None = None,
 ) -> IntradayWatchResult:
     """Run foreground iterations until stop, cutoff, or terminal close."""
 
     if interval_seconds < 60:
         raise ValueError("intraday interval must be at least 60 seconds")
+    if one_pass is None and hasattr(lease, 'state'):
+        raise ValueError('state-bearing watch requires a released one-pass callback')
     iterations: list[IntradayIterationResult] = []
     interrupted = False
     final_phase = IntradaySessionPhase.PREFLIGHT_READ_ONLY
@@ -479,7 +482,8 @@ def run_intraday_watch(
         if stop_requested():
             interrupted = True
             final_phase = IntradaySessionPhase.STOPPING
-            _release(lease, reconcile, terminalize, persist_unresolved)
+            if one_pass is None:
+                _release(lease, reconcile, terminalize, persist_unresolved)
             break
         now = clock()
         final_phase = session_phase_at(now, policy=policy)
@@ -489,13 +493,14 @@ def run_intraday_watch(
             # An overnight wake cannot resurrect the preceding day's watch.
             final_phase = IntradaySessionPhase.TERMINAL
         if final_phase is IntradaySessionPhase.TERMINAL:
-            _release(lease, reconcile, terminalize, persist_unresolved)
+            if one_pass is None:
+                _release(lease, reconcile, terminalize, persist_unresolved)
             break
-        if final_phase is IntradaySessionPhase.RECONCILE_ONLY:
+        if final_phase is IntradaySessionPhase.RECONCILE_ONLY and one_pass is None:
             reconcile()
             sleeper(interval_seconds)
             continue
-        result = run_intraday_check(
+        result = one_pass() if one_pass is not None else run_intraday_check(
             clock=clock if policy is not None else lambda value=now: value,
             snapshot_reader=snapshot_reader,
             quote_reader=quote_reader,
@@ -516,7 +521,8 @@ def run_intraday_watch(
         if result.outcome is IntradayIterationOutcome.INTERRUPTED:
             interrupted = True
             final_phase = IntradaySessionPhase.STOPPING
-            _release(lease, reconcile, terminalize, persist_unresolved)
+            if one_pass is None:
+                _release(lease, reconcile, terminalize, persist_unresolved)
             break
         sleeper(interval_seconds)
     return IntradayWatchResult(tuple(iterations), final_phase, interrupted)

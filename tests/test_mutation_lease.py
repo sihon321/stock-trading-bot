@@ -417,3 +417,22 @@ def test_ownership_loss_forwards_unresolved_persistence_for_indeterminate_reconc
     ) is False
     assert order == ["terminalize", "reconcile", "unresolved"]
     assert lease.closed
+def test_preserved_blocked_release_requires_fresh_recovery(tmp_path):
+    from datetime import datetime, timezone
+    from trading_bot.mutation_lease import acquire_mutation_lease, release_after_reconciliation
+    from trading_bot.portfolio_store import connect_portfolio_store
+    conn = connect_portfolio_store(tmp_path/'blocked.db')
+    def acquire():
+        return acquire_mutation_lease(conn, account_scope_hash='a'*64, lock_dir=tmp_path/'locks',
+            command='risk', cycle_id='blocked', observed_at=datetime.now(timezone.utc))
+    owner = acquire()
+    facts = []
+    assert not release_after_reconciliation(owner, terminalize_cycle=lambda: facts.append('terminal'),
+        reconcile_submitted=lambda: False, persist_unresolved=lambda: facts.append('unresolved'),
+        preserve_blocked=True)
+    assert owner.closed and facts == ['terminal', 'unresolved']
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RECOVERY_BLOCKED'
+    successor = acquire()
+    assert successor.recovery_required
+    successor.release()
+    conn.close()

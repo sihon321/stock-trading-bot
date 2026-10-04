@@ -20,7 +20,7 @@ def account_work_fixture(tmp_path, **overrides):
     sequence = []
     def fresh():
         sequence.append('snapshot')
-        return replace(snapshot(), observed_at=clock())
+        return replace(snapshot(), snapshot_id=f'snapshot-{len(sequence)}', observed_at=clock())
     kwargs = dict(conn=conn, account_scope_hash=SCOPE.account_scope_hash, clock=clock,
         monotonic=clock.monotonic,
         lease_factory=lambda: acquire_mutation_lease(conn, account_scope_hash=SCOPE.account_scope_hash,

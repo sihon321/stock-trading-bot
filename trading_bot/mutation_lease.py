@@ -342,6 +342,44 @@ class MutationLease:
                 raise
             raise LeaseRecoveryBlocked("recovery callback failed") from exc
 
+    def mark_recovery_blocked(self, *, reason: str, observed_at: datetime | None = None) -> None:
+        """Commit unresolved authority before relinquishing kernel exclusion."""
+        if self.closed:
+            raise LeaseOwnershipLost('mutation lease is closed')
+        stamp = _aware(observed_at)
+        previous = self.state
+        try:
+            self._conn.execute('BEGIN IMMEDIATE')
+            cursor = self._conn.execute(
+                'UPDATE mutation_leases SET state=?,heartbeat_at=? WHERE account_scope_hash=? AND owner_token=?',
+                (MutationLeaseState.RECOVERY_BLOCKED.value, stamp.isoformat(), self.account_scope_hash, self.owner_token))
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                self._mark_lost(stamp)
+                raise LeaseOwnershipLost('blocked authority ownership was lost')
+            _event(self._conn, scope=self.account_scope_hash, token=self.owner_token,
+                event_type=MutationLeaseEventType.RECOVERY_BLOCKED, from_state=previous.value,
+                to_state=MutationLeaseState.RECOVERY_BLOCKED, origin_cycle_id=self.cycle_id,
+                observer_cycle_id=self.cycle_id, observed_at=stamp,
+                detail={'reason': _bounded(reason, 'reason')})
+            self._conn.commit()
+            self.state = MutationLeaseState.RECOVERY_BLOCKED
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def close_blocked(self) -> None:
+        """Unlock only a committed blocked/lost owner; never manufacture RELEASED."""
+        if self.closed:
+            return
+        if self.state not in (MutationLeaseState.RECOVERY_BLOCKED, MutationLeaseState.LOST):
+            raise LeaseOwnershipLost('blocked close requires durable blocked authority')
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self._lock_fd)
+            self.closed = True
+
     def release(self, *, observed_at: datetime | None = None) -> None:
         if self.closed:
             return
@@ -562,6 +600,7 @@ def release_after_reconciliation(
     terminalize_cycle: Callable[[], Any],
     persist_unresolved: Callable[[], Any] | None = None,
     observed_at: datetime | None = None,
+    preserve_blocked: bool = False,
 ) -> bool:
     """Terminalize, reconcile bounded work, then durably release and unlock.
 
@@ -582,7 +621,12 @@ def release_after_reconciliation(
             persist_unresolved()
         return determinate
     finally:
-        lease.release(observed_at=observed_at)
+        if preserve_blocked and not determinate:
+            if lease.state is not MutationLeaseState.LOST:
+                lease.mark_recovery_blocked(reason='RECONCILIATION_UNRESOLVED', observed_at=observed_at)
+            lease.close_blocked()
+        else:
+            lease.release(observed_at=observed_at)
 
 
 def stop_after_ownership_loss(
