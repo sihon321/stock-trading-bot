@@ -77,6 +77,9 @@ class ServiceSchedule:
         if session.eligibility == 'HOLIDAY': return ScheduleDecision()
         if not isinstance(controls,(AppliedControl,EffectiveControl)):
             return ScheduleDecision(blocked=(replace(daily,state='UNKNOWN',reason_code='CONTROL_UNKNOWN'),))
+        applied=controls.applied if isinstance(controls,EffectiveControl) else controls
+        if applied.applied_at>now:
+            return ScheduleDecision(blocked=(replace(daily,state='UNKNOWN',reason_code='CONTROL_UNKNOWN'),))
         mode=controls.mode
         row=rows.get('DAILY')
         # Terminal/unknown consumed work cannot be manufactured into a new job.
@@ -112,6 +115,8 @@ def derive_expectations(inputs: ExpectationInputs, now: datetime) -> tuple[Servi
         for kind,due,deadline in (('PREP',slot(day,8,50),slot(day,9)),
                 ('DAILY',slot(day,9,10),slot(day,9,20)),
                 ('RISK',slot(day,9),slot(day,15,30))):
+            if kind=='RISK' and session.trading_date_kst==day and session.continuous_open is not None:
+                due=max(due,session.continuous_open)
             state,reason='EXPECTED','LOCKED_SCHEDULE'
             if (session.trading_date_kst!=day or session.eligibility=='UNKNOWN'
                     or login.state=='UNKNOWN' or login.owner_uid!=os.getuid()
@@ -125,10 +130,13 @@ def derive_expectations(inputs: ExpectationInputs, now: datetime) -> tuple[Servi
                 state,reason='NOT_EXPECTED','DAILY_CONTROL_STOPPED'
             elif kind=='RISK' and inputs.effective_controls.mode=='KILLED':
                 reason='RECONCILIATION_ONLY'
+            if due>=deadline:
+                state,reason='NOT_EXPECTED','SESSION_AFTER_TERMINAL'
+                due=None
             # A present sample cannot retrospectively cover a missed due interval.
             # Earlier persisted obligations survive independently and are read by
             # the observer. A later revision never rewrites those original facts.
-            if now>=due and any(t>due for t in (inputs.config_effective_at,login.observed_at,
+            if due is not None and now>=due and any(t>due for t in (inputs.config_effective_at,login.observed_at,
                     session.observed_at,inputs.controls_observed_at)):
                 state,reason='UNKNOWN','DUE_HISTORY_UNKNOWN'
             facts=inputs.model_dump(mode='json') | {'scope':scope.model_dump(mode='json'),'kind':kind,'date':str(day)}

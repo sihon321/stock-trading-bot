@@ -86,6 +86,26 @@ def test_pause_kill_and_present_samples_never_invent_due_history():
     killed={r.kind:r for r in derive_expectations(inputs(mode='KILLED'),at(8,40))}
     assert killed['RISK'].state=='EXPECTED' and killed['RISK'].reason_code=='RECONCILIATION_ONLY'
     assert {r.state for r in derive_expectations(inputs(observed=at(10)),at(10))}=={'UNKNOWN'}
+    delayed={r.kind:r for r in derive_expectations(inputs(kind='delayed'),at(8,40))}
+    assert delayed['RISK'].due_at==at(10) and delayed['DAILY'].due_at==at(9,10)
+
+
+def test_observer_running_crash_before_any_daily_job_is_detected(tmp_path):
+    from trading_bot.service_leader import ServiceLeader
+    from trading_bot.service_models import ControlRequest
+    from trading_bot.control_runtime import ControlApplier
+    from tests.test_service_controls import safety
+    producer,reader,clock,journal,controls,probe=producer_fixture(tmp_path)
+    leader=ServiceLeader(producer.settings,journal=journal);leader.acquire()
+    controls.request_writer(actor='owner').append_request(ControlRequest(request_id='observer-fixture-resume',
+        actor='owner',requested_at=clock(),scope=controls.scope,action='RESUME',expected_revision=0))
+    ControlApplier(controls.service_capability(leader),validate_resume=lambda scope,now:safety(scope,now),
+        current_safety=lambda scope,now:safety(scope,now),clock=clock).apply_pending()
+    leader.close()
+    producer.publish()
+    clock.advance(40*60);producer.publish()
+    assert [r.kind for r in reader.absent_obligations(clock(),())]==['PREP','DAILY','RISK']
+    with journal.connection() as conn:assert conn.execute('SELECT count(*) FROM service_jobs').fetchone()[0]==0
 
 
 def test_probe_rejects_wrong_owner_future_or_unbounded_result():
