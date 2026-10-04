@@ -339,11 +339,14 @@ def test_service_resume_changed_evidence_and_failed_application_remain_restricti
     j, _ = store(tmp_path)
     from trading_bot.service_models import SourceHash
     def current(scope,now):
-        return safety(scope,now,source_hashes=(SourceHash(source_id='changed',source_hash='f'*64),))
+        original = safety(scope,now)
+        return original.model_copy(update={'source_hashes': (SourceHash(source_id='broker',source_hash='f'*64),
+            *original.source_hashes[1:])})
     a, leader = applier(j,current=current)
     try:
         j.request_writer(actor='owner').append_request(request(j,'RESUME'))
-        assert a.apply_pending()[0]['result']=='REJECTED'
+        result = a.apply_pending()[0]
+        assert result['result']=='REJECTED' and result['reason_code']=='SAFETY_SOURCE_CHANGED'
         j.request_writer(actor='owner').append_request(request(j,'KILL',1,'kill'))
         with sqlite3.connect(j.path) as c:
             c.execute("CREATE TRIGGER fail_application BEFORE INSERT ON control_applications BEGIN SELECT RAISE(ABORT,'failure'); END")
@@ -365,3 +368,35 @@ def test_service_admission_evidence_honest_unique_unknown_no_replay(tmp_path):
     j.request_writer(actor='owner').append_request(request(j,'KILL'))
     assert j.reader().list_admissions()[0]['state']=='UNKNOWN'
     with pytest.raises(ValueError): j._record_admission(None,scope=SCOPE,intent_id='new',submission_id='post2',control_revision=1,admitted_at=NOW)
+
+
+def test_service_pending_pause_blocks_running_and_foreign_resume_cannot_weaken(tmp_path):
+    j, _ = store(tmp_path)
+    a, leader = applier(j)
+    try:
+        j.request_writer(actor='owner').append_request(request(j,'RESUME'))
+        a.apply_pending()
+        assert j.reader().effective_state(SCOPE).mode=='RUNNING'
+        j.request_writer(actor='owner').append_request(request(j,'PAUSE',1,'pause'))
+        state=j.reader().effective_state(SCOPE)
+        assert state.applied.mode=='RUNNING' and state.mode=='PAUSED'
+        assert not state.allows_buy and not state.allows_daily and state.allows_risk_sell
+        a.apply_pending()
+        j.request_writer(actor='other').append_request(request(j,'RESUME',2,'foreign',actor='other'))
+        result=a.apply_pending()[0]
+        assert result['result']=='REJECTED' and result['reason_code']=='OWNER_REQUIRED'
+        assert j.reader().effective_state(SCOPE).mode=='PAUSED'
+    finally: leader.close()
+
+
+def test_service_resume_validator_exception_never_grants_authority(tmp_path):
+    j, _ = store(tmp_path)
+    def unavailable(scope,now): raise RuntimeError('private provider payload')
+    a, leader = applier(j,validate=unavailable)
+    try:
+        j.request_writer(actor='owner').append_request(request(j,'RESUME'))
+        result=a.apply_pending()[0]
+        assert result['result']=='REJECTED' and result['reason_code']=='SAFETY_UNAVAILABLE'
+        assert 'private' not in str(j.reader().list_applications())
+        assert j.reader().effective_state(SCOPE).mode=='PAUSED'
+    finally: leader.close()
