@@ -30,6 +30,28 @@ from test_exit_manager import _snapshot
 KST = ZoneInfo("Asia/Seoul")
 
 
+def test_watch_one_pass_releases_account_before_every_sleep(tmp_path):
+    from tests.test_service_authority import account_work_fixture
+    work, conn, clock, _ = account_work_fixture(tmp_path)
+    observed = []
+    def one_pass():
+        return work.run(lambda lease, current, budget: run_intraday_check(
+            clock=clock, snapshot_reader=lambda: current,
+            quote_reader=lambda ticker: Money(70000), risk_config=RiskConfig(.05, .1),
+            lease=lease, exit_submitter=lambda *args: None, audit_sink=lambda result: None))
+    def sleep(seconds):
+        assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RELEASED'
+        competitor = work.lease_factory()
+        observed.append(competitor.owner_token)
+        competitor.release()
+        clock.advance(seconds)
+    result = run_intraday_watch(clock=clock, sleeper=sleep, stop_requested=lambda: False,
+        one_pass=one_pass, max_iterations=2)
+    assert len(result.iterations) == len(observed) == 2
+    assert len(set(observed)) == 2
+    conn.close()
+
+
 @pytest.mark.parametrize(
     ("hour", "minute", "phase"),
     [

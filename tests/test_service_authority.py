@@ -9,6 +9,87 @@ import pytest
 from tests.service_fixtures import FakeServiceClock, NOW, SCOPE, TempServiceTopology
 
 
+def account_work_fixture(tmp_path, **overrides):
+    from dataclasses import replace
+    from trading_bot.account_work import BoundedAccountWork
+    from trading_bot.mutation_lease import acquire_mutation_lease
+    from trading_bot.portfolio_store import connect_portfolio_store
+    from tests.test_phase11_cli import snapshot
+    conn = connect_portfolio_store(tmp_path / 'account.db')
+    clock = FakeServiceClock()
+    sequence = []
+    def fresh():
+        sequence.append('snapshot')
+        return replace(snapshot(), observed_at=clock())
+    kwargs = dict(conn=conn, account_scope_hash=SCOPE.account_scope_hash, clock=clock,
+        monotonic=clock.monotonic,
+        lease_factory=lambda: acquire_mutation_lease(conn, account_scope_hash=SCOPE.account_scope_hash,
+            lock_dir=tmp_path/'account-locks', command='risk', cycle_id='pass', observed_at=clock()),
+        snapshot_reader=fresh, terminalize_prior=lambda: True,
+        reconcile_snapshot=lambda current: {'determinate': True},
+        terminalize=lambda: sequence.append('terminal'),
+        persist_unresolved=lambda: sequence.append('unresolved'))
+    kwargs.update(overrides)
+    return BoundedAccountWork(**kwargs), conn, clock, sequence
+
+
+def test_bounded_account_work_fresh_truth_terminal_reconcile_release(tmp_path):
+    work, conn, clock, sequence = account_work_fixture(tmp_path)
+    def operation(lease, current, budget):
+        assert not conn.in_transaction
+        lease.assert_active_owner(observed_at=clock())
+        assert budget.remaining_seconds <= 45
+        sequence.append('operation')
+        return 'done'
+    assert work.run(operation) == 'done'
+    assert sequence == ['snapshot', 'operation', 'terminal', 'snapshot']
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RELEASED'
+    conn.close()
+
+
+def test_bounded_timeout_stays_recovery_blocked_after_unlock(tmp_path):
+    from trading_bot.account_work import AccountWorkTimeout
+    work, conn, clock, sequence = account_work_fixture(tmp_path)
+    def operation(lease, current, budget):
+        clock.advance(46)
+        budget.assert_available()
+    with pytest.raises(AccountWorkTimeout): work.run(operation)
+    assert 'unresolved' in sequence
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RECOVERY_BLOCKED'
+    assert conn.execute("SELECT count(*) FROM mutation_lease_events WHERE event_type='RECOVERY_BLOCKED'").fetchone()[0] == 1
+    lease = work.lease_factory()
+    assert lease.recovery_required
+    lease.release()
+    conn.close()
+
+
+def test_failed_account_reconcile_never_reports_healthy_release(tmp_path):
+    work, conn, _, sequence = account_work_fixture(tmp_path, reconcile_snapshot=lambda current: False)
+    from trading_bot.mutation_lease import LeaseRecoveryBlocked
+    with pytest.raises(LeaseRecoveryBlocked): work.run(lambda *args: 'result')
+    assert 'unresolved' in sequence
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RECOVERY_BLOCKED'
+    conn.close()
+
+
+def test_real_stalled_read_is_interrupted_without_live_lock_takeover(tmp_path):
+    import time
+    from trading_bot.account_work import AccountWorkBudget, AccountWorkTimeout
+    from trading_bot.mutation_lease import LeaseBusyError
+    work, conn, _, sequence = account_work_fixture(tmp_path)
+    # A smaller injected timer tests the same actual signal interruption path.
+    work.budget_factory = lambda: AccountWorkBudget(seconds=.15, cleanup_seconds=.05)
+    def operation(lease, current, budget):
+        with pytest.raises(LeaseBusyError): work.lease_factory()
+        time.sleep(5)
+    started = time.monotonic()
+    with pytest.raises(AccountWorkTimeout): work.run(operation)
+    assert time.monotonic() - started < 1
+    assert conn.execute('SELECT state FROM mutation_leases').fetchone()[0] == 'RECOVERY_BLOCKED'
+    assert 'unresolved' in sequence
+    conn.close()
+
+
 def _hold(settings, ready, release):
     from trading_bot.service_leader import ServiceLeader
     from trading_bot.service_store import ServiceJournal
