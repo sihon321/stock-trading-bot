@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 10
+current_plan: 11
 status: executing
-stopped_at: Completed 15-09-PLAN.md
-last_updated: "2026-10-04T10:28:23.500Z"
+stopped_at: Completed 15-10-PLAN.md
+last_updated: "2026-10-04T11:14:32.548Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 10
+Current Plan: 11
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 10 of 14
+Plan: 11 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -163,6 +163,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Failed reconciliation commits RECOVERY_BLOCKED before OS unlock; heartbeat expiry never permits takeover or healthy RELEASED evidence.
 - [Phase 15]: Daily reservation, signal finalization and execution acquire fresh authority separately; data, provider and cadence waits hold no account lease or SQLite transaction.
 - [Phase 15]: Final owner assertions reserve the configured single POST timeout in addition to the separate cleanup reserve, including after slow request preparation.
+- [Phase 15]: Independent observer history proves due obligations; present source samples never fabricate past authority, and consumed provider children wait outside account authority.
+- [Phase 15]: 15:30 terminalizes risk while leadership stays IDLE; each new exact trading date revalidates activation, session, controls and fresh account recovery.
 
 ### Pending Todos
 
@@ -202,6 +204,7 @@ None yet.
 | Phase 15 P06 | 25min | 2 tasks | 4 files |
 | Phase 15 P08 | 224min | 2 tasks | 16 files |
 | Phase 15 P09 | 20min | 2 tasks | 8 files |
+| Phase 15 P10 | 30min | 2 tasks | 5 files |
 
 ## Deferred Items
 
@@ -235,8 +238,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T10:28:23.492Z
-Stopped at: Completed 15-09-PLAN.md
+Last session: 2026-10-04T11:14:32.540Z
+Stopped at: Completed 15-10-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
