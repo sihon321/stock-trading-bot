@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 3
+current_plan: 4
 status: executing
-stopped_at: Completed 15-02-PLAN.md
-last_updated: "2026-10-04T03:39:14.933Z"
+stopped_at: Completed 15-03-PLAN.md
+last_updated: "2026-10-04T04:33:24.598Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 3
+Current Plan: 4
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 3 of 14
+Plan: 4 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -143,6 +143,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: FUT-04/AUTO-01/AUTO-02 remain pending until subsequent behavior and final phase verification prove them.
 - [Phase 15]: Service policies re-read protected exact-date session authority and refresh current calendar observations; UNKNOWN cannot become execution authority without new positive evidence.
 - [Phase 15]: Intraday shares MarketCyclePolicy with absolute 15:20 submission and 15:30 termination limits; delayed opening and overnight wake cannot extend or revive work.
+- [Phase 15]: Service leadership holds a fixed installation flock separate from account POST, control and freeze authority.
+- [Phase 15]: Consumed provider handoffs require committed daily universe and exact DISPATCHED dispatched_at read-back; suppressed and unknown calls never replay.
+- [Phase 15]: Three automatic restarts per 600 seconds are durably reserved; attention persists until explicit validated reset and clock reversal remains denial.
 
 ### Pending Todos
 
@@ -175,6 +178,7 @@ None yet.
 | Phase 11 P09 | 12 min | 2 tasks | 5 files |
 | Phase 15 P01 | 15min | 2 tasks | 4 files |
 | Phase 15 P02 | 4min | 2 tasks | 5 files |
+| Phase 15 P03 | 45min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -208,8 +212,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T03:39:14.926Z
-Stopped at: Completed 15-02-PLAN.md
+Last session: 2026-10-04T04:33:24.590Z
+Stopped at: Completed 15-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
