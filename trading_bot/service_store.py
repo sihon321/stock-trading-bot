@@ -328,7 +328,13 @@ class ExpectationWriter:
     """Operational facade; never composed with source or account writer capabilities."""
     __slots__=('__journal',)
 
-    def __init__(self,journal): self.__journal=journal
+    def __init__(self,journal):
+        # Observer evidence does not require currently available trading inputs.
+        # Use the same registered paths/scopes and owner schema, with a disabled
+        # evidence-only registration. Runtime/leader validation remains strict.
+        # This facade exposes neither initialize nor the underlying journal.
+        settings=journal.settings.model_copy(update={'service_enabled':False,'mode':'DISABLED'})
+        self.__journal=ServiceJournal(settings,clock=journal.clock)
 
     def record_derived(self,expectation):
         if expectation.producer_kind!='OBSERVER_DERIVED': raise ValueError('independent observer provenance required')

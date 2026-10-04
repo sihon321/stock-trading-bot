@@ -124,7 +124,7 @@ def test_observer_only_absent_jobs_survive_midnight_and_restart(tmp_path):
     clock.advance(40*60)
     producer.publish()
     missed=reader.absent_obligations(clock(),())
-    assert [r.kind for r in missed]==['PREP']  # conservative initial PAUSE suppresses DAILY
+    assert [r.kind for r in missed]==['PREP','RISK']  # conservative initial PAUSE suppresses DAILY
     clock.advance(24*3600)
     producer.publish()  # no exact notice for tomorrow, never reuse yesterday
     assert any(r.kind=='PREP' and r.trading_date_kst==at(8).date() for r in reader.absent_obligations(clock(),()))
