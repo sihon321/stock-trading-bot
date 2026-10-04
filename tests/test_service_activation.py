@@ -36,7 +36,7 @@ def activation_fixture(tmp_path):
         'source_hashes': sources, 'evidence_ids': ids,
         'checkpoint_approvals': tuple(CheckpointApproval(checkpoint=f'09-08 task {i}',
             actor='synthetic-owner', approved_at=NOW,
-            evidence_ids=(ids[2], ids[-1]) if i == 1 else ids) for i in (1, 2))})
+            evidence_ids=(ids[2], *ids[22:]) if i == 1 else ids) for i in (1, 2))})
     safety = CurrentActivationSafety(scope=SCOPE, observed_at=NOW,
         expires_at=NOW + timedelta(seconds=10), healthy=True,
         safety_latched=False, frozen_tickers=(), source_hashes=sources[:3])
@@ -163,3 +163,115 @@ def test_real_target_rejected_at_schema_and_runtime(tmp_path):
     result = validate_unattended_activation(settings, receipt, reader, lambda *a: safety,
         now=NOW, offline_authority=authority)
     assert not result.allowed and 'REAL_TARGET_FORBIDDEN' in result.reason_codes
+
+
+def owned_fixture(tmp_path):
+    """Manufactured journals under explicit offline authority, never real approval."""
+    import json
+    from trading_bot import sqlite_audit, soak_store
+    from trading_bot.audit_models import RunKind, RunStatus
+    from trading_bot.portfolio import canonical_account_scope_hash
+    from trading_bot.service_activation import ReadOnlyAcceptanceEvidenceReader, OfflineActivationAuthority
+    from trading_bot.service_models import ServiceScope
+    from trading_bot.soak_controller import (connect_controller, prepare_drill,
+        commit_drill_contract, append_controller_observation, finalize_drill)
+    from trading_bot.soak_drills import FAULT_REGISTRY, DRILL_POLICY_VERSION
+    topology = TempServiceTopology(tmp_path)
+    settings = topology.registration(enabled=True)
+    scope = ServiceScope(account_scope_hash=canonical_account_scope_hash('mock','1234'), execution_target='mock')
+    settings = settings.model_copy(update={'registered_scopes':(scope,)})
+    profile = {'schema_version':'kis-mock-compat-v1', 'state':'ACCEPTED',
+        'evidence_class':'KIS_OBSERVED', 'profile_version':'official-example-v1',
+        'facts':{}, 'daily':{'rows':[], 'completeness':'COMPLETE','page_count':1},
+        'balance':{'rows':[], 'summary':{}, 'completeness':'COMPLETE','page_count':1}}
+    profile_path = tmp_path/'config'/'profile.json'
+    profile_path.write_text(json.dumps(profile)); profile_path.chmod(0o600)
+    primary = sqlite_audit.connect(topology.audit_db_path)
+    soak = soak_store.connect_soak_store(topology.soak_db_path)
+    controller = connect_controller(topology.controller_db_path,topology.audit_db_path,topology.soak_db_path)
+    soak_store.create_campaign(soak, campaign_id='synthetic-campaign',
+        accepted_profile_fingerprint=soak_store.fingerprint_accepted_profile(profile),
+        accepted_profile_version='official-example-v1',field_contract_version='kis-mock-compat-v1',
+        ambiguity_policy_version='ambiguity-v1',ambiguity_window_seconds=60,
+        ambiguity_poll_cadence_seconds=5,ambiguity_max_observations=12)
+    soak_store.append_identity_receipt(soak,receipt_id='mock-identity',campaign_id='synthetic-campaign',
+        target='mock',domain_class='KIS_MOCK_VTS',account_suffix='1234',
+        profile_version='official-example-v1',policy_version='mock-isolation-v1')
+    for i in range(20):
+        day = date(2026,9,1)+timedelta(days=i)
+        sqlite_audit.start_run(primary,run_id=f'run-{i}',trading_mode='mock',dry_run=False,
+            run_kind=RunKind.RUN,trading_date_kst=day.isoformat(),target='mock')
+        sqlite_audit.finish_run(primary,run_id=f'run-{i}',status=RunStatus.COMPLETED)
+        soak_store.designate_day(soak,campaign_id='synthetic-campaign',trading_date=day.isoformat(),
+            run_id=f'run-{i}',run_kind='RUN',terminal=True,credit_state='CREDITED',detail={'verdict_code':'CREDITED'})
+        for stage in ('PRE_RUN','PRE_FINALIZE'):
+            soak_store.append_snapshot(soak,snapshot_id=f'{stage}-{i}',campaign_id='synthetic-campaign',
+                run_id=f'run-{i}',stage=stage,accounts=({'available_cash':1000,'total_value':1000},))
+    for fault, spec in FAULT_REGISTRY.items():
+        drill_id=f'drill-{fault.value}'
+        prepare_drill(controller,campaign_id='synthetic-campaign',drill_id=drill_id,fault=fault,
+            boundary=spec.boundary,expected_containment=spec.expected_containment,
+            required_observations=spec.required_observations,policy_version=DRILL_POLICY_VERSION)
+        commit_drill_contract(controller,drill_id=drill_id)
+        for kind in spec.required_observations:
+            append_controller_observation(controller,drill_id=drill_id,observation_type=kind,
+                evidence_class='CONTROLLED_INJECTION',primary_run_id='run-0',facts={'passed':True})
+        finalize_drill(controller,drill_id=drill_id,requested_verdict='PASSED')
+        soak_store.append_drill_link(soak,link_id=drill_id,campaign_id='synthetic-campaign',
+            drill_id=drill_id,evidence_class='CONTROLLED_INJECTION',verdict='PASSED',run_id='run-0')
+    soak.execute("UPDATE soak_campaigns SET state='COMPLETED' WHERE campaign_id='synthetic-campaign'")
+    soak.commit()
+    for conn in (primary,soak,controller):conn.close()
+    reader = ReadOnlyAcceptanceEvidenceReader(settings,profile_path=profile_path,owner_actor='synthetic-owner')
+    receipt = ApprovalBundle.synthetic().receipt.model_copy(update={'scope':scope})
+    saved = reader.read(receipt)
+    receipt=receipt.model_copy(update={'source_hashes':saved.source_hashes,
+        'profile_fingerprint':saved.profile_fingerprint,'evidence_ids':saved.evidence_ids,
+        'checkpoint_approvals':tuple(CheckpointApproval(checkpoint=f'09-08 task {i}',
+            actor='synthetic-owner',approved_at=NOW,evidence_ids=saved.evidence_ids) for i in (1,2))})
+    from trading_bot.service_activation import CurrentActivationSafety
+    safety=CurrentActivationSafety(scope=scope,observed_at=NOW,expires_at=NOW+timedelta(seconds=10),
+        healthy=True,safety_latched=False,frozen_tickers=(),source_hashes=saved.source_hashes[:3])
+    return settings,receipt,reader,safety,OfflineActivationAuthority(tmp_path)
+
+
+def test_owned_reader_reuses_exact_versions_and_never_writes(tmp_path):
+    from trading_bot.service_activation import validate_unattended_activation
+    settings,receipt,reader,safety,authority=owned_fixture(tmp_path)
+    before={p:p.read_bytes() for p in settings.trading_journal_paths}
+    result=validate_unattended_activation(settings,receipt,reader,lambda *a:safety,now=NOW,offline_authority=authority)
+    assert result.allowed and result.authority=='OFFLINE_ONLY'
+    assert before=={p:p.read_bytes() for p in settings.trading_journal_paths}
+    assert not hasattr(reader,'clear_freeze') and not hasattr(reader,'capture_approval')
+
+
+def test_owned_reader_cross_campaign_freeze_remains_blocking(tmp_path):
+    from trading_bot.service_activation import validate_unattended_activation
+    from trading_bot import soak_store
+    settings,receipt,reader,safety,authority=owned_fixture(tmp_path)
+    conn=soak_store.connect_soak_store(settings.trading_journal_paths[1])
+    soak_store.create_campaign(conn,campaign_id='foreign-proof',accepted_profile_fingerprint='sha256:'+'c'*64,
+        accepted_profile_version='official-example-v1',field_contract_version='kis-mock-compat-v1',
+        ambiguity_policy_version='ambiguity-v1',ambiguity_window_seconds=60,ambiguity_poll_cadence_seconds=5,
+        ambiguity_max_observations=12)
+    soak_store.freeze_ticker(conn,freeze_id='unresolved',campaign_id='foreign-proof',ticker='000660',
+        order_intent_id='unknown',freeze_kind='AMBIGUITY')
+    conn.close()
+    assert reader.read_freezes()==('000660',)
+    result=validate_unattended_activation(settings,receipt,reader,lambda *a:safety,now=NOW,offline_authority=authority)
+    assert not result.allowed and 'UNRESOLVED_FREEZE' in result.reason_codes
+
+
+def test_owned_reader_changed_source_and_schema_fail_closed(tmp_path):
+    from trading_bot.service_activation import validate_unattended_activation
+    from trading_bot import soak_store
+    settings,receipt,reader,safety,authority=owned_fixture(tmp_path)
+    conn=soak_store.connect_soak_store(settings.trading_journal_paths[1])
+    soak_store.append_campaign_event(conn,campaign_id=receipt.campaign_id,event_code='NEW_OBSERVATION')
+    conn.close()
+    result=validate_unattended_activation(settings,receipt,reader,lambda *a:safety,now=NOW,offline_authority=authority)
+    assert not result.allowed and 'SOURCE_IDENTITY_MISMATCH' in result.reason_codes
+    import sqlite3
+    conn=sqlite3.connect(settings.trading_journal_paths[2]);conn.execute('PRAGMA user_version=99');conn.close()
+    result=validate_unattended_activation(settings,receipt,reader,lambda *a:safety,now=NOW,offline_authority=authority)
+    assert not result.allowed and result.reason_codes==('SAVED_EVIDENCE_UNKNOWN',)
