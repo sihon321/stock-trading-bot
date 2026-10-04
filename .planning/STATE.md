@@ -4,10 +4,10 @@ milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
 current_phase: 15
 current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 6
+current_plan: 7
 status: executing
-stopped_at: Completed 15-05-PLAN.md; CLI authority integration remains assigned to 15-07
-last_updated: "2026-10-04T05:06:58.598Z"
+stopped_at: Completed 15-07-PLAN.md out of order; earliest pending 15-06 requires orchestrator position restore
+last_updated: "2026-10-04T05:31:12.037Z"
 last_activity: 2026-10-04
 last_activity_desc: Phase 15 execution started
 progress:
@@ -31,10 +31,10 @@ See: .planning/PROJECT.md (updated 2026-10-03)
 
 Current Phase: 15
 Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 6
+Current Plan: 7
 Total Plans in Phase: 14
 Phase: 15 (Unattended Scheduling & Service Resilience) — EXECUTING
-Plan: 6 of 14
+Plan: 7 of 14
 Status: Ready to execute
 Last activity: 2026-10-04 — Phase 15 execution started
 
@@ -150,6 +150,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: Daily recovery requires actual same-store ACTIVE account authority; pure exact v3/v4 saved reader capabilities retain explicit unknown historical target.
 - [Phase 15]: Installation-global control requests and final admission share a protected flock; accepted restrictions are immediately effective and survive restart/date changes.
 - [Phase 15]: Actual live ServiceLeader ownership alone mints control application capability; fresh all-account owner resume and current source/revision checks cannot grant independent trading activation.
+- [Phase 15]: Daily dispatch uses immutable consumed envelopes, actual transport-entry acknowledgement and no SDK, HTTP or outer retries.
+- [Phase 15]: Unverified actual Codex retry capabilities fail closed; account-lease release around daily provider waits remains 15-09 integration.
 
 ### Pending Todos
 
@@ -185,6 +187,7 @@ None yet.
 | Phase 15 P03 | 45min | 2 tasks | 4 files |
 | Phase 15 P04 | 12min | 2 tasks | 6 files |
 | Phase 15 P05 | 13min | 2 tasks | 3 files |
+| Phase 15 P07 | 22min | 2 tasks | 7 files |
 
 ## Deferred Items
 
@@ -218,8 +221,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T05:06:58.591Z
-Stopped at: Completed 15-05-PLAN.md; CLI authority integration remains assigned to 15-07
+Last session: 2026-10-04T05:31:12.030Z
+Stopped at: Completed 15-07-PLAN.md out of order; earliest pending 15-06 requires orchestrator position restore
 Resume file: None
 
 ## Operator Next Steps

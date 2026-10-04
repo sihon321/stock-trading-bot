@@ -249,7 +249,7 @@ Plans:
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 14/14 | Complete    | 2026-10-03 |
-| 15. Unattended Scheduling & Service Resilience | v1.3 | 5/14 | In Progress|  |
+| 15. Unattended Scheduling & Service Resilience | v1.3 | 6/14 | In Progress|  |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
 
 ## v1.2 Complete Trade Lifecycle & Strategy Evidence (Phase Details)
@@ -475,7 +475,7 @@ Plans:
   3. Health checks detect missed schedules, stalled workers, stale market data, and notification failure; recovery remains fail closed.
   4. Manual pause, resume, dry-run, and global kill controls work without deleting audit evidence or releasing unresolved-order freezes.
 
-**Plans:** 5/14 plans executed
+**Plans:** 6/14 plans executed
 
 Plans:
 **Wave 1**
@@ -493,7 +493,7 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [ ] 15-06-PLAN.md
-- [ ] 15-07-PLAN.md
+- [x] 15-07-PLAN.md
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
