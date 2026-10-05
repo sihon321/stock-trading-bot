@@ -13,12 +13,12 @@ from tests.service_fixtures import TempServiceTopology, SCOPE, NoExternalCapabil
 RUNNER = CliRunner()
 
 
-def configured(tmp_path):
+def configured(tmp_path, *, clock=None):
     from trading_bot.control_store import ControlStore
     from trading_bot.service_store import ServiceJournal
     settings = TempServiceTopology(tmp_path).registration()
-    ServiceJournal(settings).initialize()
-    ControlStore(settings).initialize(actor='fixture-owner')
+    ServiceJournal(settings, clock=clock).initialize()
+    ControlStore(settings, clock=clock).initialize(actor='fixture-owner')
     config = tmp_path / 'registration' / 'service.json'
     config.parent.mkdir(mode=0o700)
     config.write_text(settings.model_dump_json())

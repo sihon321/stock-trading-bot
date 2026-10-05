@@ -120,7 +120,7 @@ def test_owner_gui_probe_requires_explicit_registration_and_unknown_failure(tmp_
 
 def test_narrow_observer_factory_never_constructs_general_service_or_trading(tmp_path):
     from trading_bot.alert_cli import build_expectation_producer
-    settings,config=configured(tmp_path)
+    settings,config=configured(tmp_path,clock=lambda:NOW)
     from trading_bot.alert_config import ObserverSettings
     from trading_bot.web_config import ResourceDescriptor
     observer=ObserverSettings(operational_db_path=tmp_path/'observer'/'observer.db',
@@ -275,7 +275,7 @@ def test_observer_factory_survives_missing_active_trading_sources(tmp_path):
     from trading_bot.alert_cli import build_expectation_producer
     from trading_bot.alert_config import ObserverSettings
     from tests.service_fixtures import FakeOwnerLoginProbe
-    settings,config=configured(tmp_path)
+    settings,config=configured(tmp_path,clock=lambda:NOW)
     active=settings.model_copy(update={'service_enabled':True,'mode':'KIS_MOCK'})
     config.write_text(active.model_dump_json())
     settings.trading_config_path.unlink()
@@ -287,3 +287,47 @@ def test_observer_factory_survives_missing_active_trading_sources(tmp_path):
         producer=build_expectation_producer(observer,service_config=config,clock=lambda:NOW,
             login_probe=FakeOwnerLoginProbe(clock=lambda:NOW))
         assert len(producer.publish())==3 and not external.attempts
+
+
+def test_future_control_truth_stays_unknown_while_observer_outbox_keeps_progressing(tmp_path):
+    from trading_bot.alert_cli import build_expectation_producer
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.alert_observer import AlertObserver
+    from trading_bot.web_models import AlertSourceBatch
+    from tests.service_fixtures import FakeOwnerLoginProbe
+    from tests.test_alert_detector import record
+    from tests.test_alert_observer import Transport
+    import sqlite3
+
+    clock=FakeServiceClock()
+    future=NOW+timedelta(hours=2)
+    settings,config=configured(tmp_path,clock=lambda:future)
+    observer=ObserverSettings(operational_db_path=tmp_path/'observer'/'alerts.db',
+        expectation_service_config_path=config,registered_resources=[
+            {'id':owner,'owner':owner,'path':path,'account_hash':settings.registered_scopes[0].account_scope_hash,'target':'mock'}
+            for owner,path in [('service',settings.service_db_path),('control',settings.control_db_path)]])
+    with NoExternalCapabilities() as external:
+        producer=build_expectation_producer(observer,service_config=config,clock=clock,
+            login_probe=FakeOwnerLoginProbe(clock=clock))
+        before=settings.control_db_path.read_bytes()
+        assert producer.controls.effective_state().applied.applied_at==future
+        records=producer.publish()
+        assert len(records)==3 and all(r.state=='UNKNOWN' for r in records)
+        bot=AlertObserver(observer,clock=clock,notifier=Transport(),expectation_producer=producer)
+        bot.start()
+        incident=bot.store.observe(bot.detector.detect(AlertSourceBatch(clock(),(record('orders',
+            ticker='000660',order_intent_id='original-unknown'),)))[0])
+        try:
+            bot._scan(clock())
+            clock.advance(1800)
+            bot._scan(clock())
+            assert sum('UNRESOLVED_ORDER' in text for text in bot.notifier.sent)==2
+            assert bot.store.get_incident(incident.episode_id).active
+            assert producer.controls.effective_state().applied.applied_at==future
+            assert settings.control_db_path.read_bytes()==before
+            with sqlite3.connect(settings.service_db_path) as conn:
+                health=conn.execute("SELECT source_id,state,reason_code FROM service_expectation_health WHERE source_kind='CONTROL'").fetchall()
+            assert health and all(row==('control-owner-setup','UNKNOWN','CONTROL_UNKNOWN') for row in health)
+            assert not external.attempts
+        finally:
+            bot.stop()
