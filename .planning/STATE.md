@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Local operator web started and login verified; Tailscale owner authentication pending; Phase16 remains ready to discuss"
+last_activity_desc: "Local operator web restarted detached; Tailscale authenticated; Serve activation pending; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -181,7 +181,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- 2026-10-05 Quick 261005-l0g: local operator web running and live login verified at 127.0.0.1:8765; Tailscale app started but owner authentication/private HTTPS remains pending. See [quick summary](./quick/261005-l0g-start-tailscale-and-local-operator-web/261005-l0g-SUMMARY.md).
+- 2026-10-05 Quick 261005-l0g: local operator web restarted detached and login verified at 127.0.0.1:8765; Tailscale authenticated at 100.92.151.80; exact private HTTPS config prepared, awaiting tailnet Serve activation. See [quick summary](./quick/261005-l0g-start-tailscale-and-local-operator-web/261005-l0g-SUMMARY.md).
 
 - 2026-10-01 Phase 10 re-verification passed (24/24) after shared audit schema and historical ambiguity warning fixes. Focused suite: 116 passed; full suite: 828 passed. Phase 9 external acceptance remains required; current Phase 11 position is retained.
 

@@ -12,3 +12,11 @@ status: incomplete
 - No saved-evidence resources were registered because no deployment configuration or positively attributed registration existed. Initial evidence screens therefore remain UNKNOWN/unavailable.
 
 Pending: owner must complete Tailscale login. No Tailscale Serve config exists yet; fixed private HTTPS host/origin and proxy configuration requires the actual authenticated tailnet hostname. External phone/Mac access remains unverified. No trading service was started.
+
+## Resume: MacBook access (2026-10-05)
+
+Tailscale authentication is now complete. Local node `oceano-macmini` has IP 100.92.151.80 and DNS name oceano-macmini.tail667338.ts.net. A second macOS peer is active on the same tailnet. The earlier web process had stopped; restarted Waitress detached with a separate session, stdin closed and owner-only file logging. Live /login returns HTTP 200 and the listener remains 127.0.0.1:8765.
+
+Prepared and validated protected `~/.config/stock-trading-bot/operator/config/web-tailscale.json` using the exact HTTPS origin/host and one trusted loopback proxy. Existing credentials and registered evidence remain unchanged. This configuration is not active until the private proxy is enabled.
+
+`tailscale serve --bg --https=443 http://127.0.0.1:8765` reports Serve is not enabled on this tailnet; opened its exact feature activation URL in the owner browser. Awaiting owner activation. After activation, restart the tracked local web PID using web-tailscale.json and verify actual certificate-valid HTTPS login through Serve. MacBook device acceptance remains pending. Direct HTTP at the Tailscale IP is not configured.
