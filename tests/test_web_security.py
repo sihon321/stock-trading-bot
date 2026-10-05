@@ -70,6 +70,24 @@ def test_login_logout_csrf_origin_rotation_and_audit(web):
         assert conn.execute("SELECT COUNT(*) FROM web_actions WHERE actor='owner' AND action='LOGOUT'").fetchone()[0] == 1
 
 
+@pytest.mark.parametrize('background_path, expected_status', [
+    ('/favicon.ico', 200),
+    ('/apple-touch-icon.png', 200),
+    ('/', 200),
+    ('/api/views/overview', 401),
+])
+def test_anonymous_background_requests_preserve_visible_login_form(web, background_path, expected_status):
+    _, client, _ = web
+    token = csrf(client)
+    response = client.get(background_path, follow_redirects=True)
+    assert response.status_code == expected_status
+    # A browser may fetch an icon or another tab before submitting this form.
+    response = client.post('/login', data={'username': 'owner', 'password': 'synthetic-password',
+        'csrf_token': token})
+    assert response.status_code == 303
+    assert client.get('/api/views/overview').status_code == 200
+
+
 def test_auth_absolute_expiry_concurrent_and_password_reset(web):
     app, client, clock = web
     other = app.test_client()

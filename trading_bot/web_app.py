@@ -295,7 +295,10 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         public = request.endpoint == 'login'
         g.operator_session = auth.validate_session(session.get('operator_token')) if not public else None
         if not public and g.operator_session is None:
-            session.clear()
+            # Anonymous icon/poll requests must not invalidate an open login form.
+            # A presented invalid or expired operator session still gets cleared.
+            if 'operator_token' in session:
+                session.clear()
             if request.path.startswith('/api/'):
                 return safe_error('AUTH_REQUIRED', 401)
             path = safe_return_path(request.full_path.rstrip('?'), app) if request.method == 'GET' else '/'

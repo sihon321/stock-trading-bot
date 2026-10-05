@@ -28,3 +28,11 @@ Tailnet Serve activation is complete. The owner reported INVALID_REQUEST because
 Actual certificate-valid HTTPS checks at https://oceano-macmini.tail667338.ts.net: login GET 200, valid CSRF/password POST redirects, authenticated dashboard 200, session cookie Secure/HttpOnly/SameSite=Lax. Direct HTTP stays rejected and the upstream listener remains 127.0.0.1:8765. Existing operator credentials were reused. No source changes, trading process activation or broader network listeners were introduced. No saved evidence was fabricated or registered.
 
 Owner next step: reload the exact HTTPS login URL on the Tailscale-connected MacBook. Remote MacBook acceptance is not independently observed. Debug record: ../../debug/resolved/tailscale-invalid-request.md.
+
+## Browser login POST regression fix (2026-10-05)
+
+The owner later supplied a screenshot showing POST /login HTTP 400 at the correct HTTPS origin. Temporary protected deployment diagnostics collected only fixed rejection codes and boolean matches, proving CSRF_MISMATCH on repeated owner submissions. This was distinct from the earlier local-host deployment issue and a separate password AUTH_FAILED event.
+
+Reproduced a browser-like sequence: GET login, fetch favicon and follow its anonymous redirect, then submit the original visible login form. The unconditional anonymous session.clear() replaced the cookie CSRF state. Preserved anonymous prelogin state while retaining session clearing for any presented invalid/expired operator token and existing login/logout rotation. CSRF and origin validation remain enabled.
+
+Added four regression paths (favicon, Apple icon, other page and protected API), all failing before the fix. Focused authentication/security/route suite: 71 passed. Restarted normal production Waitress CLI and verified the same actual HTTPS sequence through Serve: pending cookie unchanged, unauthenticated API 401, original login form POST 303 and dashboard 200. Secure session cookie flags retained. Temporary diagnostic wrapper is stopped. Debug record: ../../debug/resolved/tailscale-login-post.md. Owner refresh and MacBook confirmation requested.
