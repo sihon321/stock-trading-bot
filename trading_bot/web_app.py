@@ -19,7 +19,7 @@ from werkzeug.exceptions import HTTPException
 from .web_auth import WebAuth
 from .web_config import WebSettings
 from .web_store import WebStore
-from .web_evidence import OperatorEvidenceService, ReadOnlyPortfolioRepository, EvidenceUnavailable, _clean
+from .web_evidence import OperatorEvidenceService, account_repository, EvidenceUnavailable, _clean
 from .web_models import ResourceScope, PeriodSelection, KST, EvidenceRecord, EvidenceSelection, RecordPage
 
 OPERATIONAL_VIEWS = {
@@ -52,6 +52,7 @@ LABELS = {
     'target': '대상', 'trading_date_kst': '거래일(KST)', 'completed_tickers': '완료 종목 수',
     'total_tickers': '전체 종목 수', 'campaign_id': '캠페인 ID', 'state_identity': '상태 ID',
     'available_cash': '가용 현금', 'total_evaluation': '총 평가액', 'latest_attempt_status': '최근 시도 완전성',
+    'unrealized_value': '미실현 손익', 'unrealized_return': '평가수익률',
 }
 
 
@@ -500,7 +501,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         for key in {'candidates': ('rank', 'screen_reason', 'coverage'),
             'decisions': ('evaluation_id', 'provider', 'model', 'risk_verdict'),
             'evaluations': ('action', 'confidence', 'reason', 'terminal_event_type'),
-            'holdings': ('current_price', 'evaluation_amount', 'unrealized_profit'),
+            'holdings': ('current_price', 'evaluation_amount', 'unrealized_profit', 'unrealized_return'),
             'runs': ('completed_tickers', 'total_tickers')}.get(record.kind, ()):
             fields.setdefault(key, None)
         data = {k: 'UNKNOWN · 확인되지 않음' if v is None else v for k, v in fields.items()}
@@ -513,6 +514,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 data[name] = f'{data[name]:,}주'
         if isinstance(data.get('confidence'), (int, float)):
             data['confidence'] = f'{data["confidence"]:.2f}'
+        if isinstance(data.get('unrealized_return'), (int, float)):
+            data['unrealized_return'] = f'{data["unrealized_return"]:.2f}%'
         back = contextual_url(parent or OPERATIONAL_VIEWS.get(record.kind, ('/orders', ''))[0], context,
             **{key: context[value] for key, value in (('cursor', 'cursor'), ('page', 'page_number')) if value in context})
         return dict(**data, id=record.record_id, resource_id=record.resource_id,
@@ -564,7 +567,8 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             expires_at=g.operator_session.expires_at.isoformat(),
             csrf_token=generate_csrf(), scope='저장 증거 · 각 원천은 독립 관측이며 동시에 생성된 스냅샷이 아닙니다.',
             **critical_summary(context), **context)
-        sources = [source_presentation(s) for s in overview.sources]
+        visible_sources = tuple(a.envelope for a in overview.accounts) if view_id in {'account','holdings'} else overview.sources
+        sources = [source_presentation(s) for s in visible_sources]
         for s in overview.sources:
             authorize_envelope(s)
         common.update(source=sources[0] if sources else dict(queried_at=kst_time(clock())), sources=sources)
@@ -588,8 +592,11 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         for account in overview.accounts:
             authorize_envelope(account.envelope)
             accounts.append(dict(snapshot_id=account.snapshot_id,
+                balance_only=account.envelope.schema_owner == 'account_view',
+                cash_label='예수금' if account.envelope.schema_owner == 'account_view' else '가용 현금',
                 available_cash=amount(account.available_cash), total_evaluation=amount(account.total_evaluation),
                 unrealized_value=amount(account.unrealized_value), latest_attempt_status=account.latest_attempt_status,
+                latest_attempt_at=kst_time(account.latest_attempt_at),
                 selection_id=account.selection.selection_id,
                 source=source_presentation(account.envelope, account.snapshot_id, last_success_id=account.snapshot_id,
                     latest_attempt_id=account.latest_attempt_id),
@@ -643,6 +650,9 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                 next_url = contextual_url(path, context, cursor=page.cursor, page=context['page_number'] + 1) if page.cursor else None
             rows = [present_record(r, context, path) for r in page.rows]
             keys = list(dict.fromkeys(k for row in rows for k in row['fields']))
+            if view_id == 'holdings':
+                keys = ['ticker', 'quantity' if any('quantity' in row['fields'] for row in rows) else 'total_quantity',
+                    'orderable_quantity', 'average_price', 'current_price', 'evaluation_amount', 'unrealized_profit', 'unrealized_return']
             columns = [dict(key=k, label=LABELS.get(k, k), numeric=k in {'confidence', 'quantity', 'price', 'requested_qty', 'filled_qty', 'unfilled_qty'}) for k in keys[:12]]
             columns += [dict(key='resource_id', label='원천 ID'), dict(key='provenance', label='증거 구분'), dict(key='completeness', label='완전성')]
             common.update(rows=rows, total=page.total, columns=columns, selection_id=page.selection_id,
@@ -695,7 +705,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             if record_id.startswith('account:'):
                 account = next((a for a in reader.overview(scoped).accounts if 'account:' + (a.snapshot_id or 'UNKNOWN') == record_id), None)
                 if account is None:
-                    account = ReadOnlyPortfolioRepository(resource, clock=clock).account(record_id.split(':', 1)[1])
+                    account = account_repository(resource, clock=clock).account(record_id.split(':', 1)[1])
                     if account.snapshot_id is None:
                         raise EvidenceUnavailable('RECORD_NOT_FOUND')
                 record = EvidenceRecord(record_id, 'account', account.envelope, account.selection,

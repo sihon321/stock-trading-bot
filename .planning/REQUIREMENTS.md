@@ -63,6 +63,8 @@ real-money promotion gates.
 - [x] **FUT-03**: Operator can review validation, portfolio, order, soak, calibration, readiness, and worker-health evidence in an authenticated responsive web application.
 - [x] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
 - [x] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
+- [x] **UI-03**: An independent mock-only query worker saves current balance valuations without trading/LLM authority; web displays broker-supplied per-holding price, evaluation, signed P/L and percent return from that exact saved snapshot.
+- [x] **UI-04**: Account and holdings views preserve the last complete snapshot across date filters and refresh failures and distinguish no collection, missing marks, failed refresh and stale observations.
 - [x] **OPSV-01**: Operator receives deduplicated, severity-based alerts for stale workers, failed cycles, unresolved orders, safety latches, and broker-state divergence.
 - [x] **FUT-04**: Operator can schedule unattended cycles only after manual-operation evidence is sufficient.
 - [x] **AUTO-01**: Scheduled daily and intraday workers use KRX calendar/session rules, leader locking, durable checkpoints, and idempotent invocation identities so one logical job cannot submit twice.
@@ -130,6 +132,8 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | FUT-03 | Phase 14 | Complete |
 | UI-01 | Phase 14 | Complete |
 | UI-02 | Phase 14 | Complete |
+| UI-03 | Phase 14 account follow-up (quick 261005-tor) | Complete |
+| UI-04 | Phase 14 account follow-up (quick 261005-tor) | Complete |
 | OPSV-01 | Phase 14 | Complete |
 | FUT-04 | Phase 15 | Complete |
 | AUTO-01 | Phase 15 | Complete |
@@ -137,8 +141,8 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | PROD-01 | Phase 16 | Planned |
 | PROD-02 | Phase 16 | Planned |
 
-**Future coverage:** 16 requirements mapped, 0 unmapped.
+**Future coverage:** 18 requirements mapped, 0 unmapped.
 
 ---
 *Requirements defined: 2026-07-11*
-*Last updated: 2026-10-05 after completing Phase 15*
+*Last updated: 2026-10-05 after Phase 15 and the account display follow-up*

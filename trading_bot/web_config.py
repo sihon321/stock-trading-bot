@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ResourceOwner = Literal['audit', 'portfolio', 'soak', 'controller', 'replay', 'backtest', 'shadow', 'calibration', 'service', 'control']
+ResourceOwner = Literal['audit', 'portfolio', 'account_view', 'soak', 'controller', 'replay', 'backtest', 'shadow', 'calibration', 'service', 'control']
 _ID = re.compile(r'\A[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z')
 
 

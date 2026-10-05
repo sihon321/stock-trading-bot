@@ -121,6 +121,7 @@ class AccountDTO:
     latest_attempt_id: str | None = None
     latest_attempt_status: str = 'UNKNOWN'
     historical: bool = True
+    latest_attempt_at: datetime | None = None
 
     @property
     def snapshot_id(self):

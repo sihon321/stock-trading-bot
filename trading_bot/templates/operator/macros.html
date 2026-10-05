@@ -58,7 +58,7 @@
 <div class="source-metadata">
   <div class="source-badges">{{ badge(source.get('freshness', 'UNKNOWN'), {'SAVED': '저장 관측', 'STALE': '오래된 관측'}.get(source.get('freshness'), source.get('freshness', 'UNKNOWN'))) }}
     {{ badge(source.get('completeness', 'UNKNOWN')) }}
-    {{ badge(source.get('query_status', 'UNKNOWN'), {'SUCCESS': '조회 성공', 'FAILED': '조회 실패'}.get(source.get('query_status'), source.get('query_status', 'UNKNOWN'))) }}</div>
+    {{ badge(source.get('query_status', 'UNKNOWN'), {'SUCCESS': '저장 기록 조회 성공' if source.get('schema_owner') == 'account_view' else '조회 성공', 'FAILED': '저장 기록 조회 실패' if source.get('schema_owner') == 'account_view' else '조회 실패'}.get(source.get('query_status'), source.get('query_status', 'UNKNOWN'))) }}</div>
   <dl><dt>원천 ID</dt><dd>{{ source.get('resource_id', 'UNKNOWN')|forceescape }}</dd>
     <dt>관측·기록 ID</dt><dd>{{ source.get('record_id', 'UNKNOWN')|forceescape }}</dd>
     <dt>원천 관측</dt><dd>{{ source.get('observed_at', 'UNKNOWN')|forceescape }}</dd>
@@ -67,6 +67,9 @@
   {% if source.get('freshness') == 'STALE' %}{{ message('stale') }}{% endif %}
   {% if source.get('completeness') == 'INCOMPLETE' %}{{ message('incomplete') }}{% endif %}
   {% if source.get('query_status') == 'FAILED' %}{{ message('failed') }}{% endif %}
+  {% if source.get('diagnostic_code') == 'ACCOUNT_NOT_COLLECTED' %}<p>계좌 조회 기록이 아직 없습니다. 조회 전용 갱신 작업이 시작되면 값이 표시됩니다.</p>{% endif %}
+  {% if source.get('diagnostic_code') == 'ACCOUNT_REFRESH_FAILED' %}<p>최근 KIS 계좌 갱신이 실패했습니다. 마지막 성공 관측을 표시하며, 현재 잔고를 보장하지 않습니다.</p>{% endif %}
+  {% if source.get('diagnostic_code') == 'ACCOUNT_VALUATION_MISSING' %}<p>KIS 잔고 조회에서 일부 평가 정보가 제공되지 않았습니다. 해당 값은 UNKNOWN으로 표시합니다.</p>{% endif %}
   {% if source.get('last_success_id') %}<p>마지막 성공 관측 ID · {{ source['last_success_id']|forceescape }}</p>{% endif %}
   {% if source.get('latest_attempt_id') %}<p>최근 조회 시도 ID · {{ source['latest_attempt_id']|forceescape }}</p>{% endif %}
   {% if source.get('diagnostic_code') %}<p>진단 코드 · {{ source['diagnostic_code']|forceescape }}</p>{% endif %}

@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Operator elapsed durations display calendar years/months/days and HH:MM:SS; Phase16 remains ready to discuss
+Last activity: 2026-10-05 — Mock account display refresh and holding valuations deployed; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -203,6 +203,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261005-tor | Add mock account refresh, saved valuations and historical holding display | 2026-10-05 | runtime-verified | [261005-tor-implement-read-only-kis-mock-account-ref](./quick/261005-tor-implement-read-only-kis-mock-account-ref/) |
 | 261005-teq | Display observation ages with calendar years/months/days and HH:MM:SS | 2026-10-05 | runtime-verified | [261005-teq-display-observation-elapsed-time-with-ye](./quick/261005-teq-display-observation-elapsed-time-with-ye/) |
 | 261005-slk | Display observation, heartbeat, lease age and alert duration as HH:MM:SS | 2026-10-05 | runtime-verified | [261005-slk-display-observation-elapsed-time-as-hour](./quick/261005-slk-display-observation-elapsed-time-as-hour/) |
 | 261005-rob | Connect owner-supplied Discord webhook and verify one notification delivery | 2026-10-05 | runtime-only | [261005-rob-connect-the-supplied-discord-webhook-to-](./quick/261005-rob-connect-the-supplied-discord-webhook-to-/) |

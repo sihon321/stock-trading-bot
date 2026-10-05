@@ -518,3 +518,25 @@ reset-attention은 `--request-id`와 `--expected-revision`을 받는 요청 전�
 PAUSE/KILL의 **수락 완료가 후속 transport 진입보다 앞서면** 현재 제한이 이긴다. 이미 admission lock 안에 진입한 오래된 POST에는 뒤늦은 요청 수락을 소급 적용하거나 취소됐다고 표시하지 않는다. 신규 요청이 lock busy이면 UNAVAILABLE이고 수락 성공을 주장하지 않는다. provider transport에 먼저 진입한 IN_FLIGHT는 응답을 기다리는 동안 account/control lock을 점유하지 않으며 risk/reconciliation과 제어 요청은 진행한다. 이후 kill보다 오래된 resume은 REVISION_CONFLICT이며 kill을 지우지 않는다. 불확실한 POST/response는 UNKNOWN으로 남고 같은 evaluation intent를 다시 제출하지 않는다.
 
 service/control 원천이 반복 실패해도 독립 observer의 건강한 own-store·ownership이 남아 있으면 기존 CRITICAL outbox와 30분 reminder를 계속 처리한다. 실패한 source partition은 cursor·incident를 유지하며 false recovery를 만들지 않는다. 관찰자 own-store/ownership 실패는 전송을 중단한다. 같은 Mac 전체 전원·절전·로그아웃 장애 동안 이 관찰자가 외부 감시를 대신할 수 없다는 한계는 유지된다. 3회/600초 restart budget과 reset-attention은 별도이며 pause/kill·동결·역사 증거를 지우지 않는다.
+
+
+## 계좌 화면 조회 전용 갱신 (2026-10-05)
+
+`bot-account` / `python3 -m trading_bot.account_refresh`는 모의계좌 잔고를 별도 저장소에 기록하는 작업이다. 웹 새로고침은 이 저장 기록을 읽으며 KIS를 직접 호출하지 않는다. 조회 작업의 전송 경계는 모의 도메인의 OAuth 토큰 발급과 `VTTC8434R` 잔고 GET만 허용한다. 주문·취소·hashkey·실계좌 경로는 허용하지 않으며 LLM/자동매매 실행 구성을 만들지 않는다.
+
+현재 배포는 보호된 `~/.config/stock-trading-bot/operator/config/account-refresh.json`을 사용하고, `~/.config/stock-trading-bot/account-view/data/balance.db`에 저장한다. 디렉터리는 0700, 설정·저장소·로그는 0600이다. 설정은 모의 AppKey/AppSecret/계좌 번호와 검증된 계좌 범위 해시를 가지므로 내용은 화면·로그·Git에 넣지 않는다. 공유 KIS 토큰 캐시만 기존 인증 흐름과 함께 사용한다. 거래 증거 DB에 대한 마이그레이션이나 쓰기는 수행하지 않는다.
+
+운영 명령 (프로젝트 Python 런타임 및 의존성을 사용):
+
+```sh
+python3 -m trading_bot.account_refresh once --config ~/.config/stock-trading-bot/operator/config/account-refresh.json
+python3 -m trading_bot.account_refresh watch --config ~/.config/stock-trading-bot/operator/config/account-refresh.json
+```
+
+`once`는 한 번 조회하고, `watch`는 조회 완료 후 기본 60초를 기다려 반복한다. 작업은 브라우저와 독립적이며 같은 저장소의 파일 잠금으로 중복 watch를 막는다. SIGTERM/SIGINT로 정지한다. 현재 PID/로그는 보호된 operator/logs의 account-refresh.pid/account-refresh.log에 기록돼 있다. 이 배포에서 재부팅·로그인 자동 시작은 설치하지 않았다.
+
+화면은 마지막 완전한 잔고와 보유 종목을 기간 필터와 독립적으로 표시한다. 주문·체결·실행 이력의 날짜 필터는 유지된다. 현재가는 잔고 조회 시점의 저장 가격이며 틱 단위 실시간 스트림이 아니다. 180초보다 오래된 계좌 관측은 STALE이다. 미수집, 일부 평가 정보 누락, 최근 KIS 갱신 실패를 별도로 설명하고, 실패한 갱신은 마지막 성공 잔고나 관측 시각을 덮어쓰지 않는다. 성공한 저장 파일 조회와 실패한 KIS 갱신을 서로 다른 상태로 표시한다.
+
+KIS 예수금 `dnca_tot_amt`는 화면에서 **예수금**으로 표시하며 즉시 주문 가능 금액을 뜻하지 않는다. 종목 현재가·평가액·평가손익·수익률은 각각 `prpr`, `evlu_amt`, `evlu_pfls_amt`, `evlu_pfls_rt`를 저장하고, 계좌 평가손익은 `evlu_pfls_smtl_amt`를 사용한다. 누락 값을 원가나 0으로 추정하지 않고 UNKNOWN으로 유지한다. 필드 의미는 [KIS 공식 잔고 조회 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_balance/chk_inquire_balance.py)를 따랐다.
+
+이 표시용 저장소는 account_view 원천이며 거래 실행용 COMPLETE 포트폴리오 증거가 아니다. 기존 BROKER_TRUTH/주문 동결/래치 알림은 기존 거래 원천에서 계속 읽는다. 최신 잔고가 보이는 것만으로 과거 주문 불확실성이 해결되거나 자동매매가 활성화되지는 않는다.

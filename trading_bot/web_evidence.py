@@ -15,6 +15,7 @@ import re
 import unicodedata
 
 from . import evidence_contracts as contracts
+from .account_view_contracts import ACCOUNT_VIEW_SCHEMA
 from .web_config import checked_path
 from .web_models import (AccountDTO, EvidenceRecord, EvidenceSelection, OverviewDTO,
                          ResourceScope, SourceEnvelope, PeriodSelection, RecordPage,
@@ -161,7 +162,7 @@ def _envelope(resource, now, *, conn=None, **values):
         'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
         'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION,
     }.get(resource.owner)
-    if resource.owner in {'service','control'}:
+    if resource.owner in {'service','control','account_view'}:
         version = 1
     return SourceEnvelope(resource.id, resource.owner,
         version,
@@ -175,7 +176,7 @@ def _transaction(resource):
         path = checked_path(resource.path)
         if not path.is_file():
             raise EvidenceUnavailable('SOURCE_MISSING')
-        if resource.owner in {'service','control'} and (path.stat().st_uid!=os.getuid()
+        if resource.owner in {'service','control','account_view'} and (path.stat().st_uid!=os.getuid()
                 or path.stat().st_mode & 0o077 or path.parent.stat().st_mode & 0o077):
             raise EvidenceUnavailable('SOURCE_OWNER_UNSAFE')
         conn = sqlite3.connect(f'{path.as_uri()}?mode=ro', uri=True, isolation_level=None, timeout=1)
@@ -193,13 +194,22 @@ def _transaction(resource):
                    'soak': contracts.SOAK_REPORT_SCHEMA,
                    'controller': contracts.CONTROLLER_REPORT_SCHEMA,
                    'service': contracts.SERVICE_REPORT_SCHEMA,
-                   'control': contracts.CONTROL_REPORT_SCHEMA}
+                   'control': contracts.CONTROL_REPORT_SCHEMA,
+                   'account_view': ACCOUNT_VIEW_SCHEMA}
         schema = schemas.get(resource.owner)
         if schema is None:
             raise EvidenceUnavailable('UNSUPPORTED_SOURCE_OWNER')
         if resource.owner == 'portfolio':
             actual = _portfolio_read_version(conn)
             schema = contracts.portfolio_read_schema(actual)
+        elif resource.owner == 'account_view':
+            rows = conn.execute('SELECT owner,version,account_hash,target FROM account_view_metadata').fetchall()
+            if len(rows) != 1 or tuple(rows[0]) != ('account_view', 1, resource.account_hash, resource.target) or resource.target != 'mock':
+                raise EvidenceUnavailable('SCOPE_CONFLICT')
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if tables != set(schema):
+                raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
+            actual = conn.execute('PRAGMA user_version').fetchone()[0]
         elif resource.owner in {'service','control'}:
             rows = conn.execute(f'SELECT owner,version FROM {resource.owner}_metadata').fetchall()
             expected_owner = {'service':contracts.SERVICE_SCHEMA_OWNER,'control':contracts.CONTROL_SCHEMA_OWNER}[resource.owner]
@@ -213,7 +223,7 @@ def _transaction(resource):
             actual = conn.execute('PRAGMA user_version').fetchone()[0]
         expected = {'audit': contracts.PRIMARY_AUDIT_SCHEMA_VERSION,
             'soak': contracts.SOAK_SCHEMA_VERSION, 'controller': contracts.CONTROLLER_SCHEMA_VERSION,
-            'service':1,'control':1}.get(resource.owner)
+            'service':1,'control':1,'account_view':1}.get(resource.owner)
         if resource.owner != 'portfolio' and actual != expected:
             raise EvidenceUnavailable('UNSUPPORTED_SCHEMA')
         for table, columns in schema.items():
@@ -308,7 +318,9 @@ class ReadOnlyPortfolioRepository:
             if any(not isinstance(v, (float, int)) or not math.isfinite(v) or v < 0 for v in amounts):
                 raise EvidenceUnavailable('INVALID_ACCOUNT_TOTAL')
             sid = complete['snapshot_id']
-            env = _envelope(r, now, conn=conn, source_observed_at=_stamp(complete['observed_at']), completeness='COMPLETE', provenance='saved_broker')
+            stamp = _stamp(complete['observed_at'])
+            env = _envelope(r, now, conn=conn, source_observed_at=stamp, completeness='COMPLETE', provenance='saved_broker',
+                freshness='STALE' if (now-stamp).total_seconds() > 180 else 'UNKNOWN')
             projected = []
             for kind, table, key in (('holdings', 'portfolio_holdings', 'ticker'),
                                      ('orders', 'portfolio_orders', 'order_id'),
@@ -331,6 +343,68 @@ class ReadOnlyPortfolioRepository:
                 latest_attempt_id=latest['snapshot_id'], latest_attempt_status=latest['completeness'])
 
 
+class ReadOnlyAccountViewRepository:
+    """Saved balance display evidence, with no execution or credential imports."""
+    def __init__(self, resource, *, clock=lambda: datetime.now(timezone.utc)):
+        self.resource, self.clock = resource, clock
+
+    def account(self, snapshot_id=None):
+        r, now = self.resource, self.clock()
+        with _transaction(r) as conn:
+            latest = conn.execute('SELECT * FROM account_view_attempts ORDER BY julianday(observed_at) DESC,attempt_id DESC LIMIT 1').fetchone()
+            latest_time = _stamp(latest['observed_at']) if latest else None
+            if latest_time and latest_time > now:
+                raise EvidenceUnavailable('FUTURE_SOURCE_TIME')
+            where, args = ('WHERE snapshot_id=?', (snapshot_id,)) if snapshot_id else ('', ())
+            saved = conn.execute(f'SELECT * FROM account_view_snapshots {where} ORDER BY julianday(observed_at) DESC,snapshot_id DESC LIMIT 1', args).fetchone()
+            if saved is None:
+                return AccountDTO(_envelope(r, now, diagnostic_code='ACCOUNT_NOT_COLLECTED' if latest is None else 'ACCOUNT_REFRESH_FAILED'),
+                    _selection(r, 'account'), latest_attempt_id=latest['attempt_id'] if latest else None,
+                    latest_attempt_status=latest['status'] if latest else 'NOT_COLLECTED', latest_attempt_at=latest_time)
+            stamp = _stamp(saved['observed_at'])
+            if stamp > now:
+                raise EvidenceUnavailable('FUTURE_SOURCE_TIME')
+            attempt = conn.execute('SELECT * FROM account_view_attempts WHERE attempt_id=?', (saved['attempt_id'],)).fetchone()
+            if (attempt is None or attempt['snapshot_id'] != saved['snapshot_id']
+                    or attempt['status'] != 'COMPLETE' or _stamp(attempt['observed_at']) != stamp):
+                raise EvidenceUnavailable('BROKEN_SOURCE_LINK')
+            totals = saved['available_cash'], saved['total_evaluation']
+            if saved['page_count'] <= 0 or any(type(v) not in (float, int) or not math.isfinite(v) or v < 0 for v in totals):
+                raise EvidenceUnavailable('INVALID_ACCOUNT_TOTAL')
+            profit = saved['unrealized_value']
+            if profit is not None and (type(profit) not in (float, int) or not math.isfinite(profit)):
+                raise EvidenceUnavailable('INVALID_ACCOUNT_TOTAL')
+            diagnostic = 'ACCOUNT_REFRESH_FAILED' if latest and latest['status'] != 'COMPLETE' else (
+                'ACCOUNT_VALUATION_MISSING' if not saved['valuation_complete'] else None)
+            env = _envelope(r, now, source_observed_at=stamp, completeness='COMPLETE',
+                freshness='STALE' if (now-stamp).total_seconds() > 180 else 'FRESH',
+                provenance='saved_broker_balance', diagnostic_code=diagnostic)
+            sid, records = saved['snapshot_id'], []
+            for row in _bounded_rows(conn, 'SELECT * FROM account_view_holdings WHERE snapshot_id=? ORDER BY ticker LIMIT 10001', (sid,)):
+                if (not re.fullmatch(r'\d{6}', row['ticker']) or type(row['quantity']) is not int
+                        or type(row['orderable_quantity']) is not int
+                        or not 0 <= row['orderable_quantity'] <= row['quantity'] or row['quantity'] <= 0):
+                    raise EvidenceUnavailable('INVALID_SOURCE_DATA')
+                for name in ('average_price','current_price','evaluation_amount','unrealized_profit','unrealized_return'):
+                    value = row[name]
+                    if value is not None and (type(value) not in (float, int) or not math.isfinite(value)
+                            or (name in {'average_price','current_price','evaluation_amount'} and value < 0)):
+                        raise EvidenceUnavailable('INVALID_SOURCE_DATA')
+                rid = f'holdings:{sid}:{row["ticker"]}'
+                records.append(EvidenceRecord(rid, 'holdings', env,
+                    _selection(r, 'holdings', (rid,), sid, (saved['attempt_id'],)),
+                    tuple((k, _clean(row[k])) for k in row.keys() if k != 'snapshot_id')))
+            return AccountDTO(env, _selection(r, 'account', tuple(row.record_id for row in records), sid, (saved['attempt_id'],)),
+                float(totals[0]), float(totals[1]), profit, holdings=tuple(records),
+                latest_attempt_id=latest['attempt_id'] if latest else None,
+                latest_attempt_status=latest['status'] if latest else 'UNKNOWN', latest_attempt_at=latest_time)
+
+
+def account_repository(resource, *, clock):
+    cls = ReadOnlyAccountViewRepository if resource.owner == 'account_view' else ReadOnlyPortfolioRepository
+    return cls(resource, clock=clock)
+
+
 class OperatorEvidenceService:
     def __init__(self, settings, *, clock=lambda: datetime.now(timezone.utc), shadow_proof_catalog=None):
         self.settings, self.clock = settings, clock
@@ -346,7 +420,7 @@ class OperatorEvidenceService:
     def _account(self, resource):
         key = (resource.id, resource.account_hash, resource.target, 'account')
         try:
-            account = ReadOnlyPortfolioRepository(resource, clock=self.clock).account()
+            account = account_repository(resource, clock=self.clock).account()
             if account.envelope.completeness == 'COMPLETE':
                 self._cache[key] = account
                 self._cache.move_to_end(key)
@@ -372,8 +446,13 @@ class OperatorEvidenceService:
             return AccountDTO(_envelope(resource, self.clock(), query_status='FAILED', diagnostic_code=str(exc)),
                               _selection(resource, 'account'))
 
+    def _account_resources(self, scope):
+        display = self._resources(scope, 'account_view')
+        scopes = {(r.account_hash, r.target) for r in display}
+        return display + tuple(r for r in self._resources(scope, 'portfolio') if (r.account_hash, r.target) not in scopes)
+
     def overview(self, scope):
-        return OverviewDTO(self.clock(), accounts=tuple(self._account(r) for r in self._resources(scope, 'portfolio')),
+        return OverviewDTO(self.clock(), accounts=tuple(self._account(r) for r in self._account_resources(scope)),
                            unresolved=self._unresolved(scope), workers=self._workers(scope), sources=self.source_status(scope),
                            safety_blocks=self._safety_blocks(scope), service_health=self.service_health(scope),
                            controls=self.control_states(scope))
@@ -715,7 +794,7 @@ class OperatorEvidenceService:
         statuses = []
         for resource in self._resources(scope):
             try:
-                if resource.owner == 'portfolio':
+                if resource.owner in {'portfolio','account_view'}:
                     statuses.append(self._account(resource).envelope)
                     continue
                 if resource.owner in {'audit', 'soak', 'controller', 'service', 'control'}:
@@ -842,7 +921,7 @@ class OperatorEvidenceService:
         period = period or PeriodSelection.for_days(self.clock())
         if not isinstance(period, PeriodSelection):
             raise ValueError('invalid period')
-        snapshot_bindings = tuple((r.id, self._account(r).snapshot_id) for r in self._resources(scope, 'portfolio')) if kind in {'holdings', 'fills', 'broker_orders', 'orders'} else ()
+        snapshot_bindings = tuple((r.id, self._account(r).snapshot_id) for r in self._account_resources(scope)) if kind == 'holdings' else tuple((r.id, self._account(r).snapshot_id) for r in self._resources(scope, 'portfolio')) if kind in {'fills', 'broker_orders', 'orders'} else ()
         selection = _identity(kind, scope, period.start.isoformat(), period.end.isoformat(), snapshot_bindings)
         after = None
         if cursor:
@@ -858,19 +937,25 @@ class OperatorEvidenceService:
                 raise ValueError('invalid scoped cursor') from None
         records, envelopes, total = [], [], 0
         for resource in self._resources(scope):
+            if kind == 'holdings' and resource not in self._account_resources(scope):
+                continue
             spec = _HISTORY.get((resource.owner, kind))
             if spec is None:
-                if resource.owner == 'portfolio' and kind in {'holdings', 'fills', 'broker_orders', 'orders'}:
+                if ((resource.owner == 'portfolio' and kind in {'holdings', 'fills', 'broker_orders', 'orders'})
+                        or (resource.owner == 'account_view' and kind == 'holdings')):
                     account = self._account(resource)
                     rows = {'holdings': account.holdings, 'fills': account.fills,
                             'broker_orders': account.orders, 'orders': account.orders}[kind]
                     # Snapshot-backed account rows keep the same exact saved selection.
-                    rows = tuple(row for row in rows if row.envelope.source_observed_at is not None
-                                 and period.start <= row.envelope.source_observed_at < period.end)
+                    if kind != 'holdings':
+                        rows = tuple(row for row in rows if row.envelope.source_observed_at is not None
+                                     and period.start <= row.envelope.source_observed_at < period.end)
                     records.extend(rows)
                     if total is not None:
                         total += len(rows)
                     envelopes.append(account.envelope)
+                    if account.snapshot_id is None:
+                        total = None
                 continue
             table, key, time_key, _ = spec
             try:
@@ -928,11 +1013,11 @@ class OperatorEvidenceService:
         if not isinstance(record_id, str) or len(record_id) > 512 or ':' not in record_id:
             raise ValueError('invalid record selector')
         kind, key = record_id.split(':', 1)
-        if kind in {'holdings', 'orders', 'fills'} and resource.owner == 'portfolio':
+        if (kind in {'holdings', 'orders', 'fills'} and resource.owner == 'portfolio') or (kind == 'holdings' and resource.owner == 'account_view'):
             if ':' not in key:
                 raise ValueError('invalid snapshot selector')
             sid, _ = key.rsplit(':', 1)
-            account = ReadOnlyPortfolioRepository(resource, clock=self.clock).account(sid)
+            account = account_repository(resource, clock=self.clock).account(sid)
             record = next((row for rows in (account.holdings, account.orders, account.fills)
                            for row in rows if row.record_id == record_id), None)
         else:

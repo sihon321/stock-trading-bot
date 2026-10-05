@@ -560,9 +560,11 @@ class KisOrderAdapter:
             params=params,
             page_cap=page_cap,
             rows_key="output1",
-            row_allowlist={"pdno", "prdt_name", "hldg_qty", "ord_psbl_qty", "pchs_avg_pric"},
+            row_allowlist={"pdno", "prdt_name", "hldg_qty", "ord_psbl_qty", "pchs_avg_pric",
+                "prpr", "evlu_amt", "evlu_pfls_amt", "evlu_pfls_rt"},
             summary_key="output2",
-            summary_allowlist={"dnca_tot_amt", "nxdy_excc_amt", "prvs_rcdl_excc_amt", "tot_evlu_amt"},
+            summary_allowlist={"dnca_tot_amt", "nxdy_excc_amt", "prvs_rcdl_excc_amt", "tot_evlu_amt",
+                "evlu_pfls_smtl_amt"},
         )
 
     def _query_pages(

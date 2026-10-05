@@ -462,6 +462,17 @@ Plans:
 
 - [x] 14-12-PLAN.md
 
+#### Account display follow-up — completed 2026-10-05
+
+Owner approved account-screen improvements before Phase 16. Implementation and runtime evidence: [quick 261005-tor](quick/261005-tor-implement-read-only-kis-mock-account-ref/261005-tor-SUMMARY.md).
+
+- [x] Independent mock-only balance refresh every 60 seconds with OAuth/balance GET transport boundaries and separate display storage.
+- [x] Persist and display per-holding current price, valuation, signed unrealized P/L and percentage return; absent broker marks stay UNKNOWN.
+- [x] Show the last complete holding snapshot outside today's history filter, with source age and exact detail links.
+- [x] Distinguish no collection, missing valuation, failed refresh and stale saved observations; a failed inquiry retains the last successful balance.
+
+This display source does not authorize orders or resolve existing broker-truth/freeze/latch records. Web refresh still reads saved evidence only.
+
 ### Phase 15: Unattended Scheduling & Service Resilience
 
 **Goal:** Operators can run calendar-aware daily evaluation and intraday held-position protection unattended, with exactly-once intent, durable recovery, health visibility, and immediate manual stop authority.
