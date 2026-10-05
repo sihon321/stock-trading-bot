@@ -216,14 +216,17 @@ class ExpectationProducer:
             if self.controls.effective_state()!=current: raise ValueError('control read race')
             latest=next((r for r in requests if r['acceptance_revision']==current.acceptance_revision),None)
             controls_id=latest['request_id'] if latest else 'control-owner-setup'
-            controls_at=max([current.applied.applied_at]+[
+            candidate_at=max([current.applied.applied_at]+[
                 datetime.fromtimestamp(r['requested_at'],timezone.utc) for r in requests
                 if r['acceptance_revision']>current.applied.revision])
-            if controls_at>now or not applications: raise ValueError('control history unknown')
+            if candidate_at>now or not applications: raise ValueError('control history unknown')
             if current.acceptance_revision and latest is None: raise ValueError('revision source missing')
-            control=AppliedControl(revision=current.acceptance_revision,mode=current.mode,
-                request_id=latest['request_id'] if latest else None,applied_at=controls_at,
+            candidate_control=AppliedControl(revision=current.acceptance_revision,mode=current.mode,
+                request_id=latest['request_id'] if latest else None,applied_at=candidate_at,
                 safety_evidence_ids=current.applied.safety_evidence_ids)
+            # Commit validated provenance together; rejected source timestamps remain
+            # untouched in their owner store and can only produce UNKNOWN evidence.
+            control,controls_at=candidate_control,candidate_at
         except (ValueError,OSError,sqlite3.DatabaseError): failures.append(('CONTROL',controls_id,'CONTROL_UNKNOWN'))
         values=ExpectationInputs(registered_scopes=self.settings.registered_scopes,
             service_enabled=settings.service_enabled,mode=settings.mode,config_hash=config_hash,
