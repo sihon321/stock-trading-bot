@@ -1,8 +1,8 @@
 ---
 phase: 15-unattended-scheduling-service-resilience
 verified: 2026-10-05T03:26:58Z
-status: human_needed
-score: 44/46 must-haves verified
+status: passed
+score: 46/46 must-haves verified (44 automated, 2 owner-reported UAT)
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -12,11 +12,13 @@ re_verification:
   initial_report_commit: d7460e5
   tested_implementation_commit: 6c038d13d35e95b9148fc7b7bd5a6ab5644e779d
   gaps_closed:
+
     - "G5: actual fail-soft intraday outcomes no longer fabricate successful protection progress or recover stalled-worker incidents."
   gaps_remaining: []
   regressions: []
 must_haves:
   truths:
+
     - "KRX holiday/session rules schedule one daily decision cycle and a separately bounded held-position risk worker."
     - "Leader locking, durable job identities, checkpoints, and reconciliation prevent overlapping workers or duplicate order submission after restart."
     - "Health checks detect missed schedules, stalled workers, stale market data, and notification failure; recovery remains fail closed."
@@ -64,6 +66,7 @@ must_haves:
     - "D-13–D-16: login supervision/independent health contracts are proven offline, while actual Mac/private-device operation remains manual."
     - "FUT-04: completed offline implementation is distinct from external Phase9 acceptance and deliberate activation; Phase16 real remains rejected."
   artifacts:
+
     - path: "trading_bot/service_models.py"
     - path: "trading_bot/service_config.py"
     - path: "tests/service_fixtures.py"
@@ -104,28 +107,33 @@ must_haves:
     - path: "tests/test_service_dry_run.py"
   prohibitions: []
 human_verification:
+
   - test: "Korean desktop and320px phone controls"
     expected: "Authenticated native controls clearly distinguish accepted/pending/applied/rejected state, active blocks, timestamps and older in-flight submission, with accessible44px targets and retained mobile details."
     why_human: "Rendered HTML and unchanged responsive tokens do not establish actual appearance or operator usability."
+
   - test: "Actual owner Mac lifecycle and independent observer"
     expected: "After separately authorized disabled/offline installation, GUI login/logout/sleep/wake, SIGTERM/unexpected exit, restart exhaustion and removal preserve recovery-first startup, stops/freeze/audit, honest suspension and maximum3/600; the separate observer survives trading exhaustion."
     why_human: "Generated plist and offline supervision tests cannot prove installed-device lifecycle."
+
   - test: "Actual private Tailscale HTTPS phone access/session"
     expected: "After separately authorized private configuration, owner phone over mobile data has valid certificate, authentication, CSRF/session expiry and independent sessions; controls preserve fixed actor/scope/revision and truthful saved state."
     why_human: "Private network, certificate and real phone/session behavior require owner devices; no deployment occurred."
+
   - test: "External activation acceptance"
     expected: "Both actual09-08 approvals, immutable eligible mock evidence/profile/source identities, linked protected receipt, supported single-shot provider and current broker safety must pass before activation; absent/mismatched proof remains closed and000660 remains frozen until same-subject terminal proof."
     why_human: "Actual authenticated broker/provider evidence and explicit approvals cannot be inferred from synthetic fixtures; current CodexCLI0.144.6 single-shot support remains closed."
+uat_accepted_at: "2026-10-05T05:37:31Z"
 ---
 
 # Phase 15: Unattended Scheduling and Service Resilience Verification Report
 
 **Phase Goal:** Operators can run calendar-aware daily evaluation and intraday held-position protection unattended, with exactly-once intent, durable recovery, health visibility, and immediate manual stop authority.
 **Verified:** 2026-10-05T03:26:58Z
-**Status:** human_needed
+**Status:** passed — independent implementation checks plus owner-reported UAT
 **Re-verification:** Yes — after actual G5 returned-outcome correction; previous independent report `5578359`, initial report `d7460e5`.
 
-**44/46 must-haves verified. No implementation gaps remain.** The five truths affected by G5 are now VERIFIED. Two truths remain UNCERTAIN — WARNING for actual private-phone control access and installed Mac lifecycle. Four deduplicated human/device/activation categories remain pending. No overrides or newly deferred scope were applied. Offline implementation verification does not complete the phase/requirements or grant unattended mutation or Phase16 authority.
+**46/46 must-haves accepted: 44 independently verified, 2 confirmed by owner-reported UAT. No implementation gaps remain.** The five truths affected by G5 are VERIFIED. The owner separately answered `pass` for all four UAT categories, including private-phone access and installed Mac lifecycle, on 2026-10-05. This acceptance is user-reported, not a new agent-performed device or broker test. No overrides or newly deferred scope were applied. Phase acceptance grants no unattended mutation or Phase16 authority; the separate immutable activation approvals and safety gates remain mandatory.
 
 ## Evidence scope and provenance
 
@@ -178,20 +186,19 @@ Fresh selected checks passed 17 unique named test cases and 5 additional source/
 | 35 (15-11.1) | D-16: web health exposes missed schedules, stalled workers, stale market data and notification failures from attributable saved sources. | VERIFIED | Actual runtime result is matched to committed watch outcome/phase/reason/snapshot; failure produces attributed BLOCKED health and no positive progress. Source reader is unchanged. |
 | 36 (15-11.2) | D-09, D-10, D-13: expected-worker health reflects positive session, date, controls and login/service state; same stopped Mac cannot notify during total sleep/outage. | VERIFIED | Independent pre-tick/midnight expectation provenance and negative/UNKNOWN tests. |
 | 37 (15-11.3) | D-16: independent observer preserves occurrence/worsening/recovery dedupe, INFO history, delivery UNKNOWN and unacknowledged CRITICAL30-minute reminders. | VERIFIED | Independently executed production runtime → reader → detector → AlertStore proof preserves repeated failures, recovers only on actual completed protection and reopens renewed failure. Prior outbox/reminder evidence is retained. |
-| 38 (15-12.1) | D-11: authenticated CLI/web/phone use fixed pause/resume/kill request authority with actor, time, scope, revision and CSRF. | UNCERTAIN — WARNING | Fixed authenticated request routes proven offline; actual private phone HTTPS/session check pending. |
+| 38 (15-12.1) | D-11: authenticated CLI/web/phone use fixed pause/resume/kill request authority with actor, time, scope, revision and CSRF. | VERIFIED — OWNER UAT | Fixed authenticated request routes proven offline; owner reported `pass` for private-phone HTTPS/session access in UAT test 3. |
 | 39 (15-12.2) | D-09, D-10, D-12: interface clearly distinguishes pending accepted restriction, applied state, rejected resume and older in-flight submission. | VERIFIED | Native forms show accepted/pending/applied/rejected and in-flight source evidence; route tests. |
-| 40 (15-12.3) | D-16: Korean health/control views reuse approved Phase14 responsive design and show saved blocking evidence. | VERIFIED | Unchanged native Phase14 templates/styles render actual saved blocking health; corrected runtime supplies BLOCKED/ITERATION_FAILED. Visual desktop/320px acceptance remains a separate human item. |
+| 40 (15-12.3) | D-16: Korean health/control views reuse approved Phase14 responsive design and show saved blocking evidence. | VERIFIED | Unchanged native Phase14 templates/styles render actual saved blocking health; corrected runtime supplies BLOCKED/ITERATION_FAILED. Owner reported `pass` for desktop/320px usability in UAT test 1. |
 | 41 (15-13.1) | D-11, D-12: CLI shares attributable revisioned requests and cannot silently apply resume or reset kill. | VERIFIED | Fixed attributable CLI request facade; no silent applied RESUME/reset. |
-| 42 (15-13.2) | D-13, D-14: current Mac starts installed service at owner login through LaunchAgent, recovery-first; sleep/logout suspend availability. | UNCERTAIN — WARNING | LaunchAgent generation is wired and offline-tested; actual installation/login/logout/sleep/wake pending. |
+| 42 (15-13.2) | D-13, D-14: current Mac starts installed service at owner login through LaunchAgent, recovery-first; sleep/logout suspend availability. | VERIFIED — OWNER UAT | LaunchAgent generation is wired and offline-tested; owner reported `pass` for actual Mac lifecycle and independent observer in UAT test 2. |
 | 43 (15-13.3) | D-15, D-16: durable maximum3 automatic restarts/600 seconds applies before worker construction; separate observer continues after trading restart exhaustion. | VERIFIED | Launcher reserves maximum3/600 before factory; separate observer process/budget and exhaustion tests. |
 | 44 (15-14.1) | D-01–D-12: integrated offline crash/race/deadline proofs show single-shot dispatch, exactly-once intent, fresh recovery, fair account work and durable stop authority. | VERIFIED | Actual production fresh snapshot, spawned collection, advancing clock, determinate order, authority budget and dispatch-crash negative checks passed. |
 | 45 (15-14.2) | D-13–D-16: login supervision/independent health contracts are proven offline, while actual Mac/private-device operation remains manual. | VERIFIED | Actual fail-soft result and incident lifecycle now pass independently; unchanged launcher/independent expectations retain prior behavioral evidence. Installed Mac/private-device behavior remains manual. |
 | 46 (15-14.3) | FUT-04: completed offline implementation is distinct from external Phase9 acceptance and deliberate activation; Phase16 real remains rejected. | VERIFIED | No offline acceptance fabrication; both real approvals absent; current Codex unproven and REAL closed. |
 
-**Score: 44/46 verified; zero failed truths; two UNCERTAIN device truths; zero present-but-behavior-unverified truths.** All four roadmap criteria and 42 canonical plan truths remain in the denominator. Verified behavior relies on independently executed focused checks and the supplied passing regression at the unchanged implementation tree; human acceptance is still required.
+**Score: 46/46 accepted; 44 independent implementation checks and 2 owner-reported device truths; zero failed or unresolved truths.** All four roadmap criteria and 42 canonical plan truths remain in the denominator. Automated evidence is unchanged; all four manual categories are resolved by the owner's individual `pass` reports in 15-UAT.md.
 
 ## Required artifacts
-
 
 Artifact query: **42/42 declared entries, 38 unique paths, existence/substance passed**. Manual inspection additionally checked usage/data flow. Query success is not a runtime guarantee.
 
@@ -214,9 +221,7 @@ Artifact query: **42/42 declared entries, 38 unique paths, existence/substance p
 
 Additional `trading_bot/service_collection.py` exists, is substantive, is spawned by the actual production runtime, and carries frozen data/quote-only authority. Its parent result is bounded and canonically validated. Additional critical production artifacts inspected: `control_runtime.py`, `submission_authority.py`, actual `kis_order_adapter.py` HTTP entry, `portfolio.py` pending-subject suppression, `alert_observer.py` partition handling and `tests/capability_probe.py`.
 
-
 ## Key links
-
 
 Machine query reported **1/28 verified**, because most PLAN `from`/`to` values are function/component/endpoint names rather than relative files. For example 15-10 emits “Source file not found (from: must be a relative file path; describe components/endpoints in via:)”. These are metadata-query limitations, not evidence that the actual symbols are absent. All 28 links were checked semantically in source:
 
@@ -238,7 +243,6 @@ Machine query reported **1/28 verified**, because most PLAN `from`/`to` values a
 | 15-14 | `service_cli.dry-run` → `service_runtime through temporary topology` (same scheduling/recovery reducers, capability-free frozen inputs)<br>`capability_probe fresh interpreter` → `web/control/read-only/service-disabled surfaces` (tripwires before imports and byte-identical source evidence) | WIRED |
 
 Concrete production binding requires actual `ServiceRuntime`, `AccountTradingBinding`, `BoundedAccountWork`, `OwnedActivationCheck`, `KISBroker` and committed audit. A placeholder callback alone cannot grant authority. Broker preparation precedes the final serialized entry; the actual adapter checks a typed, single-use final entry after preparation. Pending accepted PAUSE/KILL is re-read at provider/POST entry. Admission and stop acceptance share the global lock through bounded POST; no SQL transaction spans external I/O.
-
 
 An additional semantic link is **VERIFIED**: `AccountTradingBinding.risk → IntradayIterationResult → ServiceRuntime.tick/_record_risk_result → attributable ServiceJournal progress → query-only health → AlertDetector → AlertStore`. Returned outcome and committed watch evidence agree before successful progress is emitted; actual repeated failure/success/re-failure proves the incident transition.
 
@@ -313,11 +317,11 @@ No shell probes are declared by the14 canonical plans and no conventional `scrip
 
 | Requirement | Contract | Claimed canonical plans | Verdict |
 | --- | --- | --- | --- |
-|FUT-04 |Unattended cycles only after sufficient manual-operation evidence |01,06,08,10,13,14 |Automated gate VERIFIED; both actual09-08 approvals and immutable owned proof are required before collaborator construction/admission. Current approvals remain absent; actual activation NEEDS HUMAN. |
-|AUTO-01 |Calendar-aware daily/risk workers, leader exclusion, durable checkpoints and exactly-once logical intent |01,02,03,04,06,07,08,09,10,11,14 |Automated implementation VERIFIED with unchanged recovery/identity/session proofs and actual protection-result checks. Installed awake-Mac availability NEEDS HUMAN. |
-|AUTO-02 |Pause/resume/health/restart/global kill retain audit and reconciliation |01,03,05,08,09,10,11,12,13,14 |Automated implementation VERIFIED; G5 health/incident defect closed. Actual control usability, installed lifecycle and private phone access NEED HUMAN. |
+|FUT-04 |Unattended cycles only after sufficient manual-operation evidence |01,06,08,10,13,14 |Implementation gate VERIFIED; owner accepted the activation gating conditions in UAT test 4. Both actual09-08 approvals and immutable owned proof remain required before collaborator construction/admission; UAT does not create these records or enable activation. |
+|AUTO-01 |Calendar-aware daily/risk workers, leader exclusion, durable checkpoints and exactly-once logical intent |01,02,03,04,06,07,08,09,10,11,14 |Implementation VERIFIED with unchanged recovery/identity/session proofs and actual protection-result checks. Owner reported installed awake-Mac availability/lifecycle PASS in UAT test 2. |
+|AUTO-02 |Pause/resume/health/restart/global kill retain audit and reconciliation |01,03,05,08,09,10,11,12,13,14 |Implementation VERIFIED; G5 closed. Owner reported control usability, installed lifecycle and private phone access PASS in UAT tests 1–3. |
 
-All3 roadmap-mapped requirements appear in canonical plan frontmatter; no orphaned requirement. Requirement checkboxes remain unmarked and no phase/tracking completion was changed.
+All3 roadmap-mapped requirements appear in canonical plan frontmatter; no orphaned requirement. The independent verifier did not change tracking. After the owner's UAT acceptance, the registered completion transition may update Phase15 and its mapped requirements; runtime activation gates remain separate.
 
 ## Locked decisions and prior-phase compatibility
 
@@ -333,10 +337,10 @@ All3 roadmap-mapped requirements appear in canonical plan frontmatter; no orphan
 | D08 daily failure /independently healthy risk | Scoped suppression and collection independence verified; actual success remains distinct from failed risk work. |
 | D09 pause daily/BUY; eligible SELL/reconcile | Pending/applied restrictions and healthy scoped risk authority verified. |
 | D10 global kill; no cancel/liquidate | Final provider/HTTP admission lock plus bounded entry, immediate accepted restriction verified. |
-| D11 fixed CLI/web/phone requests | Attributable server scope/actor/revision/time/CSRF wired; actual phone pending. |
+| D11 fixed CLI/web/phone requests | Attributable server scope/actor/revision/time/CSRF wired; owner reported phone UAT PASS. |
 | D12 durable stop /explicit fresh resume | Persistence and advancing-clock successful safety semantics verified. |
-| D13 awake owner Mac /honest sleep | Offline lifecycle contract only; actual machine check pending. |
-| D14 owner GUI-login LaunchAgent | Generated launcher and recovery-first wiring verified; actual installation pending. |
+| D13 awake owner Mac /honest sleep | Offline lifecycle contract verified; owner reported actual machine lifecycle UAT PASS. |
+| D14 owner GUI-login LaunchAgent | Generated launcher and recovery-first wiring verified; owner reported lifecycle UAT PASS. |
 | D15 maximum3 restarts/600sec | Durable admission before construction and manual-attention latch verified. |
 | D16 saved health /independent observer /30min CRITICAL | Future-source unknown and observer/reminders verified; actual fail-soft negative recovery and success/re-failure incident lifecycle verified. |
 
@@ -350,9 +354,9 @@ Disconfirmation checks targeted three specific failure modes: outer successful c
 
 No prohibition block is declared across these plans, no override exists, and no judgment or test-tier prohibition has been silently passed. No new source bug was observed. This goal verification is not a separate security/code review.
 
-## Human verification required
+## Owner-reported human UAT
 
-Four categories harvested from15-12/13/14 plans and deduplicated with the prior report remain open. They are end-of-phase human checks, not fabricated passes.
+Four categories harvested from15-12/13/14 plans were presented individually through gsd-verify-work. The owner answered `pass` for each on 2026-10-05; 15-UAT.md records 4 passed, 0 issues, 0 pending. These are owner-reported acceptance results, not checks performed by the verifier. Test4 confirms the stated gating/fail-closed behavior and does not issue the two separate09-08 approvals, create a protected receipt, certify the current Codex transport, activate trading or clear000660.
 
 ### 1. Korean desktop and320px phone controls
 
@@ -378,16 +382,17 @@ Four categories harvested from15-12/13/14 plans and deduplicated with the prior 
 **Expected:** Both actual09-08 approvals, immutable eligible mock evidence/profile/source identities, linked protected receipt, supported single-shot provider and current broker safety must pass before activation; absent/mismatched proof remains closed and000660 remains frozen until same-subject terminal proof.
 **Why human:** Actual authenticated broker/provider evidence and explicit approvals cannot be inferred from synthetic fixtures; current CodexCLI0.144.6 single-shot support remains closed.
 
-Actual both09-08 approvals are absent. Current CodexCLI0.144.6 single-shot transport remains unsupported/closed; no paid provider acceptance was attempted. 000660 remains frozen pending same-subject determinate terminal broker evidence. No device installation/configuration or unattended mutation occurred. The same powered-off/sleeping Mac cannot run either local service or observer.
+The verifier did not obtain actual09-08 approval records, validate the current CodexCLI0.144.6 single-shot transport, perform paid provider acceptance, install/configure owner devices or enable unattended mutation. These facts are not inferred from UAT. 000660 remains frozen pending same-subject determinate terminal broker evidence. Device/lifecycle acceptance is reported by the owner. The same powered-off/sleeping Mac cannot run either local service or observer.
 
 ## Deferral and verdict
 
-No implementation gap remains or is deferred. Actual ROADMAP Phase16 is a separately gated manual real-money pilot; it cannot replace Phase15 human/device acceptance or Phase09 approvals. Status follows the ordered verification rule: no failed truth/artifact/link/debt blocker, but human items remain, therefore **human_needed**, never passed. Two UNCERTAIN truths remain WARNING with owner decisions requested through the end-of-phase UAT checkpoint. Truth40's unchanged responsive-template reuse and truthful saved-data wiring are verified; actual appearance remains in human item1.
+No implementation gap remains or is deferred. After all four owner-reported UAT passes, gsd-verify-work canonicalizes the previous human_needed report to **passed**. The two device truths are explicitly attributed to owner UAT rather than automated proof. Actual ROADMAP Phase16 remains a separately gated manual real-money pilot; Phase15 acceptance cannot replace Phase09 approvals or any runtime evidence/authority gate.
 
-**Offline implementation verification is complete; overall phase acceptance remains pending.** Proceed to the four human UAT categories when separately authorized and retain fail-closed activation. FUT-04/AUTO-01/AUTO-02 and Phase15 are not marked complete by this report; Phase16 real-money authority remains blocked.
+**Phase15 implementation and conversational UAT acceptance are complete.** The registered shared completion predicate and transition determine final phase/requirement tracking. Fail-closed activation,000660 freeze and all separate Phase16 real-money approvals remain in force.
 
-Report validation passed: Ruby YAML safe-load, exact 46 frontmatter/table truths (44 VERIFIED and 2 UNCERTAIN), four human items, empty remaining gaps/regressions, GSD verification frontmatter schema, and GSD status routing to human UAT. `git diff --check` passed; only the canonical verification report is modified.
+Independent report validation originally passed with 44 VERIFIED/2 UNCERTAIN and human_needed. The UAT completion update resolves both remaining device truths as owner-reported VERIFIED, retaining46 total truths and four accepted UAT categories. Implementation gaps/regressions remain empty; the completion update is validated by the shared GSD predicate and diff/YAML checks.
 
 ---
 _Verified: 2026-10-05T03:26:58Z_
 _Verifier: independent gsd-verifier agent; no commit_
+_Owner UAT accepted: 2026-10-05T05:37:31Z; each of four responses was `pass`. Canonical acceptance update by verify-work; no new runtime authority granted._
