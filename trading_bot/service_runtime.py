@@ -450,18 +450,60 @@ class ServiceRuntime:
             elif job.key.kind=='RISK':
                 self._claim(job)
                 try:
+                    captured=None; protection=False
                     def risk(lease,current,budget):
+                        nonlocal captured,protection
+                        captured=current
                         if controls.mode!='KILLED' and self.trading is not None and self.policy.classify(self.clock()).executable:
+                            protection=True
                             return self.trading.risk(self,lease,current,budget)
                         return current  # explicit reconciliation only, never a mutation grant
-                    self.work.run(risk)
+                    result=self.work.run(risk)
                     self.last_risk_slot=job.slot_at
-                    self._event('RISK','RUNNING','RECONCILIATION_ONLY' if controls.mode=='KILLED' or job.reason_code=='RECONCILIATION_ONLY'
-                        else 'RISK_PROTECTED' if self.trading is not None else 'RISK_RECONCILED',
-                        (f"risk-slot:{job.slot_at.strftime('%Y%m%dT%H%M')}",))
+                    self._record_risk_result(job,result,captured,protection,
+                        controls.mode=='KILLED' or job.reason_code=='RECONCILIATION_ONLY')
                 except LeaseBusyError: self._event('RISK','CLAIMED','ACCOUNT_BUSY')
                 except (Exception,AccountWorkTimeout): self._event('RISK','BLOCKED','RISK_UNAVAILABLE')
         return decision
+
+    def _record_risk_result(self,job,result,current,protection,reconciliation_only):
+        """Successful account cleanup alone does not prove held protection."""
+        from .portfolio import PortfolioSnapshot
+        from .intraday import IntradayIterationResult,IntradayIterationOutcome,IntradaySessionPhase
+        sources=(f"risk-slot:{job.slot_at.strftime('%Y%m%dT%H%M')}",)
+        if (type(current) is not PortfolioSnapshot or current.account_scope_hash!=self.scope.account_scope_hash
+                or current.trading_date!=job.key.trading_date_kst or not current.mutation_capable):
+            self._event('RISK','UNKNOWN','RISK_RESULT_UNKNOWN',sources);return
+        sources+=(f'account-snapshot:{current.snapshot_id}',)
+        if not protection:
+            if result is not current:
+                self._event('RISK','UNKNOWN','RISK_RESULT_UNKNOWN',sources);return
+            self._event('RISK','RUNNING','RECONCILIATION_ONLY' if reconciliation_only or self.trading is not None else 'RISK_RECONCILED',sources);return
+        if (type(result) is not IntradayIterationResult
+                or type(result.outcome) is not IntradayIterationOutcome
+                or type(result.phase) is not IntradaySessionPhase):
+            self._event('RISK','UNKNOWN','RISK_RESULT_UNKNOWN',sources);return
+        saved=self.work.conn.execute('''SELECT i.terminal_status,i.snapshot_id,o.state_code,o.detail_json
+            FROM watch_iterations i JOIN watch_observations o ON o.iteration_id=i.iteration_id
+            WHERE i.iteration_id=? ORDER BY o.id LIMIT 1''',(result.iteration_id,)).fetchone()
+        if (saved is None or saved['terminal_status']!=result.outcome.value or saved['snapshot_id']!=result.snapshot_id
+                or saved['state_code']!=result.phase.value or json.loads(saved['detail_json']).get('reason_code')!=result.reason_code):
+            self._event('RISK','UNKNOWN','RISK_RESULT_UNKNOWN',sources);return
+        sources+=(f'watch_iterations:{result.iteration_id}',)
+        if result.snapshot_id is not None:sources+=(f'snapshot:{result.snapshot_id}',)
+        if result.outcome is not IntradayIterationOutcome.COMPLETED:
+            state={IntradayIterationOutcome.FAILED:'BLOCKED',IntradayIterationOutcome.BLOCKED:'BLOCKED',
+                IntradayIterationOutcome.INTERRUPTED:'UNKNOWN'}[result.outcome]
+            self._event('RISK',state,result.reason_code,sources);return
+        if (result.phase is IntradaySessionPhase.ACTIVE and result.reason_code=='COMPLETED'
+                and result.snapshot_id==current.snapshot_id):
+            self._event('RISK','RUNNING','RISK_PROTECTED',sources)
+        elif (result.phase is IntradaySessionPhase.RECONCILE_ONLY and result.reason_code=='RECONCILE_ONLY'
+                and result.snapshot_id is None):
+            self._event('RISK','RUNNING','RECONCILIATION_ONLY',sources)
+        elif result.phase in {IntradaySessionPhase.PREFLIGHT_READ_ONLY,IntradaySessionPhase.TERMINAL}:
+            self._event('RISK','BLOCKED',result.phase.value,sources)
+        else:self._event('RISK','UNKNOWN','RISK_RESULT_UNKNOWN',sources)
 
     def _daily(self,job):
         row=self.job('DAILY')

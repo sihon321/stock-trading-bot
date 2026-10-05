@@ -168,7 +168,7 @@ def production_fixture(tmp_path):
         return ServiceComposition(mode='KIS_MOCK',scope=receipt.scope,
             activation=ActivationVerdict(allowed=True,reason_codes=('ACCEPTANCE_VALIDATED',),authority='OWNED_KIS_OBSERVED'),
             authentication='OFFLINE_FAKE_OWNED_READS',prep_read_only=lambda:None,read_portfolio=lambda request:fresh(),
-            read_quote=lambda ticker:SimpleNamespace(price=Money(100),observed_at=NOW),
+            read_quote=lambda ticker:SimpleNamespace(price=Money(65000),observed_at=NOW),
             guarded_broker_builder=broker,read_freezes=lambda:(),close=lambda:None)
     class Calendar:
         def __init__(self,*args,**kwargs):pass
@@ -320,6 +320,11 @@ def test_production_actual_collection_spawn_is_fair_and_uses_captured_snapshot(t
         original=runtime.work.snapshot_reader
         quantity=[7]
         runtime.work.snapshot_reader=lambda:replace(original(),holdings=(PortfolioHolding('035420',quantity[0],quantity[0],100),))
+        # Honest non-triggering quote for this deliberately substituted holding;
+        # risk health must come from an actual completed protection iteration.
+        from trading_bot.domain import Money
+        from types import SimpleNamespace
+        runtime.trading=replace(runtime.trading,quote_reader=lambda ticker:SimpleNamespace(price=Money(100),observed_at=clock()))
         clock.value+=timedelta(minutes=10)
         runtime.controls.request_writer(actor=owner_actor()).append_request(ControlRequest(request_id='resume-collect',
             actor=owner_actor(),requested_at=clock(),scope=runtime.controls.scope,action='RESUME',expected_revision=0))
@@ -455,7 +460,10 @@ def test_production_account_work_accepts_exact_nonterminal_truth_without_clearin
         from trading_bot.domain import Money
         from types import SimpleNamespace
         runtime.trading=replace(runtime.trading,quote_reader=lambda ticker:SimpleNamespace(price=Money(68000),observed_at=clock()))
-        runtime.work.run(lambda lease,current,budget:runtime.trading.risk(runtime,lease,current,budget))
+        clock.value+=timedelta(minutes=5)
+        runtime.no_new_dispatch=True
+        runtime.tick()
+        assert runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]['reason_code']=='RISK_PROTECTED'
         with sqlite3.connect(runtime.settings.trading_journal_paths[1]) as soak:
             assert tuple(soak.execute('SELECT * FROM soak_ticker_freezes'))==original
         rows=conn.execute("SELECT broker_status FROM order_events WHERE event_type='RECONCILED'").fetchall()

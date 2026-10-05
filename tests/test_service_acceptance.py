@@ -64,10 +64,10 @@ def test_actual_production_soft_risk_failure_never_clears_stall_and_real_success
                 watch=runtime.work.conn.execute('SELECT terminal_status FROM watch_iterations ORDER BY rowid DESC LIMIT 1').fetchone()
                 assert watch[0]=='FAILED'
                 event=runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]
-                assert event['state']=='FAILED' and event['reason_code']=='ITERATION_FAILED'
-                assert any(s.startswith('risk-iteration:') for s in json.loads(event['source_ids_json']))
+                assert event['state']=='BLOCKED' and event['reason_code']=='ITERATION_FAILED'
+                assert any(s.startswith('watch_iterations:') for s in json.loads(event['source_ids_json']))
                 health,facts=observe()
-                assert health.state=='FAILED' and health.reason_code=='ITERATION_FAILED'
+                assert health.state=='BLOCKED' and health.reason_code=='ITERATION_FAILED'
                 assert health.mutation_ready is False and health.last_progress_at is None
                 assert not any(f.positive_recovery for f in facts)
                 assert bot.store.get_incident(incident.episode_id).active
@@ -86,7 +86,7 @@ def test_actual_production_soft_risk_failure_never_clears_stall_and_real_success
             runtime.trading=replace(runtime.trading,quote_reader=broken_quote)
             runtime.tick()
             health,facts=observe()
-            assert health.state=='FAILED' and health.last_progress_at==progress
+            assert health.state=='BLOCKED' and health.last_progress_at==progress
             assert health.mutation_ready is False and not any(f.positive_recovery for f in facts)
             assert any(e.subject.problem_family=='WORKER_STALLED' for e in bot.store.list_incidents(active=True))
         finally:bot.stop()
@@ -99,6 +99,9 @@ def test_actual_production_soft_risk_failure_never_clears_stall_and_real_success
     ('missing','UNKNOWN','RISK_RESULT_UNKNOWN'),
     ('untyped','UNKNOWN','RISK_RESULT_UNKNOWN'),
     ('wrong_snapshot','UNKNOWN','RISK_RESULT_UNKNOWN'),
+    ('missing_snapshot','UNKNOWN','RISK_RESULT_UNKNOWN'),
+    ('missing_reason','UNKNOWN','RISK_RESULT_UNKNOWN'),
+    ('unknown_outcome','UNKNOWN','RISK_RESULT_UNKNOWN'),
 ])
 def test_actual_risk_worker_non_success_and_invalid_results_never_publish_progress(tmp_path,case,state,reason):
     from unittest.mock import patch
@@ -121,7 +124,11 @@ def test_actual_risk_worker_non_success_and_invalid_results_never_publish_progre
                 risk_config=binding.risk_config,lease=lease,exit_submitter=lambda *a:pytest.fail('unexpected exit'),
                 stop_requested=lambda:case=='stop',work_budget=budget,
                 audit_sink=lambda result:append_watch_iteration(runtime.work.conn,result,observed_at=clock()))
-            return replace(result,snapshot_id='different-subject') if case=='wrong_snapshot' else result
+            if case=='wrong_snapshot':return replace(result,snapshot_id='different-subject')
+            if case=='missing_snapshot':return replace(result,snapshot_id=None)
+            if case=='missing_reason':return replace(result,reason_code='')
+            if case=='unknown_outcome':return replace(result,outcome='UNKNOWN')
+            return result
         with patch.object(type(runtime.trading),'risk',iteration):runtime.tick()
         event=runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]
         assert event['state']==state and event['reason_code']==reason
