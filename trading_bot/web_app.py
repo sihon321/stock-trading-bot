@@ -44,7 +44,7 @@ LABELS = {
     'side': '매매 구분', 'price': '저장 가격', 'fill_id': '체결 ID', 'order_intent_id': '로컬 주문 의도 ID',
     'freeze_kind': '동결 사유', 'state': '관측 상태', 'terminal_status': '최종 상태',
     'expected_running': '실행 기대', 'cadence_seconds': '문서화된 주기(초)',
-    'lease_observed_at': '리스 관측', 'lease_age_seconds': '리스 경과(초)',
+    'lease_observed_at': '리스 관측', 'lease_age_seconds': '리스 경과(시:분:초)',
     'snapshot_id': '스냅샷 ID', 'source_ids': '원천 연결 ID', 'outcome_code': '선별 결과',
     'reason_code': '사유 코드', 'rank': '선별 순위', 'provider': '제공자', 'model': '모델',
     'risk_verdict': '위험 검증', 'evaluation_id': '일일 평가 ID', 'run_kind': '실행 종류',
@@ -58,10 +58,21 @@ def kst_time(value):
     return 'UNKNOWN' if value is None else value.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S KST')
 
 
+def elapsed_time(seconds):
+    if seconds is None:
+        return 'UNKNOWN'
+    try:
+        hours, remainder = divmod(max(0, int(seconds)), 3600)
+    except (ValueError, TypeError, OverflowError):
+        return 'UNKNOWN'
+    minutes, seconds = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+
+
 def source_presentation(envelope, record_id=None, **extra):
     return dict(resource_id=envelope.resource_id, record_id=record_id or 'UNKNOWN',
         observed_at=kst_time(envelope.source_observed_at), queried_at=kst_time(envelope.query_at),
-        age='UNKNOWN' if envelope.age_seconds is None else f'{envelope.age_seconds:,.0f}초',
+        age=elapsed_time(envelope.age_seconds),
         freshness='SAVED' if envelope.freshness == 'FRESH' else envelope.freshness,
         completeness=envelope.completeness, query_status='SUCCESS' if envelope.query_status == 'OK' else envelope.query_status,
         diagnostic_code=envelope.diagnostic_code, provenance=envelope.provenance,
@@ -498,7 +509,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
 
     def observer_status():
         # Inspect only the operational DB. Never construct observer/transport or create its schema.
-        result = dict(state='NOT_STARTED', heartbeat_age_seconds=None, started_at=None, stopped_at=None,
+        result = dict(state='NOT_STARTED', heartbeat_age_seconds=None, heartbeat_age='UNKNOWN', started_at=None, stopped_at=None,
                       failure_code=None, deliveries={})
         path, _ = settings.validate_topology()
         if not path.is_file():
@@ -522,6 +533,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
                     result['deliveries'] = {str(row[0]): row[1] for row in conn.execute('SELECT state,COUNT(*) FROM alert_outbox GROUP BY state LIMIT 16')}
         except (ValueError, TypeError, sqlite3.Error, OSError):
             result['state'], result['failure_code'] = 'UNKNOWN', 'OBSERVER_STATUS_UNAVAILABLE'
+        result['heartbeat_age'] = elapsed_time(result['heartbeat_age_seconds'])
         return result
 
     def operational_view(view_id, api=False):
@@ -573,10 +585,11 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         workers = []
         for worker in overview.workers:
             authorize_envelope(worker.envelope)
+            lease_age = None if not worker.lease_observed_at else max(0, (clock()-worker.lease_observed_at).total_seconds())
             workers.append(dict(id=worker.worker_id, state=worker.state,
                 expected_running=worker.expected_running, cadence_seconds=worker.cadence_seconds,
                 lease_observed_at=kst_time(worker.lease_observed_at),
-                lease_age_seconds=None if not worker.lease_observed_at else max(0, (clock()-worker.lease_observed_at).total_seconds()),
+                lease_age_seconds=lease_age, lease_age=elapsed_time(lease_age),
                 source_ids=worker.source_ids, snapshot_id=worker.snapshot_id,
                 source=source_presentation(worker.envelope, worker.worker_id),
                 detail_url=_record_path('records', worker.envelope.resource_id, 'worker:' + worker.worker_id) + '?' + urlencode({'back': contextual_url('/workers', context)})))
@@ -691,7 +704,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         row = present_record(record, context, urlsplit(back).path)
         parent_kind = {'evaluations': 'decisions', 'evaluation_events': 'decisions', 'campaigns': 'overview', 'freezes': 'orders'}.get(record.kind, record.kind)
         parent = OPERATIONAL_VIEWS.get(parent_kind, ('/orders', '주문'))
-        fields = {LABELS.get(k, k): ('UNKNOWN · 확인되지 않음' if v is None else _clean(v)) for k, v in row['fields'].items()}
+        fields = {LABELS.get(k, k): (elapsed_time(v) if k == 'lease_age_seconds' else 'UNKNOWN · 확인되지 않음' if v is None else _clean(v)) for k, v in row['fields'].items()}
         common = dict(title='정제된 원천 증거' if evidence else parent[1] + ' 상세',
             current_path=parent[0], operator_name=g.operator_session.actor, csrf_token=generate_csrf(),
             target={'simulated': 'simulation', 'dry_run': 'dry-run'}.get(resource.target, resource.target),
@@ -869,6 +882,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
         values = {f.name: _clean(getattr(incident, f.name)) for f in fields(incident)
             if f.name not in {'subject','first_observed_at','last_observed_at','recovered_at','next_reminder_at'}}
         values.update(resource_id=incident.subject.resource_id, target=incident.subject.target,
+            duration=elapsed_time(incident.duration_seconds),
             ticker=_clean(incident.subject.ticker_or_account), family=_clean(incident.subject.problem_family),
             broker_subject=_clean(incident.subject.broker_subject),
             first=kst_time(incident.first_observed_at), last=kst_time(incident.last_observed_at),
@@ -912,7 +926,7 @@ def create_app(settings, *, evidence_service=None, report_service=None, alert_st
             common['selection_id'] = f'{episode_id}:{incident.revision}'
             common['source'] = dict(resource_id=incident.subject.resource_id, record_id=episode_id,
                 observed_at=kst_time(incident.last_observed_at), queried_at=kst_time(clock()),
-                age=f'{max(0,(clock()-incident.last_observed_at).total_seconds()):,.0f}초',
+                age=elapsed_time(max(0,(clock()-incident.last_observed_at).total_seconds())),
                 freshness='UNKNOWN', completeness='COMPLETE', query_status='SUCCESS', provenance='saved')
         else:
             try:

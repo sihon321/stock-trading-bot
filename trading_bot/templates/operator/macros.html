@@ -62,7 +62,7 @@
   <dl><dt>원천 ID</dt><dd>{{ source.get('resource_id', 'UNKNOWN')|forceescape }}</dd>
     <dt>관측·기록 ID</dt><dd>{{ source.get('record_id', 'UNKNOWN')|forceescape }}</dd>
     <dt>원천 관측</dt><dd>{{ source.get('observed_at', 'UNKNOWN')|forceescape }}</dd>
-    <dt>관측 경과</dt><dd>{{ source.get('age', 'UNKNOWN')|forceescape }}</dd>
+    <dt>관측 경과(시:분:초)</dt><dd>{{ source.get('age', 'UNKNOWN')|forceescape }}</dd>
     <dt>화면 조회</dt><dd>{{ source.get('queried_at', 'UNKNOWN')|forceescape }}</dd></dl>
   {% if source.get('freshness') == 'STALE' %}{{ message('stale') }}{% endif %}
   {% if source.get('completeness') == 'INCOMPLETE' %}{{ message('incomplete') }}{% endif %}

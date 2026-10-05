@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Alert identity and partial-source progress defects fixed and deployed; Phase16 remains ready to discuss"
+last_activity_desc: "Operator elapsed durations display HH:MM:SS; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Alert identity and partial-source progress defects fixed and deployed; Phase16 remains ready to discuss
+Last activity: 2026-10-05 — Operator elapsed durations display HH:MM:SS; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -203,6 +203,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261005-slk | Display observation, heartbeat, lease age and alert duration as HH:MM:SS | 2026-10-05 | runtime-verified | [261005-slk-display-observation-elapsed-time-as-hour](./quick/261005-slk-display-observation-elapsed-time-as-hour/) |
 | 261005-rob | Connect owner-supplied Discord webhook and verify one notification delivery | 2026-10-05 | runtime-only | [261005-rob-connect-the-supplied-discord-webhook-to-](./quick/261005-rob-connect-the-supplied-discord-webhook-to-/) |
 | 261005-r8r | Connect and run the independent local alert observer; verify web alerts | 2026-10-05 | runtime-only | [261005-r8r-connect-and-run-the-independent-local-al](./quick/261005-r8r-connect-and-run-the-independent-local-al/) |
 | 261005-nbs | Connect saved mock audit/portfolio/soak/controller evidence to the operator web | 2026-10-05 | runtime-only | [261005-nbs-connect-existing-saved-evidence-to-the-o](./quick/261005-nbs-connect-existing-saved-evidence-to-the-o/) |
