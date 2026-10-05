@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Existing saved mock evidence registered and rendered in HTTPS dashboard; Phase16 remains ready to discuss"
+last_activity_desc: "Independent alert observer running; stored alerts verified through HTTPS; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Existing saved mock evidence registered and rendered in HTTPS dashboard; Phase16 remains ready to discuss
+Last activity: 2026-10-05 — Independent alert observer running; stored alerts verified through HTTPS; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -181,6 +181,8 @@ None yet.
 
 ### Blockers/Concerns
 
+- 2026-10-05 Quick 261005-r8r completed: independent local alert observer RUNNING with 30-second scans and four active alerts visible through authenticated HTTPS. Two portfolio CRITICAL incidents and two audit/soak source-read warnings retained; historical mixed/invalid provenance and identifier rejection prevent complete source coverage. Discord webhook and login/reboot autostart are not configured. Source DB digests unchanged.
+
 - 2026-10-05 Quick 261005-nbs completed: four saved mock evidence owners registered; existing historical data renders through authenticated HTTPS (10 holdings, recent-30-day 14 runs/120 decisions/147 candidates). Latest portfolio is 2026-09-08 and audit is 2026-10-02; missing current/service proof remains UNKNOWN. Source DB digests unchanged.
 
 - 2026-10-05 Browser login POST CSRF_MISMATCH fixed: anonymous background requests preserve pending login CSRF state; 71 focused tests and actual HTTPS regression passed. See [debug resolution](./debug/resolved/tailscale-login-post.md). Owner MacBook refresh/confirmation requested.
@@ -197,6 +199,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261005-r8r | Connect and run the independent local alert observer; verify web alerts | 2026-10-05 | runtime-only | [261005-r8r-connect-and-run-the-independent-local-al](./quick/261005-r8r-connect-and-run-the-independent-local-al/) |
 | 261005-nbs | Connect saved mock audit/portfolio/soak/controller evidence to the operator web | 2026-10-05 | runtime-only | [261005-nbs-connect-existing-saved-evidence-to-the-o](./quick/261005-nbs-connect-existing-saved-evidence-to-the-o/) |
 | 261005-l0g | Start Tailscale and operator web; configure private HTTPS and verify login | 2026-10-05 | runtime-only | [261005-l0g-start-tailscale-and-local-operator-web](./quick/261005-l0g-start-tailscale-and-local-operator-web/) |
 | 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
