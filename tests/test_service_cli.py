@@ -154,7 +154,8 @@ def production_fixture(tmp_path):
     settings.trading_config_path.write_text(json.dumps(trading))
     settings.trading_journal_paths[0].parent.mkdir(exist_ok=True)
     conn=sqlite_audit.connect(settings.trading_journal_paths[0]);conn.close();settings.trading_journal_paths[0].chmod(0o600)
-    ServiceJournal(settings).initialize();ControlStore(settings).initialize(actor=owner_actor())
+    ServiceJournal(settings,clock=lambda:NOW-timedelta(hours=1)).initialize()
+    ControlStore(settings,clock=lambda:NOW-timedelta(hours=1)).initialize(actor=owner_actor())
     fresh=lambda:replace(snapshot(snapshot_id=__import__('uuid').uuid4().hex),
         account_scope_hash=receipt.scope.account_scope_hash,observed_at=NOW,
         trading_date=NOW.date(),previous_trading_date=NOW.date()-timedelta(days=3))

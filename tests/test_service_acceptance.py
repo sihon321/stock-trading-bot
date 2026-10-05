@@ -20,6 +20,114 @@ class Sessions:
     def for_date(self,day):return session_evidence(self.kind,day)
 
 
+def test_actual_production_soft_risk_failure_never_clears_stall_and_real_success_recovers(tmp_path):
+    from types import SimpleNamespace
+    from tests.test_service_cli import production_root
+    from tests.test_service_health import health_fixture
+    from tests.test_alert_observer import Transport
+    from trading_bot.alert_observer import AlertObserver
+    from trading_bot.alert_config import ObserverSettings
+    from trading_bot.domain import Money
+    from trading_bot.web_config import ResourceDescriptor
+    from trading_bot.web_models import AlertSourceBatch
+    from trading_bot.service_models import ServiceExpectation
+
+    with production_root(tmp_path) as (runtime,unused,clock):
+        clock.value=at(9,0)
+        (tmp_path/'obligations').mkdir()
+        _,source,_,_=health_fixture(tmp_path/'obligations',mode='PAUSED')
+        with source.connection() as conn:
+            for row in conn.execute('SELECT evidence_json FROM service_expectations'):
+                expectation=ServiceExpectation.model_validate_json(row[0])
+                runtime.journal.expectation_writer().record_derived(expectation.model_copy(update={'scope':runtime.scope}))
+        bot=AlertObserver(ObserverSettings(operational_db_path=tmp_path/'observer'/'alerts.db',
+            registered_resources=tuple(ResourceDescriptor(id=owner,owner=owner,path=path,
+                account_hash=runtime.scope.account_scope_hash,target='mock') for owner,path in
+                [('service',runtime.journal.path),('control',runtime.controls.path)])),clock=clock,notifier=Transport())
+        def observe():
+            health=next(h for h in bot.evidence.service_health() if h.kind=='RISK')
+            facts=bot.detector.detect(AlertSourceBatch(clock(),(),service_health=(health,)))
+            for fact in facts:bot.store.observe(fact)
+            return health,facts
+        def broken_quote(ticker):raise RuntimeError('ordinary offline quote failure')
+        bot.start()
+        try:
+            assert runtime.start()=='RUNNING'
+            runtime.no_new_dispatch=True
+            clock.value=at(9,5)
+            observe()
+            incident=next(e for e in bot.store.list_incidents(active=True) if e.subject.problem_family=='WORKER_STALLED')
+            runtime.trading=replace(runtime.trading,quote_reader=broken_quote)
+            for minute in (5,6):
+                clock.value=at(9,minute)
+                runtime.tick()
+                watch=runtime.work.conn.execute('SELECT terminal_status FROM watch_iterations ORDER BY rowid DESC LIMIT 1').fetchone()
+                assert watch[0]=='FAILED'
+                event=runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]
+                assert event['state']=='FAILED' and event['reason_code']=='ITERATION_FAILED'
+                assert any(s.startswith('risk-iteration:') for s in json.loads(event['source_ids_json']))
+                health,facts=observe()
+                assert health.state=='FAILED' and health.reason_code=='ITERATION_FAILED'
+                assert health.mutation_ready is False and health.last_progress_at is None
+                assert not any(f.positive_recovery for f in facts)
+                assert bot.store.get_incident(incident.episode_id).active
+            clock.value=at(9,7)
+            runtime.trading=replace(runtime.trading,quote_reader=lambda ticker:SimpleNamespace(price=Money(68000),observed_at=clock()))
+            runtime.tick()
+            health,facts=observe()
+            assert health.state=='RUNNING' and health.last_progress_at==clock()
+            assert any(f.positive_recovery for f in facts)
+            assert not bot.store.get_incident(incident.episode_id).active
+            event=runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]
+            assert event['reason_code']=='RISK_PROTECTED'
+            assert any(s.startswith('snapshot:') for s in json.loads(event['source_ids_json']))
+            progress=health.last_progress_at
+            clock.value=at(9,8)
+            runtime.trading=replace(runtime.trading,quote_reader=broken_quote)
+            runtime.tick()
+            health,facts=observe()
+            assert health.state=='FAILED' and health.last_progress_at==progress
+            assert health.mutation_ready is False and not any(f.positive_recovery for f in facts)
+            assert any(e.subject.problem_family=='WORKER_STALLED' for e in bot.store.list_incidents(active=True))
+        finally:bot.stop()
+
+
+@pytest.mark.parametrize('case,state,reason',[
+    ('incomplete','BLOCKED','ACCOUNT_DATA_INCOMPLETE'),
+    ('stop','UNKNOWN','STOP_REQUESTED'),
+    ('preflight','BLOCKED','PREFLIGHT_READ_ONLY'),
+    ('missing','UNKNOWN','RISK_RESULT_UNKNOWN'),
+    ('untyped','UNKNOWN','RISK_RESULT_UNKNOWN'),
+    ('wrong_snapshot','UNKNOWN','RISK_RESULT_UNKNOWN'),
+])
+def test_actual_risk_worker_non_success_and_invalid_results_never_publish_progress(tmp_path,case,state,reason):
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    from tests.test_service_cli import production_root
+    from trading_bot.intraday import run_intraday_check
+    from trading_bot.portfolio import PortfolioCompleteness
+    from trading_bot.portfolio_store import append_watch_iteration
+    from trading_bot.domain import Money
+    with production_root(tmp_path) as (runtime,unused,clock):
+        assert runtime.start()=='RUNNING'
+        runtime.no_new_dispatch=True
+        clock.value=at(9,5)
+        def iteration(binding,runtime,lease,current,budget):
+            if case=='missing':return None
+            if case=='untyped':return SimpleNamespace(outcome='COMPLETED',snapshot_id=current.snapshot_id)
+            current=replace(current,completeness=PortfolioCompleteness.INCOMPLETE) if case=='incomplete' else current
+            result=run_intraday_check(clock=(lambda:at(8,55)) if case=='preflight' else clock,
+                snapshot_reader=lambda:current,quote_reader=lambda ticker:Money(65000),
+                risk_config=binding.risk_config,lease=lease,exit_submitter=lambda *a:pytest.fail('unexpected exit'),
+                stop_requested=lambda:case=='stop',work_budget=budget,
+                audit_sink=lambda result:append_watch_iteration(runtime.work.conn,result,observed_at=clock()))
+            return replace(result,snapshot_id='different-subject') if case=='wrong_snapshot' else result
+        with patch.object(type(runtime.trading),'risk',iteration):runtime.tick()
+        event=runtime.journal.list_events(runtime.job('RISK')['job_id'])[-1]
+        assert event['state']==state and event['reason_code']==reason
+        assert not any(e['reason_code']=='RISK_PROTECTED' for e in runtime.journal.list_events(runtime.job('RISK')['job_id']))
+
+
 def test_failed_actual_risk_ticks_preserve_stall_until_successful_attributed_progress(tmp_path):
     from tests.test_service_health import health_fixture
     from tests.test_alert_observer import Transport
