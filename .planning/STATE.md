@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Discord webhook connected to independent alert observer; single-attempt delivery verified; Phase16 remains ready to discuss"
+last_activity_desc: "Alert identity and partial-source progress defects fixed and deployed; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Discord webhook connected to independent alert observer; single-attempt delivery verified; Phase16 remains ready to discuss
+Last activity: 2026-10-05 — Alert identity and partial-source progress defects fixed and deployed; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -181,9 +181,11 @@ None yet.
 
 ### Blockers/Concerns
 
+- 2026-10-05 Alert source defects resolved: valid dated identities, certified healthy-partition progress, read-availability recovery and saved latch occurrence time. 746 related tests and final 92-test focused suite passed; actual protected deployment RUNNING with 14 new occurrence/one recovery Discord deliveries. Remaining historical audit provenance warning retained; source digests and trading safety unchanged. See [debug resolution](./debug/resolved/alert-source-read-failures.md).
+
 - 2026-10-05 Quick 261005-rob completed: supplied Discord webhook stored only in protected external observer config; graceful observer restart and real single-attempt connection test DELIVERED. Existing finalized incident delivery attempts retained. Historical source warnings and missing login/reboot autostart remain.
 
-- 2026-10-05 Quick 261005-r8r completed: independent local alert observer RUNNING with 30-second scans and four active alerts visible through authenticated HTTPS. Two portfolio CRITICAL incidents and two audit/soak source-read warnings retained; historical mixed/invalid provenance and identifier rejection prevent complete source coverage. Discord was subsequently connected by 261005-rob; login/reboot autostart is not configured. Source DB digests unchanged.
+- 2026-10-05 Quick 261005-r8r completed: independent alert observer and HTTPS alerts connected. Dated-identifier and healthy-source pagination defects were subsequently fixed; historical audit provenance still prevents complete audit coverage. Discord was connected by 261005-rob; login/reboot autostart is not configured. Source DB digests unchanged.
 
 - 2026-10-05 Quick 261005-nbs completed: four saved mock evidence owners registered; existing historical data renders through authenticated HTTPS (10 holdings, recent-30-day 14 runs/120 decisions/147 candidates). Latest portfolio is 2026-09-08 and audit is 2026-10-02; missing current/service proof remains UNKNOWN. Source DB digests unchanged.
 

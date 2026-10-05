@@ -62,6 +62,50 @@ def test_commit_before_send_and_replay_checkpoint(tmp_path):
     assert bot.status()['state'] == 'STOPPED'
 
 
+def test_certified_healthy_partition_cursor_advances_during_source_failure(tmp_path):
+    bot = observer(tmp_path)
+    failed = replace(record('runs').envelope,resource_id='failed-source',query_status='FAILED')
+    bot.evidence.batch = replace(bot.evidence.batch,sources=(failed,),partial_cursor='healthy-partition')
+    bot.scan_once()
+    assert bot.store.get_checkpoint() == 'healthy-partition'
+    bot.scan_once()
+    assert bot.evidence.cursors == [None,'healthy-partition']
+
+
+@pytest.mark.parametrize('during_read', [False,True])
+def test_source_read_recovery_preserves_historical_producer_timestamp(tmp_path,during_read):
+    clock = Clock()
+    bot = observer(tmp_path,clock=clock)
+    old = clock()-timedelta(days=40)
+    failed = replace(record('runs').envelope,resource_id='failed-source',query_status='FAILED',source_observed_at=old)
+    bot.evidence.batch=AlertSourceBatch(clock(),sources=(failed,))
+    bot.scan_once()
+    episode=next(e for e in bot.store.list_incidents() if e.subject.resource_id=='failed-source')
+    clock.advance(30)
+    scan_started=clock()
+    if during_read:
+        clock.advance(1)
+    healthy=replace(failed,query_status='OK',query_at=clock())
+    bot.evidence.batch=AlertSourceBatch(clock(),sources=(healthy,))
+    bot.scan_once(now=scan_started)
+    recovered=bot.store.get(episode.episode_id)
+    assert not recovered.active and recovered.recovered_at==clock()
+    assert healthy.source_observed_at==old
+
+
+def test_notification_distinguishes_saved_subject_and_observation_time(tmp_path):
+    bot=observer(tmp_path)
+    old=NOW-timedelta(days=40)
+    rows=tuple(replace(record('campaigns',str(i),campaign_id=campaign,safety_failure_code='BROKER_DIVERGENCE'),
+        envelope=replace(record('campaigns').envelope,source_observed_at=old))
+        for i,campaign in enumerate(('campaign-one','campaign-two'),1))
+    bot.evidence.batch=AlertSourceBatch(NOW,rows)
+    bot.scan_once()
+    assert len(bot.notifier.sent)==2
+    assert 'campaign-one' in bot.notifier.sent[0] and 'campaign-two' in bot.notifier.sent[1]
+    assert all('원천 관측: 2026-08-23 09:00:00 KST' in message for message in bot.notifier.sent)
+
+
 def test_critical_reminder_boundary_ack_and_delayed_restart(tmp_path):
     clock = Clock()
     bot = observer(tmp_path, clock=clock)

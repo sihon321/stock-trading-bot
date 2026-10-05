@@ -89,11 +89,27 @@ def _clean(value):
     return value[:4096]
 
 
+def _clean_identity(value):
+    """Keep valid dated public IDs; retain account/credential redaction."""
+    if not isinstance(value, str):
+        return _clean(value)
+    def dated(match):
+        if re.search(r'(?i)(?:^|[_.:-])(?:cano|account(?:_number)?)[_.:-]$', match['prefix']):
+            return match[0]
+        try:
+            datetime.strptime(match['day'], '%Y%m%d')
+        except ValueError:
+            return match[0]
+        return match['prefix'] + 'date' + match['day']
+    masked = re.sub(r'(?P<prefix>[A-Za-z][A-Za-z0-9_.:-]*[-_.])(?P<day>(?:19|20)\d{6})(?=[-_.:]|$)', dated, value)
+    return value if _clean(masked) == masked else _clean(value)
+
+
 def _wire_record(resource, kind, row, key, stamp, fields, *, conn=None, snapshot_id=None, source_ids=(), completeness='COMPLETE'):
     rid = f'{kind}:{row[key]}'
-    if len(rid) > 512 or _clean(rid) != rid or any(len(str(v)) > 128 or _clean(str(v)) != str(v) for v in source_ids):
+    if len(rid) > 512 or _clean_identity(rid) != rid or any(len(str(v)) > 128 or _clean_identity(str(v)) != str(v) for v in source_ids):
         raise EvidenceUnavailable('INVALID_SOURCE_ID')
-    projected = tuple((name, _clean(row[name])) for name in fields)
+    projected = tuple((name, (_clean_identity if name.endswith('_id') or name == 'state_identity' else _clean)(row[name])) for name in fields)
     if sum(len(str(v).encode()) + len(k) for k, v in projected) > 10000:
         projected = tuple((name, value[:512] if isinstance(value, str) else value) for name, value in projected)
     return EvidenceRecord(rid, kind, _envelope(resource, datetime.now(timezone.utc), conn=conn,
@@ -468,7 +484,7 @@ class OperatorEvidenceService:
                               snapshot_id=sid, source_ids=source_ids)
         extra = []
         if kind.startswith('transition_'):
-            extra.extend((name, _clean(state[name])) for name in ('ticker', 'event_family', 'broker_subject_id'))
+            extra.extend((name, (_clean_identity if name.endswith('_id') else _clean)(state[name])) for name in ('ticker', 'event_family', 'broker_subject_id'))
             if kind == 'transition_observations':
                 # Terminal meaning comes from saved state code, not mutable active=0.
                 recovered = row['state_code'] in {'FILLED', 'RESOLVED', 'RECOVERED', 'STOPPED'}
@@ -758,7 +774,7 @@ class OperatorEvidenceService:
         facts = []
         source_failures={}
         kinds = {'transitions', 'transition_observations', 'transition_notifications', 'lease_events',
-                 'notifications', 'soak_events', 'campaigns', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events', 'candidates'}
+                 'notifications', 'soak_events', 'comparisons', 'orders', 'runs', 'evaluations', 'evaluation_events', 'candidates'}
         kinds.update(kind for _,kind in _OPERATIONAL_HISTORY)
         for resource in self._resources():
             try:
@@ -779,12 +795,25 @@ class OperatorEvidenceService:
                 continue
         scopes = {(r.account_hash, r.target) for r in self._resources()}
         for account, target in sorted(scopes):
-            facts.extend(self._unresolved(ResourceScope(account, target), include_released=True))
+            scope = ResourceScope(account, target)
+            facts.extend(self._unresolved(scope, include_released=True))
+            # Campaign creation is not the time a safety latch was observed.
+            facts.extend(self._safety_blocks(scope))
+        health=self.service_health()
+        for item in health:
+            if item.envelope.query_status!='OK':
+                source_failures[item.envelope.resource_id]=item.envelope.diagnostic_code or 'SOURCE_UNAVAILABLE'
+        for row in facts:
+            if row.envelope.query_status!='OK':
+                source_failures[row.resource_id]=row.envelope.diagnostic_code or 'SOURCE_UNAVAILABLE'
+        sources=tuple(replace(s,query_status='FAILED',diagnostic_code=source_failures[s.resource_id])
+            if s.resource_id in source_failures else s for s in self.source_status())
+        failed = {s.resource_id for s in sources if s.query_status != 'OK'}
         # Producer timestamps may collide or be backdated. Stream content checkpoints
         # also detect in-place transition-state updates; absence is never recovery.
         groups = {}
         for row in facts:
-            if row.envelope.source_observed_at is not None:
+            if row.resource_id not in failed and row.envelope.source_observed_at is not None:
                 groups.setdefault(f'{row.resource_id}:{row.kind}', {})[row.record_id] = row
         positions, selected = dict(previous), []
         for stream in sorted(groups):
@@ -804,14 +833,8 @@ class OperatorEvidenceService:
         next_cursor = base64.urlsafe_b64encode(json.dumps({'registry': _identity(tuple((r.id, r.account_hash, r.target) for r in self._resources())), 'streams': positions}, separators=(',', ':')).encode()).decode()
         if len(next_cursor) > 65536:
             raise EvidenceUnavailable('ALERT_CURSOR_BOUND')
-        health=self.service_health()
-        for item in health:
-            if item.envelope.query_status!='OK':
-                source_failures[item.envelope.resource_id]=item.envelope.diagnostic_code or 'SOURCE_UNAVAILABLE'
-        sources=tuple(replace(s,query_status='FAILED',diagnostic_code=source_failures[s.resource_id])
-            if s.resource_id in source_failures else s for s in self.source_status())
         return AlertSourceBatch(self.clock(), tuple(selected), self._workers(),
-                                sources, next_cursor, health)
+                                sources, next_cursor, health, next_cursor if failed else None)
 
     def list_records(self, kind, scope, period=None, cursor=None, limit=50):
         if kind not in _KINDS or type(limit) is not int or not 1 <= limit <= 100:

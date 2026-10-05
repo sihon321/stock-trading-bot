@@ -13,7 +13,7 @@ from .alert_models import AlertSubject, AlertSourceFact, Severity, DeliveryState
 from .alert_store import AlertStore
 from .notification_transport import DiscordNotifier, NoopNotifier
 from .web_evidence import OperatorEvidenceService
-from .web_models import AlertSourceBatch, SourceEnvelope
+from .web_models import AlertSourceBatch, SourceEnvelope, KST
 
 
 @dataclass(frozen=True)
@@ -68,10 +68,11 @@ class AlertObserver:
             if e.subject==subject),None)
         healthy=env.query_status=='OK' and env.source_observed_at is not None and env.source_observed_at<=now
         if healthy:
-            if existing is None or env.source_observed_at<existing.first_observed_at:
+            if existing is None or env.query_at<existing.first_observed_at or env.query_at>self.clock():
                 return None
-            key='source-recovered:'+existing.episode_id+':'+str(int(env.source_observed_at.timestamp()*1000000))
-            return AlertSourceFact(subject,env.schema_owner,key,0,env.source_observed_at,'AVAILABLE',Severity.WARNING,
+            # Successful source reading recovers availability, not data freshness.
+            key='source-recovered:'+existing.episode_id+':'+str(int(env.query_at.timestamp()*1000000))
+            return AlertSourceFact(subject,env.schema_owner,key,0,env.query_at,'AVAILABLE',Severity.WARNING,
                 True,key)
         if env.query_status=='OK':
             return None
@@ -234,10 +235,11 @@ class AlertObserver:
                     fact=self._source_fact(env,now,family='EXPECTATION_UNKNOWN')
                     if fact is not None: self.store.observe(fact)
         self._receipts(healthy)
-        # The existing cursor spans all sources. Retain it on partial reads and
-        # rely on durable receipt/occurrence dedupe rather than skipping lost rows.
-        if batch.cursor is not None and not failed and expectation_healthy:
-            self.store.set_checkpoint(batch.cursor)
+        # Only reader-certified healthy stream positions can advance on partial
+        # reads. Failed partitions remain at their prior checkpoint for recovery.
+        progress = batch.partial_cursor if failed else batch.cursor
+        if progress is not None and expectation_healthy:
+            self.store.set_checkpoint(progress)
         self.store.due_reminders(now)
         sent = 0
         for event in self.store.pending_deliveries():
@@ -249,6 +251,10 @@ class AlertObserver:
                 continue
             episode = self.store.get(claim.episode_id)
             text = f'[{episode.severity.value}] {claim.kind}: {episode.subject.problem_family} / {episode.subject.ticker_or_account} / {episode.normalized_state}'
+            text += f'\n원천: {episode.subject.resource_id} · 대상 기록: {episode.subject.broker_subject}'
+            text += '\n원천 관측: ' + episode.last_observed_at.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S KST')
+            if claim.kind == 'REMINDER':
+                text += '\n미확인 알림 반복입니다. 웹에서 읽음 처리하면 반복이 멈춥니다.'
             try:
                 result = self.notifier.send(text)
                 state = DeliveryState.DISABLED if isinstance(self.notifier, NoopNotifier) else DeliveryState.DELIVERED if result else DeliveryState.FAILED

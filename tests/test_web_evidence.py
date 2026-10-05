@@ -55,6 +55,89 @@ def service(sources):
     return OperatorEvidenceService(settings, clock=sources.clock)
 
 
+def test_alert_campaign_date_identity_is_readable_without_unredacting_accounts(tmp_path):
+    from trading_bot.web_evidence import EvidenceUnavailable
+    sources = make_operator_sources(tmp_path)
+    campaign = 'soak-20260720-20d-v1'
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute('UPDATE soak_campaigns SET campaign_id=?', (campaign,))
+    before = capture_sources(sources)
+    svc = service(sources)
+    batch = svc.observe_alert_sources()
+    assert next(s for s in batch.sources if s.resource_id == 'soak').query_status == 'OK'
+    row = svc.get_record('soak', 'campaigns:' + campaign)
+    assert row.data['campaign_id'] == campaign
+    assert capture_sources(sources) == before
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("UPDATE soak_campaigns SET campaign_id='12345678'")
+    with pytest.raises(EvidenceUnavailable, match='INVALID_SOURCE_ID'):
+        svc.get_record('soak', 'campaigns:12345678')
+
+
+@pytest.mark.parametrize('identity', ['soak-12345678-v1', 'soak-20260230-v1',
+    '20260720', 'sk-secret-20260720-v1', 'account_number=20260720', 'account-20260720'])
+def test_dated_identity_exception_keeps_sensitive_or_invalid_values_redacted(identity):
+    from trading_bot.web_evidence import _clean_identity
+    assert _clean_identity(identity) != identity
+
+
+def test_alert_failed_source_does_not_starve_healthy_pages(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE runs SET provenance=NULL WHERE run_id='operator-run'")
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.executemany('INSERT INTO soak_events(campaign_id,event_code,evidence_class,detail_json,observed_at) VALUES (?,?,?,?,?)',
+            [('operator-campaign','SAVED_EVENT','KIS_MOCK_VTS','{}',NOW.isoformat()) for _ in range(150)])
+    before = capture_sources(sources)
+    svc = service(sources)
+    first = svc.observe_alert_sources()
+    assert next(s for s in first.sources if s.resource_id == 'audit').query_status == 'FAILED'
+    assert first.partial_cursor
+    second = svc.observe_alert_sources(first.partial_cursor)
+    first_ids = {(r.resource_id,r.record_id) for r in first.facts}
+    second_ids = {(r.resource_id,r.record_id) for r in second.facts}
+    assert first_ids and second_ids and not first_ids & second_ids
+    assert all(r.resource_id != 'audit' for r in (*first.facts,*second.facts))
+    assert capture_sources(sources) == before
+
+
+def test_partial_alert_progress_revisits_failed_source_when_it_recovers(tmp_path):
+    import json
+    sources = make_operator_sources(tmp_path)
+    svc = service(sources)
+    initial = svc.observe_alert_sources()
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE runs SET provenance=NULL WHERE run_id='operator-run'")
+        conn.execute('INSERT INTO notification_attempts(run_id,kind,delivery_status,detail_json,observed_at) VALUES (?,?,?,?,?)',
+            ('operator-run','RUN_SUMMARY','FAILED','{}',NOW.isoformat()))
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute('INSERT INTO soak_events(campaign_id,event_code,evidence_class,detail_json,observed_at) VALUES (?,?,?,?,?)',
+            ('operator-campaign','SAVED_EVENT','KIS_MOCK_VTS','{}',NOW.isoformat()))
+    partial = svc.observe_alert_sources(initial.cursor)
+    assert partial.partial_cursor and any(r.resource_id=='soak' for r in partial.facts)
+    with sqlite3.connect(sources.paths['audit']) as conn:
+        conn.execute("UPDATE runs SET provenance=? WHERE run_id='operator-run'", (json.dumps({'account_scope_hash':ACCOUNT_HASH}),))
+    recovered = svc.observe_alert_sources(partial.partial_cursor)
+    assert any(r.kind=='notifications' and r.data['delivery_status']=='FAILED' for r in recovered.facts)
+
+
+def test_alert_latch_uses_saved_event_time_and_never_campaign_creation(tmp_path):
+    sources = make_operator_sources(tmp_path)
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute("UPDATE soak_campaigns SET safety_failure_code='BROKER_DIVERGENCE'")
+    svc = service(sources)
+    batch = svc.observe_alert_sources()
+    assert not any(r.kind=='campaigns' and r.envelope.source_observed_at is not None for r in batch.facts)
+    sources.clock.advance(hours=1)
+    observed = sources.clock().isoformat()
+    with sqlite3.connect(sources.paths['soak']) as conn:
+        conn.execute('INSERT INTO soak_events(campaign_id,event_code,evidence_class,run_id,detail_json,observed_at) VALUES (?,?,?,?,?,?)',
+            ('operator-campaign','SAFETY_FAILURE_LATCHED','KIS_MOCK_VTS','operator-run','{}',observed))
+    batch = svc.observe_alert_sources()
+    row = next(r for r in batch.facts if r.kind=='campaigns')
+    assert row.envelope.source_observed_at == sources.clock()
+
+
 def scope():
     return ResourceScope(ACCOUNT_HASH, 'mock')
 

@@ -214,6 +214,8 @@ class AlertSourceBatch:
     sources: tuple[SourceEnvelope, ...] = ()
     cursor: str | None = None
     service_health: tuple[ServiceHealthDTO, ...] = ()
+    # Reader-certified progress: failed resource stream positions are preserved.
+    partial_cursor: str | None = None
 
 
 # Kind-specific aliases preserve one immutable detail/evidence projection contract.
