@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Browser login CSRF invalidation fixed, 71 tests passed and HTTPS runtime deployed; Phase16 remains ready to discuss"
+last_activity_desc: "Existing saved mock evidence registered and rendered in HTTPS dashboard; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Browser login CSRF invalidation fixed, 71 tests passed and HTTPS runtime deployed; Phase16 remains ready to discuss
+Last activity: 2026-10-05 — Existing saved mock evidence registered and rendered in HTTPS dashboard; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -181,6 +181,8 @@ None yet.
 
 ### Blockers/Concerns
 
+- 2026-10-05 Quick 261005-nbs completed: four saved mock evidence owners registered; existing historical data renders through authenticated HTTPS (10 holdings, recent-30-day 14 runs/120 decisions/147 candidates). Latest portfolio is 2026-09-08 and audit is 2026-10-02; missing current/service proof remains UNKNOWN. Source DB digests unchanged.
+
 - 2026-10-05 Browser login POST CSRF_MISMATCH fixed: anonymous background requests preserve pending login CSRF state; 71 focused tests and actual HTTPS regression passed. See [debug resolution](./debug/resolved/tailscale-login-post.md). Owner MacBook refresh/confirmation requested.
 
 - 2026-10-05 Quick 261005-l0g completed: Tailscale private HTTPS active at https://oceano-macmini.tail667338.ts.net; exact HTTPS runtime config applied and live CSRF/password login plus authenticated dashboard verified. Owner MacBook acceptance remains unobserved. See [quick summary](./quick/261005-l0g-start-tailscale-and-local-operator-web/261005-l0g-SUMMARY.md).
@@ -195,6 +197,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261005-nbs | Connect saved mock audit/portfolio/soak/controller evidence to the operator web | 2026-10-05 | runtime-only | [261005-nbs-connect-existing-saved-evidence-to-the-o](./quick/261005-nbs-connect-existing-saved-evidence-to-the-o/) |
 | 261005-l0g | Start Tailscale and operator web; configure private HTTPS and verify login | 2026-10-05 | runtime-only | [261005-l0g-start-tailscale-and-local-operator-web](./quick/261005-l0g-start-tailscale-and-local-operator-web/) |
 | 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
 | 260727-d5y | Treat campaign-scoped RESUME comparisons as valid without weakening 000660 ambiguity freeze or order safety | 2026-07-27 | 5105ee8 | [260727-d5y-treat-campaign-scoped-resume-comparisons](./quick/260727-d5y-treat-campaign-scoped-resume-comparisons/) |
