@@ -45,7 +45,7 @@ Full phase details are archived at `.planning/milestones/v1.0-ROADMAP.md`.
 **Milestone Goal:** Add operator visibility and resilient scheduling, then permit only an explicitly approved, capital-capped real-money pilot after every upstream safety gate passes.
 
 - [x] **Phase 14: Operator Web UI, Dashboard & Alerting** — Provide an authenticated responsive web application for portfolio, decision, order, validation, report, and alert workflows without adding trade authority. (completed 2026-10-03)
-- [x] **Phase 15: Unattended Scheduling & Service Resilience** — Schedule calendar-aware daily and intraday workers with leader locking, recovery, health checks, and a global kill switch. (completed 2026-10-04)
+- [x] **Phase 15: Unattended Scheduling & Service Resilience** — Schedule calendar-aware daily and intraday workers with leader locking, recovery, health checks, and a global kill switch. (completed 2026-10-05; owner UAT4/4)
 - [ ] **Phase 16: Controlled Real-Money Pilot & Scale Gates** — Run a manually approved, allowlisted, capital-capped pilot with evidence windows, rollback, and explicit scaling approvals.
 
 ## v1.1 Mock Soak & Replay Validation (Phase Details)
@@ -249,7 +249,7 @@ Plans:
 | 12. Full Portfolio Backtesting & Market Friction Modeling | v1.2 | 6/6 | Complete    | 2026-10-01 |
 | 13. Historical LLM Shadow Evaluation & Model Governance | v1.2 | 7/7 | Complete    | 2026-10-01 |
 | 14. Operator Web UI, Dashboard & Alerting | v1.3 | 14/14 | Complete    | 2026-10-03 |
-| 15. Unattended Scheduling & Service Resilience | v1.3 | 14/14 | Complete   | 2026-10-04 |
+| 15. Unattended Scheduling & Service Resilience | v1.3 | 14/14 | Complete    | 2026-10-05 |
 | 16. Controlled Real-Money Pilot & Scale Gates | v1.3 | 0/TBD | Not Planned |  |
 
 ## v1.2 Complete Trade Lifecycle & Strategy Evidence (Phase Details)
@@ -481,7 +481,6 @@ Plans:
 **Wave 1**
 
 - [x] 15-01-PLAN.md
-- [ ] TBD (run /gsd-plan-phase 15 to break down)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

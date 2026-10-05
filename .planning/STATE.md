@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Mock Soak & Replay Validation
-current_phase: 15
-current_phase_name: Unattended Scheduling & Service Resilience
-current_plan: 14
-status: verifying
-stopped_at: Phase15 human_needed44/46;1904passed488.69s; four manual UAT items pending; activation closed/000660 frozen
-last_updated: "2026-10-05T03:29:36.532Z"
+current_phase: 16
+current_phase_name: Controlled Real-Money Pilot & Scale Gates
+current_plan: Not started
+status: planning
+stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
+last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: Phase15 implementation verified; 1904 tests passed; four human UAT items pending
+last_activity_desc: "Phase15 complete: UAT4/4, verification passed,1904 tests passed; Phase16 ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -22,21 +22,21 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-03)
+See: .planning/PROJECT.md (updated 2026-10-05)
 
 **Core value:** Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and acts on it through KIS — without placing an order the rules don't justify.
-**Current focus:** Phase 15 — Unattended Scheduling & Service Resilience
+**Current focus:** Phase 16 — Controlled Real-Money Pilot & Scale Gates
 
 ## Current Position
 
-Current Phase: 15
-Current Phase Name: Unattended Scheduling & Service Resilience
-Current Plan: 14
-Total Plans in Phase: 14
-Phase: 15 (Unattended Scheduling & Service Resilience) — HUMAN VERIFICATION PENDING
-Plan: 14 of 14
-Status: Awaiting human verification
-Last activity: 2026-10-05 — Phase15 implementation verified; 1904 tests passed; four human UAT items pending
+Current Phase: 16
+Current Phase Name: Controlled Real-Money Pilot & Scale Gates
+Current Plan: Not started
+Total Plans in Phase: 0
+Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-05 — Phase15 complete: UAT4/4, verification passed,1904 tests passed; Phase16 ready to discuss
 
 ## Performance Metrics
 
@@ -173,6 +173,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Current milestone constr
 - [Phase 15]: 15-14: dry-run rebuilds all runtime paths under owned temporary authority and executes actual scheduling/consumed-dispatch recovery with frozen canonical inputs before any provider construction.
 - [Phase 15]: 15-14: offline completion and the 1874-test full regression do not complete either 09-08 approval, GUI/private-device acceptance or unattended activation; requirement completion awaits independent whole-phase verification.
 - [Phase 15]: 15-14: exact existing O_RDWR source descriptors support control reads while FD writes and source SQL mutations remain denied; request SQL permits only request/audit insertion.
+- [Phase 15]: Phase15 acceptance passed after1904-test regression, independent verification and owner UAT4/4; both09-08 approvals, protected receipt, Codex transport support and000660 terminal proof remain separate runtime gates.
 
 ### Pending Todos
 
@@ -250,9 +251,9 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-05T03:29:36.524Z
-Stopped at: Phase15 human_needed44/46;1904passed488.69s; four manual UAT items pending; activation closed/000660 frozen
-Resume file: .planning/phases/15-unattended-scheduling-service-resilience/15-UAT.md
+Last session: 2026-10-05T05:45:02.111Z
+Stopped at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
+Resume file: None
 
 ## Operator Next Steps
 

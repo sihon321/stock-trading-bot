@@ -15,6 +15,11 @@ An authenticated Korean desktop/mobile web application exposes saved operational
 validation evidence, reports and alert acknowledgement without granting the web process
 trading authority.
 
+An optional owner-login service schedules calendar-aware daily evaluation and
+bounded held-position protection with durable recovery, persistent controls and
+an independent saved-evidence observer. Its mock-operation activation remains
+disabled until explicit evidence and approval gates pass.
+
 ## Core Value
 
 Given fresh market data, the bot produces a trustworthy, machine-checkable trading signal and
@@ -77,6 +82,9 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 - [x] FUT-03 / UI-01: authenticated Korean desktop/mobile saved evidence review, exact drilldown, reports and worker visibility — validated in Phase 14.
 - [x] UI-02: report/export/acknowledgement require authentication, authorization, CSRF and audit while the web has no trade/live-LLM/policy authority — validated in Phase 14.
 - [x] OPSV-01: durable severity/deduplication/evidence-linked episodes and critical reminders in an explicitly started independent observer — validated in Phase 14.
+- [x] FUT-04: evidence-gated unattended service requiring both 09-08 approvals before activation — accepted in Phase 15; runtime activation remains separately gated.
+- [x] AUTO-01: separate daily/risk workers, leader exclusion, durable identities and immutable single-shot input recovery — validated in Phase 15.
+- [x] AUTO-02: persistent pause/resume/kill, bounded recovery/restarts and positive-only saved health/incident recovery — validated in Phase 15.
 
 ### Active
 
@@ -88,7 +96,7 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 
 ### Out of Scope
 
-- Intraday polling / always-on loop — v1 is manual-trigger only; revisit if needed
+- Unattended real-money trading — Phase 15 supports gated mock automation; Phase 16 is a separately approved manual pilot.
 - Ensemble/consensus across both LLMs — switchable single provider for v1; ensemble is a later option
 - Non-Korean markets — KIS + pykrx are KR-specific by design
 - Portfolio optimization / multi-strategy allocation — single-signal execution for v1
@@ -103,7 +111,7 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 - **Safety posture:** Mock account first, dry-run capability, and a rules-based stop-loss/
   take-profit net that does not depend on the LLM. The bot must never place an order the
   explicit rules don't justify.
-- **Usage:** Personal tool, run manually per evaluation cycle via the `bot run/screen/status` Typer CLI.
+- **Usage:** Personal tool, run manually via `bot run/screen/status`, or through the disabled-by-default owner-login service after its separate activation evidence and approvals pass.
 - **Shipped state (v1.0):** ~11,272 LOC Python across 48 modules with 22 test files. Stack in
   use: `pydantic` / `pydantic-settings`, `pykrx` + `ta`, direct KIS REST over `httpx`,
   `anthropic` / `openai` behind one provider port, `typer` CLI, SQLite audit store, `structlog`,
@@ -134,7 +142,11 @@ _Milestone v1.0 complete — all requirements shipped and verified. IDs trace to
 | D-05: extend direct-REST KIS layer, not adopt `python-kis` | Zero third-party trust in the order path; reuse the shared token manager | ✓ Shipped — Phase 5 `kis_order.py` + `KISBroker` |
 | Saved evidence and separate operator authority for the web | Review/report/export/acknowledgement must not gain trading capabilities | ✓ Verified — Phase 14, 1418 automated tests and Korean visual UAT |
 | Exact alert scope before count and page bounds | CRITICAL totals and durable constituent pages must agree even above 100 incidents | ✓ Verified — Phase 14 independent gap re-verification, 36/36 |
-| Tailscale for future phone/Mac external web access | Owner-selected private access path with HTTPS and application login | Selected 2026-10-03; actual deployment and device acceptance remain future work |
+| Tailscale for private phone/Mac web access | Owner-selected private access path with HTTPS and application login | Selected 2026-10-03; owner reported Phase 15 phone/session UAT PASS on 2026-10-05. The agent did not deploy private access. |
+| Immutable first snapshot/input and isolated market collection | Slow collection must not starve risk or silently recollect uncertain work | ✓ Phase 15 fresh bounded capture, spawned collection and immutable provenance verified |
+| Bounded account ownership and serialized final admission | Waits release ownership; accepted restrictions apply before any new POST | ✓ Phase 15 bounded work, single POST and durable stop authority verified |
+| Positive protection requires correlated saved evidence | Heartbeats and failed work cannot falsely recover incidents | ✓ Phase 15 actual fail-soft results and missing/conflicting/stale evidence stay unhealthy |
+| Acceptance and runtime activation retain separate authority | UAT cannot issue 09-08 receipts, certify providers or clear unresolved orders | ✓ Phase 15 owner UAT 4/4 accepted; Codex restriction and 000660 freeze retained |
 
 ## Evolution
 
@@ -154,7 +166,7 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-03 after completing Phase 14 — Operator Web UI, Dashboard & Alerting*
+*Last updated: 2026-10-05 after completing Phase 15 — Unattended Scheduling & Service Resilience*
 
 ## Phase 12 Validated Capability
 
@@ -168,3 +180,21 @@ Validated in Phase 13: FUT-02 / GOV-01 frozen historical sampling and canonical 
 ## Phase 14 Validated Capability
 
 Validated in Phase 14: FUT-03 / UI-01 / UI-02 / OPSV-01. All 14 plans complete; 1418 full regression tests pass and independent implementation verification is 36/36 with no gaps. The owner accepted Korean visual usability on 2026-10-03. Actual external Tailscale phone/Mac acceptance is conditional on a future deployment and was not asserted as a passing live connection. The selected private access approach is recorded in the runbook and UAT follow-up. Next: Phase 15 discussion; Phase 9 Plan 09-08 remains required before unattended trading mutation is enabled.
+
+## Phase 15 Validated Capability
+
+FUT-04 / AUTO-01 / AUTO-02 accepted on 2026-10-05: all 14 plans complete,
+1904 full regression tests passed in 488.69s at 6c038d1. Independent implementation
+verification confirmed 44/46 truths without remaining defects. Owner-reported
+UAT 4/4 resolved the two device truths; canonical verification passed 46/46 with
+the owner evidence explicitly attributed. Exact-date daily 09:10 and risk 09:00/60s
+work uses fresh immutable inputs, isolated collection/provider waits, bounded
+account ownership, durable leadership, single-shot calls and persistent controls.
+Saved health requires successful audited protection; independent observation
+retains truthful failure, incident recovery and reminder behavior.
+
+UAT creates no 09-08 approvals or protected activation receipt, certifies no current
+Codex single-shot transport, releases no 000660 freeze, and grants no trading or
+real-money authority. Runtime and upstream evidence gates remain mandatory.
+Next: Phase 16 discussion for the manual allowlisted, capital-capped pilot;
+Phase 9 acceptance and other upstream readiness gates remain independently open.

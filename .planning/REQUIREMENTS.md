@@ -64,9 +64,9 @@ real-money promotion gates.
 - [x] **UI-01**: Korean desktop and mobile views cover account summary, holdings, candidates, LLM decisions, orders, fills, run history, reports, replay, soak, calibration, readiness, and worker health with drill-down to durable evidence.
 - [x] **UI-02**: Web actions are limited to authenticated non-trading workflows such as report generation/export and alert acknowledgement; the web process cannot order, invoke a live LLM, write policy, reveal secrets, enable real mode, or waive a safety gate.
 - [x] **OPSV-01**: Operator receives deduplicated, severity-based alerts for stale workers, failed cycles, unresolved orders, safety latches, and broker-state divergence.
-- [ ] **FUT-04**: Operator can schedule unattended cycles only after manual-operation evidence is sufficient.
-- [ ] **AUTO-01**: Scheduled daily and intraday workers use KRX calendar/session rules, leader locking, durable checkpoints, and idempotent invocation identities so one logical job cannot submit twice.
-- [ ] **AUTO-02**: Operator can pause, resume, inspect health, recover after restart, and activate a global kill switch without losing audit or reconciliation evidence.
+- [x] **FUT-04**: Operator can schedule unattended cycles only after manual-operation evidence is sufficient.
+- [x] **AUTO-01**: Scheduled daily and intraday workers use KRX calendar/session rules, leader locking, durable checkpoints, and idempotent invocation identities so one logical job cannot submit twice.
+- [x] **AUTO-02**: Operator can pause, resume, inspect health, recover after restart, and activate a global kill switch without losing audit or reconciliation evidence.
 
 ### Controlled Production
 
@@ -131,9 +131,9 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 | UI-01 | Phase 14 | Complete |
 | UI-02 | Phase 14 | Complete |
 | OPSV-01 | Phase 14 | Complete |
-| FUT-04 | Phase 15 | Planned |
-| AUTO-01 | Phase 15 | Planned |
-| AUTO-02 | Phase 15 | Planned |
+| FUT-04 | Phase 15 | Complete |
+| AUTO-01 | Phase 15 | Complete |
+| AUTO-02 | Phase 15 | Complete |
 | PROD-01 | Phase 16 | Planned |
 | PROD-02 | Phase 16 | Planned |
 
@@ -141,4 +141,4 @@ Updated during roadmap creation. Every v1.1 requirement must map to exactly one 
 
 ---
 *Requirements defined: 2026-07-11*
-*Last updated: 2026-10-03 after completing Phase 14*
+*Last updated: 2026-10-05 after completing Phase 15*
