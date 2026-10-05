@@ -9,7 +9,7 @@ status: planning
 stopped_at: Phase15 complete; owner UAT4/4 and verification passed. Phase16 ready to discuss; Phase9 acceptance and runtime activation gates retained.
 last_updated: "2026-10-05T05:45:02.118Z"
 last_activity: 2026-10-05
-last_activity_desc: "Local operator web restarted detached; Tailscale authenticated; Serve activation pending; Phase16 remains ready to discuss"
+last_activity_desc: "Tailscale HTTPS web deployed; INVALID_REQUEST fixed and live login verified; Phase16 remains ready to discuss"
 progress:
   total_phases: 5
   completed_phases: 4
@@ -36,7 +36,7 @@ Total Plans in Phase: 0
 Phase: 16 (Controlled Real-Money Pilot & Scale Gates) — READY TO DISCUSS
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Phase15 complete: UAT4/4, verification passed,1904 tests passed; Phase16 ready to discuss
+Last activity: 2026-10-05 — Tailscale HTTPS web deployed; INVALID_REQUEST fixed and live login verified; Phase16 remains ready to discuss
 
 ## Performance Metrics
 
@@ -181,7 +181,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- 2026-10-05 Quick 261005-l0g: local operator web restarted detached and login verified at 127.0.0.1:8765; Tailscale authenticated at 100.92.151.80; exact private HTTPS config prepared, awaiting tailnet Serve activation. See [quick summary](./quick/261005-l0g-start-tailscale-and-local-operator-web/261005-l0g-SUMMARY.md).
+- 2026-10-05 Quick 261005-l0g completed: Tailscale private HTTPS active at https://oceano-macmini.tail667338.ts.net; exact HTTPS runtime config applied and live CSRF/password login plus authenticated dashboard verified. Owner MacBook acceptance remains unobserved. See [quick summary](./quick/261005-l0g-start-tailscale-and-local-operator-web/261005-l0g-SUMMARY.md).
 
 - 2026-10-01 Phase 10 re-verification passed (24/24) after shared audit schema and historical ambiguity warning fixes. Focused suite: 116 passed; full suite: 828 passed. Phase 9 external acceptance remains required; current Phase 11 position is retained.
 
@@ -193,6 +193,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261005-l0g | Start Tailscale and operator web; configure private HTTPS and verify login | 2026-10-05 | runtime-only | [261005-l0g-start-tailscale-and-local-operator-web](./quick/261005-l0g-start-tailscale-and-local-operator-web/) |
 | 260720-elk | Commit the existing weekend and holiday OHLCV trading-day evidence fix | 2026-07-20 | 628f5e6 | [260720-elk-commit-the-existing-weekend-and-holiday-](./quick/260720-elk-commit-the-existing-weekend-and-holiday-/) |
 | 260727-d5y | Treat campaign-scoped RESUME comparisons as valid without weakening 000660 ambiguity freeze or order safety | 2026-07-27 | 5105ee8 | [260727-d5y-treat-campaign-scoped-resume-comparisons](./quick/260727-d5y-treat-campaign-scoped-resume-comparisons/) |
 | 260728-d3r | Fix KRX market-session preflight UNKNOWN during KIS mock soak without weakening fail-closed safety | 2026-07-28 | 1ad1ec9 | [260728-d3r-fix-krx-market-session-preflight-unknown](./quick/260728-d3r-fix-krx-market-session-preflight-unknown/) |
@@ -261,6 +262,6 @@ Resume file: None
 
 - Continue Phase 9 Plan 09-08 elapsed-day KIS mock evidence collection without weakening its acceptance gate.
 - Phase 14 is verified complete (14/14 plans; 1418 automated tests; independent 36/36; accepted Korean UI). Run `$gsd-discuss-phase 15` for Unattended Scheduling & Service Resilience.
-- Use Tailscale for future external phone/Mac web access; verify actual private HTTPS/login/session behavior when deployment is configured.
+- Tailscale private HTTPS/login/session deployed and verified on the server; owner should confirm MacBook and phone access at https://oceano-macmini.tail667338.ts.net/login.
 - Optional paid shadow runs require reviewed model/capability/context/pricing records and dedicated LLM credentials. Codex CLI remains unsupported; no paid acceptance was performed here.
 - Preserve Phase 11 authenticated UAT recorded pass (2026-09-07); Phase 9 elapsed-day acceptance remains independently required.

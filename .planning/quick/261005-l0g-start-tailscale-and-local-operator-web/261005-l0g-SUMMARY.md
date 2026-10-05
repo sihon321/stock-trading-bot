@@ -1,6 +1,6 @@
 ---
 quick_id: 261005-l0g
-status: incomplete
+status: complete
 ---
 # Local web running; Tailscale authentication pending
 
@@ -20,3 +20,11 @@ Tailscale authentication is now complete. Local node `oceano-macmini` has IP 100
 Prepared and validated protected `~/.config/stock-trading-bot/operator/config/web-tailscale.json` using the exact HTTPS origin/host and one trusted loopback proxy. Existing credentials and registered evidence remain unchanged. This configuration is not active until the private proxy is enabled.
 
 `tailscale serve --bg --https=443 http://127.0.0.1:8765` reports Serve is not enabled on this tailnet; opened its exact feature activation URL in the owner browser. Awaiting owner activation. After activation, restart the tracked local web PID using web-tailscale.json and verify actual certificate-valid HTTPS login through Serve. MacBook device acceptance remains pending. Direct HTTP at the Tailscale IP is not configured.
+
+## Final deployment and login fix (2026-10-05)
+
+Tailnet Serve activation is complete. The owner reported INVALID_REQUEST because the running app still loaded web.json and rejected the actual HTTPS host. Reproduced the exact HTTP 400 before password entry and restarted only the tracked web process with the already prepared validated web-tailscale.json. Runtime remains detached and logs to the protected local web-server.log.
+
+Actual certificate-valid HTTPS checks at https://oceano-macmini.tail667338.ts.net: login GET 200, valid CSRF/password POST redirects, authenticated dashboard 200, session cookie Secure/HttpOnly/SameSite=Lax. Direct HTTP stays rejected and the upstream listener remains 127.0.0.1:8765. Existing operator credentials were reused. No source changes, trading process activation or broader network listeners were introduced. No saved evidence was fabricated or registered.
+
+Owner next step: reload the exact HTTPS login URL on the Tailscale-connected MacBook. Remote MacBook acceptance is not independently observed. Debug record: ../../debug/resolved/tailscale-invalid-request.md.
